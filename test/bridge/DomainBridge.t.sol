@@ -18,7 +18,7 @@ contract DomainBridgeTest is Test {
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        spoke = new DomainSpoke(CHAIN_ID, address(this));
+        spoke = new DomainSpoke(CHAIN_ID, address(this), block.chainid, address(0x1234));
         bridge = new DomainBridge(spoke, L1_BRIDGE);
     }
 
@@ -29,13 +29,14 @@ contract DomainBridgeTest is Test {
     {
         uint256 nonce = spoke.nextL1Nonce();
         bytes memory data = MessageLib.encodeTransfer(recipient, l1Token, amount);
-        messageHash = MessageLib.hashMessage(MessageLib.Message(from, address(bridge), data, nonce));
+        messageHash =
+            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), from, address(bridge), data, nonce));
         vm.prank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(from, address(bridge), data, nonce);
+        spoke.relayL1Message(uint64(block.chainid), from, address(bridge), data, nonce);
     }
 
     // ---------------------------------------------------------------------
-    // onL1Message (deposits)
+    // onDomainMessage (deposits)
     // ---------------------------------------------------------------------
 
     function test_deposit_mintsToRecipient() public {
@@ -60,15 +61,17 @@ contract DomainBridgeTest is Test {
         assertEq(token.balanceOf(bob), 150 ether);
     }
 
-    function test_onL1Message_onlySpoke() public {
+    function test_onDomainMessage_onlySpoke() public {
         vm.expectRevert("DomainBridge: not spoke");
-        bridge.onL1Message(L1_BRIDGE, MessageLib.encodeTransfer(bob, L1_TOKEN, 100 ether));
+        bridge.onDomainMessage(uint64(block.chainid), L1_BRIDGE, MessageLib.encodeTransfer(bob, L1_TOKEN, 100 ether));
     }
 
-    function test_onL1Message_rejectsForgedFrom() public {
+    function test_onDomainMessage_rejectsForgedFrom() public {
         vm.prank(address(spoke));
         vm.expectRevert("DomainBridge: not from L1 bridge");
-        bridge.onL1Message(makeAddr("attacker"), MessageLib.encodeTransfer(bob, L1_TOKEN, 100 ether));
+        bridge.onDomainMessage(
+            uint64(block.chainid), makeAddr("attacker"), MessageLib.encodeTransfer(bob, L1_TOKEN, 100 ether)
+        );
     }
 
     function test_deposit_fromForgedSenderFailsDelivery() public {
@@ -106,10 +109,17 @@ contract DomainBridgeTest is Test {
         assertEq(token.totalSupply(), 60 ether);
 
         // The recorded message: from this bridge, to the L1 bridge, transfer payload.
-        bytes32 expectedHash = MessageLib.hashMessage(
-            MessageLib.Message({
-                from: address(bridge), to: L1_BRIDGE, data: MessageLib.encodeTransfer(bob, L1_TOKEN, 40 ether), nonce: 0
-            })
+        bytes32 expectedHash = MessageLib.hashDomainMessage(
+            MessageLib.DomainMessage({
+                sourceChainId: CHAIN_ID,
+                destinationChainId: uint64(block.chainid),
+                from: address(bridge),
+                to: L1_BRIDGE,
+                data: MessageLib.encodeTransfer(bob, L1_TOKEN, 40 ether),
+                sourceNonce: 0
+            }),
+            block.chainid,
+            spoke.HUB()
         );
         assertEq(spoke.pendingDomainMessages(0), expectedHash);
     }

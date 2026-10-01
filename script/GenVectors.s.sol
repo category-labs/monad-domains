@@ -10,6 +10,7 @@ contract GenVectors is Script {
         bytes32[] memory leaves = new bytes32[](5);
         for (uint256 i = 0; i < 5; i++) {
             MessageLib.Message memory m = MessageLib.Message({
+                sourceChainId: 1,
                 from: address(uint160(0x1000 + i)),
                 to: address(uint160(0x2000 + i)),
                 data: MessageLib.encodeTransfer(

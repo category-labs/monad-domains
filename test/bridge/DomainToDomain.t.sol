@@ -21,16 +21,17 @@ contract CrossDomainRouter {
     function relay(
         L1Bridge fromBridge,
         L1Bridge toBridge,
-        MessageLib.Message calldata message,
+        MessageLib.DomainMessage calldata message,
         bytes32 anchor,
         bytes32[] calldata proof,
         address recipientOnB
     ) external {
         require(message.to == address(fromBridge), "Router: wrong source bridge");
-        require(
-            fromBridge.HUB().relayDomainMessage(fromBridge.DOMAIN_CHAIN_ID(), message, anchor, proof),
-            "Router: withdrawal delivery failed"
-        );
+        // A successful hub relay can mean queued on another domain. This operation
+        // requires an actual L1 withdrawal before spending any router-held collateral.
+        require(message.destinationChainId == block.chainid, "Router: withdrawal must target L1");
+        require(message.sourceChainId == fromBridge.DOMAIN_CHAIN_ID(), "Router: wrong source domain");
+        require(fromBridge.HUB().relayDomainMessage(message, anchor, proof), "Router: withdrawal delivery failed");
         (, address token, uint256 amount) = MessageLib.decodeTransfer(message.data);
         IERC20(token).forceApprove(address(toBridge), amount);
         toBridge.bridgeToDomain(recipientOnB, token, amount);
@@ -76,8 +77,8 @@ contract DomainToDomainTest is Test {
         hub = new DomainHub();
         hub.registerDomain(CHAIN_A, 0, _validatorSet(), 1);
         hub.registerDomain(CHAIN_B, 0, _validatorSet(), 1);
-        spokeA = new DomainSpoke(CHAIN_A, address(this));
-        spokeB = new DomainSpoke(CHAIN_B, address(this));
+        spokeA = new DomainSpoke(CHAIN_A, address(this), block.chainid, address(hub));
+        spokeB = new DomainSpoke(CHAIN_B, address(this), block.chainid, address(hub));
 
         // Application: an independent bridge pair per domain, sharing the L1 token.
         l1BridgeA = new L1Bridge(hub, CHAIN_A);
@@ -104,10 +105,10 @@ contract DomainToDomainTest is Test {
     /// then separately deposits them into domain B.
     function test_domainAToB_twoL1Transactions() public {
         // Domain A -> L1: burn on A, operator anchors, recipient is alice herself.
-        (MessageLib.Message memory wMsg, bytes32 wAnchor) = _initiateWithdrawFromA(alice, alice, AMOUNT);
+        (MessageLib.DomainMessage memory wMsg, bytes32 wAnchor) = _initiateWithdrawFromA(alice, alice, AMOUNT);
 
         // L1 tx 1: finalize the withdrawal - alice receives the real L1 token.
-        assertTrue(hub.relayDomainMessage(CHAIN_A, wMsg, wAnchor, _emptyProof()));
+        assertTrue(hub.relayDomainMessage(wMsg, wAnchor, _emptyProof()));
         assertEq(token.balanceOf(alice), AMOUNT);
         assertEq(token.balanceOf(address(l1BridgeA)), 0);
 
@@ -121,7 +122,7 @@ contract DomainToDomainTest is Test {
     /// router finalizes it and re-deposits into domain B atomically.
     function test_domainAToB_singleL1Transaction() public {
         // Domain A -> L1: recipient is the router, so the unlocked tokens land there.
-        (MessageLib.Message memory wMsg, bytes32 wAnchor) = _initiateWithdrawFromA(alice, address(router), AMOUNT);
+        (MessageLib.DomainMessage memory wMsg, bytes32 wAnchor) = _initiateWithdrawFromA(alice, address(router), AMOUNT);
 
         // Single L1 tx: finalize withdrawal on A and re-deposit into B in one call.
         router.relay(l1BridgeA, l1BridgeB, wMsg, wAnchor, _emptyProof(), bobOnB);
@@ -135,11 +136,12 @@ contract DomainToDomainTest is Test {
     }
 
     function test_router_rollsBackHubConsumptionIfDepositFails() public {
-        (MessageLib.Message memory message, bytes32 anchor) = _initiateWithdrawFromA(alice, address(router), AMOUNT);
+        (MessageLib.DomainMessage memory message, bytes32 anchor) =
+            _initiateWithdrawFromA(alice, address(router), AMOUNT);
         l1BridgeB.setTokenAllowed(address(token), false);
         vm.expectRevert("L1Bridge: token not allowed");
         router.relay(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
-        assertFalse(hub.relayedDomainMessages(CHAIN_A, MessageLib.hashMessage(message)));
+        assertFalse(hub.relayedDomainMessages(CHAIN_A, _hash(message)));
         assertEq(token.balanceOf(address(l1BridgeA)), AMOUNT);
         assertEq(token.balanceOf(address(router)), 0);
         l1BridgeB.setTokenAllowed(address(token), true);
@@ -149,9 +151,9 @@ contract DomainToDomainTest is Test {
     }
 
     function test_router_revertsIfHubDeliveryFails() public {
-        (MessageLib.Message memory message,) = _initiateWithdrawFromA(alice, address(router), AMOUNT);
+        (MessageLib.DomainMessage memory message,) = _initiateWithdrawFromA(alice, address(router), AMOUNT);
         message.from = address(0xBAD);
-        bytes32 anchor = MessageLib.hashMessage(message);
+        bytes32 anchor = _hash(message);
         uint64 height = hub.domainBlockNumbers(CHAIN_A) + 1;
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(VALIDATOR_KEY, hub.stateTransitionDigest(CHAIN_A, height, bytes32(0), anchor));
@@ -163,6 +165,18 @@ contract DomainToDomainTest is Test {
         assertFalse(hub.relayedDomainMessages(CHAIN_A, anchor));
         assertFalse(hub.failedDomainMessages(CHAIN_A, anchor));
         assertEq(token.balanceOf(address(router)), AMOUNT);
+        assertEq(token.balanceOf(address(l1BridgeB)), 0);
+    }
+
+    function test_router_rejectsForwardingInsteadOfL1Withdrawal() public {
+        (MessageLib.DomainMessage memory message, bytes32 anchor) =
+            _initiateWithdrawFromA(alice, address(router), AMOUNT);
+        token.mint(address(router), AMOUNT);
+        message.destinationChainId = CHAIN_B;
+        vm.expectRevert("Router: withdrawal must target L1");
+        router.relay(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
+        assertEq(token.balanceOf(address(router)), AMOUNT);
+        assertEq(token.balanceOf(address(l1BridgeA)), AMOUNT);
         assertEq(token.balanceOf(address(l1BridgeB)), 0);
     }
 
@@ -201,10 +215,12 @@ contract DomainToDomainTest is Test {
         uint256 nonce = spoke.nextL1Nonce();
         bytes memory data = MessageLib.encodeTransfer(recipient, address(token), amount);
         vm.prank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(address(fromBridge), address(toBridge), data, nonce);
+        spoke.relayL1Message(uint64(block.chainid), address(fromBridge), address(toBridge), data, nonce);
         assertFalse(
             spoke.failedL1Messages(
-                MessageLib.hashMessage(MessageLib.Message(address(fromBridge), address(toBridge), data, nonce))
+                MessageLib.hashMessage(
+                    MessageLib.Message(uint64(block.chainid), address(fromBridge), address(toBridge), data, nonce)
+                )
             ),
             "deposit delivery failed"
         );
@@ -215,7 +231,7 @@ contract DomainToDomainTest is Test {
     /// finalizes against.
     function _initiateWithdrawFromA(address sender, address recipient, uint256 amount)
         internal
-        returns (MessageLib.Message memory message, bytes32 anchor)
+        returns (MessageLib.DomainMessage memory message, bytes32 anchor)
     {
         vm.prank(sender);
         domainBridgeA.bridgeToL1(recipient, address(token), amount);
@@ -226,11 +242,13 @@ contract DomainToDomainTest is Test {
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(VALIDATOR_KEY, hub.stateTransitionDigest(CHAIN_A, blockNumber, bytes32(0), anchor));
         hub.submitStateSignature(CHAIN_A, blockNumber, bytes32(0), anchor, abi.encodePacked(r, s, v));
-        message = MessageLib.Message({
+        message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_A,
+            destinationChainId: uint64(block.chainid),
             from: address(domainBridgeA),
             to: address(l1BridgeA),
             data: MessageLib.encodeTransfer(recipient, address(token), amount),
-            nonce: nonce
+            sourceNonce: nonce
         });
     }
 
@@ -254,5 +272,9 @@ contract DomainToDomainTest is Test {
     function _validatorSet() internal view returns (address[] memory vs) {
         vs = new address[](1);
         vs[0] = vm.addr(VALIDATOR_KEY);
+    }
+
+    function _hash(MessageLib.DomainMessage memory message) internal view returns (bytes32) {
+        return MessageLib.hashDomainMessage(message, block.chainid, address(hub));
     }
 }

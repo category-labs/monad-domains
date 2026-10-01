@@ -5,23 +5,54 @@ pragma solidity ^0.8.24;
 /// carried inside them. Single source of truth shared by both bridges, the hub and spoke,
 /// and the off-chain prover.
 library MessageLib {
-    /// @notice Preimage of a recorded message hash. This is what a prover submits when
-    /// consuming a message on the destination chain.
-    /// @param from  The account that called the hub/spoke send function on the source chain.
-    /// @param to    The target contract on the destination chain (for the token bridge,
-    ///              always the counterpart bridge contract).
-    /// @param data  Application calldata; the token bridge carries an encoded payload here.
-    /// @param nonce Nonce assigned by the hub/spoke at recording time.
+    /// @notice An authenticated domain-origin message. The source spoke assigns origin and nonce.
+    /// The hub proves this envelope and assigns a separate destination delivery nonce when forwarding.
+    /// The destination selects L1 execution or domain forwarding.
+    struct DomainMessage {
+        uint64 sourceChainId;
+        uint64 destinationChainId;
+        address from;
+        address to;
+        uint256 sourceNonce;
+        bytes data;
+    }
+
+    /// @notice Binds the envelope to one protocol deployment as well as both domains.
+    function hashDomainMessage(DomainMessage memory message, uint256 l1ChainId, address hub)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                l1ChainId,
+                hub,
+                message.sourceChainId,
+                message.destinationChainId,
+                message.from,
+                message.to,
+                message.sourceNonce,
+                keccak256(message.data)
+            )
+        );
+    }
+
+    /// @notice Shared delivery envelope for L1-origin and forwarded domain messages.
+    /// The hub authenticates sourceChainId/from and assigns a destination queue nonce.
+    /// `to` is always the destination application; data is its original payload.
     struct Message {
+        uint64 sourceChainId;
         address from;
         address to;
         bytes data;
         uint256 nonce;
     }
 
-    /// @notice Message hash format defined by the MIP for both directions.
+    /// @notice Delivery hash binds the authenticated origin, target, payload and queue nonce.
     function hashMessage(Message memory message) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(message.from, message.to, keccak256(message.data), message.nonce));
+        return keccak256(
+            abi.encodePacked(message.sourceChainId, message.from, message.to, keccak256(message.data), message.nonce)
+        );
     }
 
     /// @notice Encodes the token bridge payload placed in `Message.data`. The recipient

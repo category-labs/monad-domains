@@ -6,9 +6,16 @@ import {MessageLib} from "../libraries/MessageLib.sol";
 
 /// @notice L1-side hub interface of the domain messaging layer. The hub is the single L1
 /// contract every domain (spoke) connects through. It records outbound L1 -> domain
-/// messages and stores merkle anchors of domain -> L1 messages, which domain validators
+/// messages and stores merkle anchors of all domain-origin messages, which domain validators
 /// attest alongside a new state commitment.
 interface IDomainHub {
+    event DomainMessageRouted(
+        bytes32 indexed messageId,
+        uint64 indexed sourceChainId,
+        uint64 indexed destinationChainId,
+        uint256 deliveryNonce
+    );
+
     event DomainMessageRelayed(
         uint64 indexed domainChainId,
         bytes32 indexed messageHash,
@@ -20,9 +27,11 @@ interface IDomainHub {
 
     /// @notice Emitted for every recorded L1 -> domain message. This event stream is the
     /// protocol's derivation source for system delivery transactions; it carries the full
-    /// preimage so the client needs no extra state reads.
+    /// preimage so the client needs no extra state reads. sourceChainId/from identify the
+    /// proven source domain sender, or the L1 caller for ordinary sends; to is the application.
     event L1MessageRecorded(
         uint64 indexed domainChainId,
+        uint64 sourceChainId,
         address indexed from,
         address indexed to,
         bytes data,
@@ -32,7 +41,7 @@ interface IDomainHub {
 
     /// @notice Emitted for every recorded encrypted L1 -> domain message.
     event EncryptedL1MessageRecorded(
-        uint64 indexed domainChainId, address indexed from, bytes ciphertext, uint256 nonce
+        uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, bytes ciphertext, uint256 nonce
     );
 
     // --- Registration ---
@@ -79,28 +88,26 @@ interface IDomainHub {
     /// @notice The domain block number of the latest committed state root.
     function domainBlockNumbers(uint64 domainChainId) external view returns (uint64);
 
-    /// @notice True if `anchor` is a recorded merkle root of messages sent from
-    /// `domainChainId` to the L1.
+    /// @notice True if `anchor` is a recorded merkle root of outbound messages sent from
+    /// `domainChainId` (both L1 callbacks and native domain routes).
     function domainAnchors(uint64 domainChainId, bytes32 anchor) external view returns (bool);
 
     // --- Delivery of domain messages ---
 
-    /// @notice Proves a message against an accepted anchor for its source domain and
-    /// invokes `onDomainMessage` on its destination. Messages can arrive in any order.
-    /// A failed target call is recorded for retry instead of reverting. Returns delivery
-    /// success so callers composing atomic operations can require successful execution.
-    function relayDomainMessage(
-        uint64 domainChainId,
-        MessageLib.Message calldata message,
-        bytes32 anchor,
-        bytes32[] calldata proof
-    ) external returns (bool success);
+    /// @notice Proves any domain-origin message against its source anchor. If its destination
+    /// is L1, invokes onDomainMessage and returns callback success (failure is retryable here).
+    /// Otherwise atomically queues it through the same path as sendL1Message and returns true;
+    /// destination execution/retry happens on that domain. Messages can arrive in any order.
+    function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
+        external
+        returns (bool success);
 
-    /// @notice Permissionlessly retries an authenticated failed message with the caller's
-    /// gas. A failed retry reverts, preserving the failed mark.
-    function retryDomainMessage(uint64 domainChainId, MessageLib.Message calldata message) external;
+    /// @notice Permissionlessly retries an authenticated failed L1 callback with the caller's
+    /// gas. A failed retry reverts, preserving the failed mark. Forwarded messages retry on
+    /// their destination spoke using retryL1Message with the shared delivery envelope.
+    function retryDomainMessage(MessageLib.DomainMessage calldata message) external;
 
-    /// @notice True once an authenticated message has had its initial delivery attempted.
+    /// @notice True once an authenticated message has been attempted on L1 or queued to a domain.
     function relayedDomainMessages(uint64 domainChainId, bytes32 messageHash) external view returns (bool);
 
     /// @notice True if an authenticated message is awaiting a successful retry.
@@ -123,19 +130,22 @@ interface IDomainHub {
 }
 
 /// @notice Domain-side spoke interface, deployed on a domain. Mirror image of the
-/// hub: records outbound domain -> L1 messages, and receives the L1 -> domain messages
+/// hub: records outbound domain messages, and receives the L1 -> domain envelopes
 /// that the domain protocol delivers as system transactions.
 interface IDomainSpoke is IDomainAccessControl {
-    /// @notice Emitted for every recorded domain -> L1 message. Carries the full preimage so
-    /// provers can reconstruct the merkle leaf without extra state reads.
-    event DomainMessageRecorded(
-        address indexed from, address indexed to, bytes data, uint256 nonce, bytes32 messageHash
-    );
+    function L1_CHAIN_ID() external view returns (uint64);
+    /// @notice Full domain-origin envelope, whether addressed to L1 or another domain.
+    event DomainMessageRecorded(bytes32 indexed messageId, bytes message);
 
     /// @notice Emitted for every protocol-delivered L1 -> domain message. `success` is the
     /// outcome of the target call; a failed delivery is retryable via `retryL1Message`.
     event L1MessageRelayed(
-        bytes32 indexed messageHash, address indexed from, address indexed to, uint256 nonce, bool success
+        bytes32 indexed messageHash,
+        uint64 sourceChainId,
+        address indexed from,
+        address indexed to,
+        uint256 nonce,
+        bool success
     );
 
     // --- Delivery of L1 messages (protocol system transactions) ---
@@ -144,8 +154,10 @@ interface IDomainSpoke is IDomainAccessControl {
     /// transactions, which the client derives from the hub's `L1MessageRecorded` and
     /// `EncryptedL1MessageRecorded` events. Nonces must arrive strictly increasing; a gap is
     /// an undecryptable encrypted message the client never delivers, consumed for good by the
-    /// delivery that jumps it.
-    function relayL1Message(address from, address to, bytes calldata data, uint256 nonce) external;
+    /// delivery that jumps it. The client must derive sourceChainId/from from authenticated
+    /// hub events. The spoke calls to.onDomainMessage(sourceChainId, from, data); targets
+    /// without code are marked failed and can be retried after deployment.
+    function relayL1Message(uint64 sourceChainId, address from, address to, bytes calldata data, uint256 nonce) external;
 
     /// @notice Permissionlessly re-executes a failed delivery with the caller's gas.
     function retryL1Message(MessageLib.Message calldata message) external;
@@ -156,33 +168,26 @@ interface IDomainSpoke is IDomainAccessControl {
     /// @notice True if the message hash was delivered but its target call failed.
     function failedL1Messages(bytes32 messageHash) external view returns (bool);
 
-    // --- Messaging: domain -> L1 ---
+    // --- Messaging: domain -> L1 or another domain ---
 
-    /// @notice Records a message to the L1. The message hash
-    /// `keccak256(abi.encodePacked(msg.sender, to, keccak256(data), nonce))` is appended to the
-    /// pending message array.
-    function sendDomainMessage(address to, bytes calldata data) external;
+    /// @notice Sends a message to L1 or another domain through the same authenticated
+    /// envelope. Source identity and nonce are assigned by this spoke. An L1 destination
+    /// executes a callback there; a domain destination is forwarded without an L1 callback.
+    function sendDomainMessage(uint64 destinationChainId, address to, bytes calldata data)
+        external
+        returns (bytes32 messageId);
 
-    /// @notice Operator-only. Merkleizes the pending domain -> L1 messages into an anchor and
+    /// @notice Operator-only. Merkleizes all pending outbound messages into an anchor and
     /// clears them. The operator relays the returned anchor onto the hub via
     /// `submitStateSignature`.
     function finalizeDomainMessages() external returns (bytes32 anchor);
 
-    /// @notice Pending domain -> L1 message hash at `index`.
+    /// @notice Pending outbound domain message ID at `index`.
     function pendingDomainMessages(uint256 index) external view returns (bytes32);
 }
 
-/// @notice Hook implemented by domain contracts that consume L1 -> domain messages. The
-/// spoke invokes it during protocol delivery. Implementations MUST authenticate both
-/// `msg.sender` (the spoke) and `from` (their expected L1 counterpart).
-interface IL1MessageReceiver {
-    /// @param from The L1 account that called `sendL1Message` on the hub.
-    /// @param data The message payload exactly as recorded on the hub.
-    function onL1Message(address from, bytes calldata data) external;
-}
-
-/// @notice Hook implemented by L1 applications receiving domain messages. Implementations
-/// MUST authenticate `msg.sender` (the hub), `domainChainId`, and `from` (their counterpart).
+/// @notice Shared hook for L1-origin and domain-origin messages. Authenticate msg.sender
+/// (the hub on L1, local spoke on a domain), sourceChainId and from together.
 interface IDomainMessageReceiver {
-    function onDomainMessage(uint64 domainChainId, address from, bytes calldata data) external;
+    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external;
 }

@@ -36,55 +36,49 @@ Programmatic equivalents are exported (`generateViewingKeyFiles`, `viewingPublic
 `viewingSecretKeyFromPem`, `viewingSecretKeyToPem`), alongside `encryptTransaction` /
 `decryptTransaction` for tests and local tooling.
 
-## Usage
+## Domain messages
 
-Withdrawals (domain -> L1) are the proof-carrying direction: an anchor commits to the
-messages the operator finalized, and `DomainHub.relayDomainMessage` verifies a merkle proof
-against it.
+All domain-origin operations use `spoke.sendDomainMessage(destinationChainId, to, data)`.
+The destination chain ID selects L1 application execution or native forwarding to
+another domain.
 
 ```ts
-import { createPublicClient, http } from "viem";
 import {
-  fetchDomainMessages,
-  proveMessage,
-  isDomainAnchorRecorded,
-  domainMessageDeliveryStatus,
+  fetchDomainMessages, proveMessage, isDomainAnchorRecorded,
+  domainMessageDeliveryStatus, domainDeliveryEnvelope, routedMessageDeliveryStatus,
 } from "@domain-bridging/prover";
 
-const l1 = createPublicClient({ transport: http(L1_RPC_URL) });
-const domain = createPublicClient({ transport: http(DOMAIN_RPC_URL) });
+const context = { l1ChainId: L1_CHAIN_ID, hub: HUB_ADDRESS };
+// Use the exact range of messages included in one finalized source batch. Include ALL
+// destinations: filtering the batch before computing its root produces an invalid proof.
+const batch = await fetchDomainMessages(domainA, { fromBlock, toBlock }, SPOKE_A, context);
+const { message, anchor, proof } = proveMessage(batch, messageId);
+await isDomainAnchorRecorded(l1, message.sourceChainId, anchor, HUB_ADDRESS);
+// Permissionlessly submit hub.relayDomainMessage(message, anchor, proof).
 
-// 1. Reconstruct the batch: the recorded withdrawal messages (DomainMessageRecorded
-//    events on the spoke). The batch must be exactly the set pending when the operator
-//    called finalizeDomainMessages, so the block range must line up with the operator's
-//    finalize cadence; a misaligned batch produces an anchor that was never recorded and
-//    simply fails the anchor check.
-const batch = await fetchDomainMessages(domain, { fromBlock, toBlock }, SPOKE_ADDRESS);
+const status = await domainMessageDeliveryStatus(l1, message, context);
+// L1 destination: "pending" | "failed" | "delivered".
+// Other domain: "pending" | "queued". Queued does not mean executed.
 
-// 2. Build the proof and confirm the anchor was attested onto the hub.
-const { message, anchor, proof } = proveMessage(batch, withdrawalMessageHash);
-await isDomainAnchorRecorded(l1, DOMAIN_CHAIN_ID, anchor, HUB_ADDRESS); // -> true once attested
-
-// 3. Relay: hub.relayDomainMessage(DOMAIN_CHAIN_ID, message, anchor, proof)
-//    from any account. The hub calls L1Bridge.onDomainMessage with the authenticated source.
-
-// 4. Check delivery, since a successful relay transaction may contain a failed callback.
-await domainMessageDeliveryStatus(l1, DOMAIN_CHAIN_ID, withdrawalMessageHash, HUB_ADDRESS);
-// -> "pending" | "delivered" | "failed". Retry failures with
-//    hub.retryDomainMessage(DOMAIN_CHAIN_ID, message), without another proof.
+if (message.destinationChainId === L1_CHAIN_ID) {
+  // A failed L1 callback is retried with hub.retryDomainMessage(message).
+} else {
+  // Read deliveryNonce from DomainMessageRouted; SPOKE_B is local client configuration.
+  const destinationStatus = await routedMessageDeliveryStatus(
+    domainB, message, SPOKE_B, deliveryNonce,
+  ); // "pending" | "failed" | "delivered"
+  if (destinationStatus === "failed") {
+    const deliveryEnvelope = domainDeliveryEnvelope(message, deliveryNonce);
+    // Submit spokeB.retryL1Message(deliveryEnvelope) with enough gas.
+  }
+}
 ```
-
-Deposits (L1 -> domain) need no proofs and no finalization transaction: the domain
-protocol derives one system transaction per hub `L1MessageRecorded` event and delivers it
-to the spoke (`relayL1Message`, in event order). The tooling here just indexes and watches:
 
 ```ts
 import { fetchL1Messages, l1MessageDeliveryStatus } from "@domain-bridging/prover";
-
 const [deposit] = await fetchL1Messages(l1, DOMAIN_CHAIN_ID, { fromBlock, toBlock }, HUB_ADDRESS);
 await l1MessageDeliveryStatus(domain, deposit, SPOKE_ADDRESS);
-// -> "pending" | "delivered" | "failed"; a failed target call is permissionlessly
-//    re-executable via spoke.retryL1Message with the message preimage.
+// "pending" | "delivered" | "failed" for this recorded L1 transport envelope.
 ```
 
 ## Development
@@ -93,4 +87,5 @@ await l1MessageDeliveryStatus(domain, deposit, SPOKE_ADDRESS);
 npm install
 npm test          # conformance vectors + round-trip tests
 npm run typecheck
+npm run test:integration # requires forge + anvil; builds contracts and starts three local EVM chains
 ```

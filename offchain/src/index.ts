@@ -38,3 +38,12 @@ export {
   type MessageProof,
   type UndecryptableMessage,
 } from "./prover.js";
+export {
+  DOMAIN_MESSAGE_PARAMS,
+  hashDomainMessage, encodeDomainMessage, decodeDomainMessage, domainDeliveryEnvelope,
+  type DomainMessage, type MessageContext,
+} from "./message.js";
+export {
+  DOMAIN_MESSAGE_ROUTED_EVENT,
+  routedMessageDeliveryStatus, type RoutedDeliveryStatus,
+} from "./routing.js";

@@ -1,23 +1,23 @@
 import { parseAbiItem, type Address, type Hex, type PublicClient } from "viem";
 import { decryptMessage } from "./encryption.js";
-import { hashMessage, type Message } from "./message.js";
+import { hashMessage, hashDomainMessage, decodeDomainMessage, type DomainMessage, type MessageContext, type Message } from "./message.js";
 import { getProof, root } from "./merkle.js";
 
 export const L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
-  "event L1MessageRecorded(uint64 indexed domainChainId, address indexed from, address indexed to, bytes data, uint256 nonce, bytes32 messageHash)",
+  "event L1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, address indexed to, bytes data, uint256 nonce, bytes32 messageHash)",
 );
 
 export const ENCRYPTED_L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
-  "event EncryptedL1MessageRecorded(uint64 indexed domainChainId, address indexed from, bytes ciphertext, uint256 nonce)",
+  "event EncryptedL1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, bytes ciphertext, uint256 nonce)",
 );
 
 export const DOMAIN_MESSAGE_RECORDED_EVENT = parseAbiItem(
-  "event DomainMessageRecorded(address indexed from, address indexed to, bytes data, uint256 nonce, bytes32 messageHash)",
+  "event DomainMessageRecorded(bytes32 indexed messageId, bytes message)",
 );
 
 /** Emitted by the spoke for every protocol-delivered L1 -> domain message. */
 export const L1_MESSAGE_RELAYED_EVENT = parseAbiItem(
-  "event L1MessageRelayed(bytes32 indexed messageHash, address indexed from, address indexed to, uint256 nonce, bool success)",
+  "event L1MessageRelayed(bytes32 indexed messageHash, uint64 sourceChainId, address indexed from, address indexed to, uint256 nonce, bool success)",
 );
 
 export const DOMAIN_MESSAGE_RELAYED_EVENT = parseAbiItem(
@@ -33,36 +33,31 @@ const DOMAIN_ANCHOR_ABI = [
   parseAbiItem("function domainAnchors(uint64 domainChainId, bytes32 anchor) view returns (bool)"),
 ] as const;
 
-const SPOKE_DELIVERY_ABI = [
-  parseAbiItem("function nextL1Nonce() view returns (uint256)"),
-  parseAbiItem("function failedL1Messages(bytes32 messageHash) view returns (bool)"),
-] as const;
-
 /** A message as recorded on-chain, with the position metadata needed for batching. */
-export interface RecordedMessage {
-  message: Message;
+export interface RecordedMessage<T = Message> {
+  message: T;
   messageHash: Hex;
   blockNumber: bigint;
   logIndex: number;
 }
 
-/** Proof arguments for `DomainHub.relayDomainMessage`, alongside the source domain id. */
-export interface MessageProof {
-  message: Message;
+/** Proof arguments for DomainHub.relayDomainMessage; the message includes its source domain. */
+export interface MessageProof<T = DomainMessage> {
+  message: T;
   anchor: Hex;
   proof: Hex[];
 }
 
 function toRecorded(log: {
-  args: { from?: Address; to?: Address; data?: Hex; nonce?: bigint; messageHash?: Hex };
+  args: { sourceChainId?: bigint; from?: Address; to?: Address; data?: Hex; nonce?: bigint; messageHash?: Hex };
   blockNumber: bigint;
   logIndex: number;
 }): RecordedMessage {
-  const { from, to, data, nonce, messageHash } = log.args;
-  if (!from || !to || data === undefined || nonce === undefined || !messageHash) {
+  const { sourceChainId, from, to, data, nonce, messageHash } = log.args;
+  if (sourceChainId === undefined || !from || !to || data === undefined || nonce === undefined || !messageHash) {
     throw new Error("prover: incomplete event log");
   }
-  const message: Message = { from, to, data, nonce };
+  const message: Message = { sourceChainId, from, to, data, nonce };
   const computed = hashMessage(message);
   if (computed.toLowerCase() !== messageHash.toLowerCase()) {
     throw new Error(`prover: event messageHash mismatch (computed ${computed}, recorded ${messageHash})`);
@@ -70,7 +65,7 @@ function toRecorded(log: {
   return { message, messageHash, blockNumber: log.blockNumber, logIndex: log.logIndex };
 }
 
-function sortByPosition(messages: RecordedMessage[]): RecordedMessage[] {
+function sortByPosition<T>(messages: RecordedMessage<T>[]): RecordedMessage<T>[] {
   return messages.sort((a, b) =>
     a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1,
   );
@@ -136,13 +131,13 @@ export async function fetchEncryptedL1Messages(
   const messages: RecordedMessage[] = [];
   const undecryptable: UndecryptableMessage[] = [];
   for (const log of logs) {
-    const { from, ciphertext, nonce } = log.args;
-    if (!from || ciphertext === undefined || nonce === undefined) {
+    const { sourceChainId, from, ciphertext, nonce } = log.args;
+    if (sourceChainId === undefined || !from || ciphertext === undefined || nonce === undefined) {
       throw new Error("prover: incomplete event log");
     }
     try {
       const { to, data } = await decryptMessage(viewingSecretKey, ciphertext);
-      const message: Message = { from, to, data, nonce };
+      const message: Message = { sourceChainId, from, to, data, nonce };
       messages.push({
         message,
         messageHash: hashMessage(message),
@@ -156,23 +151,27 @@ export async function fetchEncryptedL1Messages(
   return { messages: sortByPosition(messages), undecryptable };
 }
 
-/**
- * Fetches all domain -> L1 messages recorded in the block range, in recording
- * order. For the domain direction one anchor is posted per state-root update, so a
- * batch spans all messages recorded between two consecutive updates — the caller
- * supplies that range.
+/** Fetch every domain-origin message in one finalized batch, in log order.
+ * L1 callbacks and domain destinations share this stream, envelope and Merkle tree.
+ * The range must match the operator's finalization boundaries exactly.
  */
 export async function fetchDomainMessages(
   client: PublicClient,
   range: { fromBlock: bigint; toBlock: bigint },
   spoke: Address,
-): Promise<RecordedMessage[]> {
-  const logs = await client.getLogs({
-    address: spoke,
-    event: DOMAIN_MESSAGE_RECORDED_EVENT,
-    ...range,
+  context: MessageContext,
+): Promise<RecordedMessage<DomainMessage>[]> {
+  const logs = await client.getLogs({ address: spoke, event: DOMAIN_MESSAGE_RECORDED_EVENT, ...range });
+  const messages = logs.map(log => {
+    const { message: encoded, messageId } = log.args;
+    if (encoded === undefined || messageId === undefined) throw new Error("prover: incomplete event log");
+    const message = decodeDomainMessage(encoded);
+    if (hashDomainMessage(message, context).toLowerCase() !== messageId.toLowerCase()) {
+      throw new Error("prover: event messageId mismatch");
+    }
+    return { message, messageHash: messageId, blockNumber: log.blockNumber, logIndex: log.logIndex };
   });
-  return sortByPosition(logs.map(toRecorded));
+  return sortByPosition(messages);
 }
 
 /**
@@ -180,7 +179,7 @@ export async function fetchDomainMessages(
  * be the complete, ordered set of messages the operator merkleized into one anchor
  * (everything pending when `finalizeDomainMessages` was called).
  */
-export function proveMessage(batch: readonly RecordedMessage[], messageHash: Hex): MessageProof {
+export function proveMessage<T>(batch: readonly RecordedMessage<T>[], messageHash: Hex): MessageProof<T> {
   const leaves = batch.map((m) => m.messageHash);
   const index = leaves.findIndex((h) => h.toLowerCase() === messageHash.toLowerCase());
   if (index === -1) throw new Error(`prover: message ${messageHash} not in batch`);
@@ -194,18 +193,21 @@ export function proveMessage(batch: readonly RecordedMessage[], messageHash: Hex
 /** Where a recorded L1 -> domain message stands in the protocol's delivery queue. */
 export type L1DeliveryStatus = "pending" | "delivered" | "failed";
 
-export type DomainDeliveryStatus = "pending" | "delivered" | "failed";
+export type DomainDeliveryStatus = "pending" | "queued" | "delivered" | "failed";
 
 /**
- * Reads both hub delivery flags at the same block. A successful relay transaction can
- * still contain a failed receiver call; only "delivered" means the application ran.
+ * Reads both hub relay flags at one block. For L1 destinations, "delivered" means the
+ * callback succeeded. For domain destinations, "queued" means forwarded; check the
+ * destination spoke separately for execution. A successful transaction can contain a failed callback.
  */
 export async function domainMessageDeliveryStatus(
   client: PublicClient,
-  domainChainId: bigint,
-  messageHash: Hex,
-  hub: Address,
+  message: DomainMessage,
+  context: MessageContext,
 ): Promise<DomainDeliveryStatus> {
+  const domainChainId = message.sourceChainId;
+  const messageHash = hashDomainMessage(message, context);
+  const hub = context.hub;
   const blockNumber = await client.getBlockNumber({ cacheTime: 0 });
   const [relayed, failed] = await Promise.all([
     client.readContract({
@@ -223,33 +225,30 @@ export async function domainMessageDeliveryStatus(
       blockNumber,
     }),
   ]);
-  return !relayed ? "pending" : failed ? "failed" : "delivered";
+  return !relayed ? "pending" : failed ? "failed" : message.destinationChainId === context.l1ChainId ? "delivered" : "queued";
 }
 
-/**
- * Reads the delivery status of a recorded L1 -> domain message from the spoke. The
- * protocol delivers messages strictly in nonce order, so a message is "pending" until
- * `nextL1Nonce` passes its nonce. A delivery whose target call reverted reads "failed"
- * until someone re-executes it via `retryL1Message` (after which it reads "delivered").
+/** Returns the latest delivery outcome recorded by the destination spoke.
+ * An absent event means pending, even if the queue has advanced past the nonce.
  */
 export async function l1MessageDeliveryStatus(
   client: PublicClient,
   recorded: RecordedMessage,
   spoke: Address,
 ): Promise<L1DeliveryStatus> {
-  const nextNonce = await client.readContract({
+  const toBlock = await client.getBlockNumber({ cacheTime: 0 });
+  const logs = await client.getLogs({
     address: spoke,
-    abi: SPOKE_DELIVERY_ABI,
-    functionName: "nextL1Nonce",
+    event: L1_MESSAGE_RELAYED_EVENT,
+    args: { messageHash: recorded.messageHash },
+    fromBlock: 0n,
+    toBlock,
+    strict: true,
   });
-  if (recorded.message.nonce >= nextNonce) return "pending";
-  const failed = await client.readContract({
-    address: spoke,
-    abi: SPOKE_DELIVERY_ABI,
-    functionName: "failedL1Messages",
-    args: [recorded.messageHash],
-  });
-  return failed ? "failed" : "delivered";
+  const latest = logs.sort((a, b) =>
+    a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1,
+  ).at(-1);
+  return latest === undefined ? "pending" : latest.args.success ? "delivered" : "failed";
 }
 
 /** Checks a computed anchor is recorded in the hub's `domainAnchors`. */

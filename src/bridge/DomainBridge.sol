@@ -2,14 +2,14 @@
 pragma solidity ^0.8.24;
 
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
-import {IL1MessageReceiver, IDomainSpoke} from "../interfaces/IDomain.sol";
+import {IDomainMessageReceiver, IDomainSpoke} from "../interfaces/IDomain.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
 import {BridgedERC20} from "./BridgedERC20.sol";
 
 /// @notice Domain side of the reference lock-and-mint token bridge. L1 deposit messages
-/// are delivered by the protocol: the spoke invokes `onL1Message` and the bridge mints
+/// are delivered by the protocol: the spoke invokes `onDomainMessage` and the bridge mints
 /// the corresponding bridged token. Exactly-once delivery is the protocol's guarantee.
-contract DomainBridge is IL1MessageReceiver {
+contract DomainBridge is IDomainMessageReceiver {
     IDomainSpoke public immutable SPOKE;
 
     /// @notice Counterpart L1Bridge - the only accepted message sender.
@@ -32,8 +32,9 @@ contract DomainBridge is IL1MessageReceiver {
     /// token to the recipient encoded in the payload. The bridged token is deployed on first
     /// use. Only the spoke may deliver, and only messages the counterpart L1Bridge sent count -
     /// anyone can send arbitrary payloads through the hub.
-    function onL1Message(address from, bytes calldata data) external {
+    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
         require(msg.sender == address(SPOKE), "DomainBridge: not spoke");
+        require(sourceChainId == SPOKE.L1_CHAIN_ID(), "DomainBridge: not from L1");
         require(from == L1_BRIDGE, "DomainBridge: not from L1 bridge");
 
         (address recipient, address l1Token, uint256 amount) = MessageLib.decodeTransfer(data);
@@ -57,7 +58,7 @@ contract DomainBridge is IL1MessageReceiver {
         // Burn before messaging: the withdrawal message must never overstate what was
         // actually destroyed on the domain.
         token.burn(msg.sender, amount);
-        SPOKE.sendDomainMessage(L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount));
+        SPOKE.sendDomainMessage(SPOKE.L1_CHAIN_ID(), L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount));
         emit WithdrawalInitiated(msg.sender, recipient, l1Token, amount);
     }
 

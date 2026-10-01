@@ -29,7 +29,7 @@ contract DomainAccessControlTest is Test {
     bytes4 internal constant BALANCE_OF = IERC20.balanceOf.selector;
 
     function setUp() public {
-        spoke = new DomainSpoke(7777, operator);
+        spoke = new DomainSpoke(7777, operator, block.chainid, address(0x1234));
         vm.prank(deployer);
         token = spoke.deployContract(type(TestERC20).creationCode, policyOwner);
     }

@@ -13,6 +13,7 @@ The setup tool (`offchain/src/setup.ts`, run via `npm run setup`) performs, in o
 2. deploy `L1Bridge(hub, chainId)` (admin becomes owner);
 3. precompute the domain `DomainSpoke` = `CREATE(seed, 0)` and `DomainBridge` = `CREATE(seed, 1)`;
 4. sign the two domain creation transactions (gasless) and `sequenceToDomain` them through the hub;
+   the spoke constructor binds `(domainChainId, operator, l1ChainId, hub)`;
 5. `L1Bridge.registerDomainBridge(domainBridge)` (one-shot) against the precomputed address;
 6. optionally `setTokenAllowed(token)` — e.g. the wrapped-MON ERC20 used for deposits.
 

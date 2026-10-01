@@ -5,19 +5,37 @@ import {Test} from "forge-std/Test.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 
 contract MessageLibTest is Test {
-    function test_hashMessage_matchesSpecFormat() public pure {
-        MessageLib.Message memory message =
-            MessageLib.Message({from: address(0xA11CE), to: address(0xB0B), data: hex"deadbeef", nonce: 42});
-        bytes32 expected =
-            keccak256(abi.encodePacked(address(0xA11CE), address(0xB0B), keccak256(hex"deadbeef"), uint256(42)));
+    function test_hashMessage_matchesSpecFormat() public view {
+        MessageLib.Message memory message = MessageLib.Message({
+            sourceChainId: uint64(block.chainid),
+            from: address(0xA11CE),
+            to: address(0xB0B),
+            data: hex"deadbeef",
+            nonce: 42
+        });
+        bytes32 expected = keccak256(
+            abi.encodePacked(
+                uint64(block.chainid), address(0xA11CE), address(0xB0B), keccak256(hex"deadbeef"), uint256(42)
+            )
+        );
         assertEq(MessageLib.hashMessage(message), expected);
     }
 
-    function testFuzz_hashMessage_distinctNoncesDistinctHashes(uint256 nonceA, uint256 nonceB) public pure {
+    function testFuzz_hashMessage_distinctNoncesDistinctHashes(uint256 nonceA, uint256 nonceB) public view {
         vm.assume(nonceA != nonceB);
-        MessageLib.Message memory a = MessageLib.Message(address(1), address(2), hex"1234", nonceA);
-        MessageLib.Message memory b = MessageLib.Message(address(1), address(2), hex"1234", nonceB);
+        MessageLib.Message memory a =
+            MessageLib.Message(uint64(block.chainid), address(1), address(2), hex"1234", nonceA);
+        MessageLib.Message memory b =
+            MessageLib.Message(uint64(block.chainid), address(1), address(2), hex"1234", nonceB);
         assertNotEq(MessageLib.hashMessage(a), MessageLib.hashMessage(b));
+    }
+
+    function testFuzz_hashMessage_bindsSourceChain(uint64 sourceA, uint64 sourceB) public pure {
+        vm.assume(sourceA != sourceB);
+        MessageLib.Message memory message = MessageLib.Message(sourceA, address(1), address(2), hex"1234", 0);
+        bytes32 original = MessageLib.hashMessage(message);
+        message.sourceChainId = sourceB;
+        assertNotEq(original, MessageLib.hashMessage(message));
     }
 
     function testFuzz_transferPayload_roundTrip(address recipient, address l1Token, uint256 amount) public pure {

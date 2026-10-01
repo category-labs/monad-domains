@@ -9,6 +9,7 @@ import { setupDomain, type SetupConfig } from "./setup.js";
  *   DOMAIN_CHAIN_ID=..   \
  *   VALIDATORS=0x..,0x..    \  # comma-separated
  *   QUORUM=2                \
+ *   [EXISTING_HUB_ADDRESS=0x..] \ # reuse the hub when adding another domain
  *   [SEED_DEPLOYER_KEY=0x.] \  # domain seed account; defaults to ADMIN_KEY
  *   [SPOKE_OPERATOR=0x..]   \  # defaults to admin
  *   [ALLOWED_TOKEN=0x..]    \  # e.g. wrapped MON
@@ -34,6 +35,7 @@ function main() {
       .filter(Boolean) as Address[],
     quorum: BigInt(required("QUORUM")),
   };
+  if (process.env.EXISTING_HUB_ADDRESS) config.existingHub = process.env.EXISTING_HUB_ADDRESS as Address;
   if (process.env.SEED_DEPLOYER_KEY) config.seedDeployerKey = process.env.SEED_DEPLOYER_KEY as Hex;
   if (process.env.SPOKE_OPERATOR) config.spokeOperator = process.env.SPOKE_OPERATOR as Address;
   if (process.env.ALLOWED_TOKEN) config.allowedToken = process.env.ALLOWED_TOKEN as Address;
