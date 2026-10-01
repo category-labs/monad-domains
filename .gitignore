@@ -1,0 +1,15 @@
+# Foundry build artifacts
+cache/
+out/
+
+# Deployment broadcast logs
+broadcast/
+
+# Docs build
+docs/
+
+# Environment / secrets
+.env
+
+# Node
+node_modules/
