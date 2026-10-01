@@ -29,7 +29,7 @@ contract DepositEndToEndTest is Test {
     function setUp() public {
         // Protocol: hub on the L1, spoke for the domain, domain registered.
         hub = new DomainHub();
-        spoke = new DomainSpoke(CHAIN_ID, address(this));
+        spoke = new DomainSpoke(CHAIN_ID, address(this), block.chainid, address(hub));
         hub.registerDomain(CHAIN_ID, 0, _validatorSet(), 1);
 
         // Application: bridge pair wired to each other.
@@ -49,10 +49,12 @@ contract DepositEndToEndTest is Test {
         uint256 nonce = spoke.nextL1Nonce();
         bytes memory data = MessageLib.encodeTransfer(recipient, address(token), amount);
         vm.prank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(address(l1Bridge), address(domainBridge), data, nonce);
+        spoke.relayL1Message(uint64(block.chainid), address(l1Bridge), address(domainBridge), data, nonce);
         assertFalse(
             spoke.failedL1Messages(
-                MessageLib.hashMessage(MessageLib.Message(address(l1Bridge), address(domainBridge), data, nonce))
+                MessageLib.hashMessage(
+                    MessageLib.Message(uint64(block.chainid), address(l1Bridge), address(domainBridge), data, nonce)
+                )
             ),
             "deposit delivery failed"
         );
@@ -130,13 +132,15 @@ contract DepositEndToEndTest is Test {
         bytes32 anchor = _postDomainAnchor();
 
         // 4. Anyone finalizes the withdrawal on the L1 with preimage + proof.
-        MessageLib.Message memory message = MessageLib.Message({
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
             from: address(domainBridge),
             to: address(l1Bridge),
             data: MessageLib.encodeTransfer(carol, address(token), 40 ether),
-            nonce: 0
+            sourceNonce: 0
         });
-        assertTrue(hub.relayDomainMessage(CHAIN_ID, message, anchor, MerkleTreeLib.getProof(leaves, 0)));
+        assertTrue(hub.relayDomainMessage(message, anchor, MerkleTreeLib.getProof(leaves, 0)));
 
         // Collateral and supply stay matched: 60 locked backing 60 bridged.
         assertEq(token.balanceOf(carol), 40 ether);
@@ -161,13 +165,15 @@ contract DepositEndToEndTest is Test {
         address[3] memory recipients = [bob, carol, bob];
         uint256[3] memory amounts = [uint256(10 ether), 20 ether, 30 ether];
         for (uint256 i = 0; i < 3; i++) {
-            MessageLib.Message memory message = MessageLib.Message({
+            MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+                sourceChainId: CHAIN_ID,
+                destinationChainId: uint64(block.chainid),
                 from: address(domainBridge),
                 to: address(l1Bridge),
                 data: MessageLib.encodeTransfer(recipients[i], address(token), amounts[i]),
-                nonce: i
+                sourceNonce: i
             });
-            assertTrue(hub.relayDomainMessage(CHAIN_ID, message, anchor, MerkleTreeLib.getProof(leaves, i)));
+            assertTrue(hub.relayDomainMessage(message, anchor, MerkleTreeLib.getProof(leaves, i)));
         }
 
         assertEq(token.balanceOf(bob), 40 ether);

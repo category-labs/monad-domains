@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {IDomainHub, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
@@ -45,10 +46,11 @@ contract DomainHub is IDomainHub {
 
     mapping(uint64 => DomainConfig) public domainConfigs;
     mapping(uint64 => bytes32) internal _commitments;
-    /// @notice Per domain message nonce.
+    /// @notice Shared destination delivery nonce for plaintext, encrypted and routed messages.
     mapping(uint64 => uint256) public l1MessageCounts;
     mapping(uint64 => mapping(bytes32 => bool)) public domainAnchors;
-    /// @notice Scoped by domain because message hashes do not include the source chain.
+    /// @notice Source messages consumed by the shared relay path, scoped by source domain.
+    /// A native relay marks queueing here; destination execution is tracked by the spoke.
     mapping(uint64 => mapping(bytes32 => bool)) public relayedDomainMessages;
     mapping(uint64 => mapping(bytes32 => bool)) public failedDomainMessages;
     /// @notice Monotonic per-domain counter binding each state transition, so a round's
@@ -174,35 +176,57 @@ contract DomainHub is IDomainHub {
     // Delivery of domain messages
     // ---------------------------------------------------------------------
 
-    function relayDomainMessage(
-        uint64 domainChainId,
-        MessageLib.Message calldata message,
-        bytes32 anchor,
-        bytes32[] calldata proof
-    ) external returns (bool success) {
-        bytes32 messageHash = MessageLib.hashMessage(message);
-        require(!relayedDomainMessages[domainChainId][messageHash], "DomainHub: message already relayed");
-        require(domainAnchors[domainChainId][anchor], "DomainHub: unknown anchor");
+    /// @notice One proof and replay boundary for every domain-origin message. The
+    /// authenticated destination selects L1 execution or direct domain forwarding.
+    function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
+        external
+        returns (bool success)
+    {
+        require(message.sourceChainId != message.destinationChainId, "DomainHub: same domain");
+        require(domainConfigs[message.sourceChainId].registered, "DomainHub: source not registered");
+        require(message.to != address(0), "DomainHub: zero target");
+        bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
+        require(!relayedDomainMessages[message.sourceChainId][messageHash], "DomainHub: message already relayed");
+        require(domainAnchors[message.sourceChainId][anchor], "DomainHub: unknown anchor");
         require(MerkleProof.verifyCalldata(proof, anchor, messageHash), "DomainHub: invalid proof");
+        relayedDomainMessages[message.sourceChainId][messageHash] = true;
 
-        // Set before calling the receiver to prevent reentrant delivery of this message.
-        relayedDomainMessages[domainChainId][messageHash] = true;
-        bytes memory callData =
-            abi.encodeCall(IDomainMessageReceiver.onDomainMessage, (domainChainId, message.from, message.data));
-        (success,) = message.to.call(callData);
-        if (!success) failedDomainMessages[domainChainId][messageHash] = true;
-        emit DomainMessageRelayed(domainChainId, messageHash, message.from, message.to, message.nonce, success);
+        if (message.destinationChainId != block.chainid) {
+            require(domainConfigs[message.destinationChainId].registered, "DomainHub: destination not registered");
+            uint256 deliveryNonce = _sendL1Message(
+                message.destinationChainId, message.sourceChainId, message.from, message.to, message.data
+            );
+            emit DomainMessageRouted(messageHash, message.sourceChainId, message.destinationChainId, deliveryNonce);
+            return true; // Queued atomically; destination execution happens asynchronously.
+        }
+
+        (success,) = message.to
+            .call(
+                abi.encodeCall(
+                    IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
+                )
+            );
+        if (!success) failedDomainMessages[message.sourceChainId][messageHash] = true;
+        emit DomainMessageRelayed(
+            message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, success
+        );
     }
 
-    function retryDomainMessage(uint64 domainChainId, MessageLib.Message calldata message) external {
-        bytes32 messageHash = MessageLib.hashMessage(message);
-        require(failedDomainMessages[domainChainId][messageHash], "DomainHub: not a failed message");
-        delete failedDomainMessages[domainChainId][messageHash];
-
+    function retryDomainMessage(MessageLib.DomainMessage calldata message) external {
+        require(message.destinationChainId == block.chainid, "DomainHub: retry on destination domain");
+        bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
+        require(failedDomainMessages[message.sourceChainId][messageHash], "DomainHub: not a failed message");
+        delete failedDomainMessages[message.sourceChainId][messageHash];
         (bool success,) = message.to
-            .call(abi.encodeCall(IDomainMessageReceiver.onDomainMessage, (domainChainId, message.from, message.data)));
+            .call(
+                abi.encodeCall(
+                    IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
+                )
+            );
         require(success, "DomainHub: retry failed");
-        emit DomainMessageRelayed(domainChainId, messageHash, message.from, message.to, message.nonce, true);
+        emit DomainMessageRelayed(
+            message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, true
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -229,9 +253,16 @@ contract DomainHub is IDomainHub {
     /// `L1MessageRecorded` event and delivers the message onto the spoke as a system transaction.
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external {
         require(domainConfigs[domainChainId].registered, "DomainHub: domain not registered");
-        uint256 nonce = l1MessageCounts[domainChainId]++;
-        bytes32 messageHash = keccak256(abi.encodePacked(msg.sender, to, keccak256(data), nonce));
-        emit L1MessageRecorded(domainChainId, msg.sender, to, data, nonce, messageHash);
+        _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data);
+    }
+
+    function _sendL1Message(uint64 domainChainId, uint64 sourceChainId, address from, address to, bytes memory data)
+        internal
+        returns (uint256 nonce)
+    {
+        nonce = l1MessageCounts[domainChainId]++;
+        bytes32 messageHash = MessageLib.hashMessage(MessageLib.Message(sourceChainId, from, to, data, nonce));
+        emit L1MessageRecorded(domainChainId, sourceChainId, from, to, data, nonce, messageHash);
     }
 
     /// @notice Records an encrypted message to the target domain. Draws from the same
@@ -240,6 +271,6 @@ contract DomainHub is IDomainHub {
     function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external {
         require(domainConfigs[domainChainId].registered, "DomainHub: domain not registered");
         uint256 nonce = l1MessageCounts[domainChainId]++;
-        emit EncryptedL1MessageRecorded(domainChainId, msg.sender, ciphertext, nonce);
+        emit EncryptedL1MessageRecorded(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, ciphertext, nonce);
     }
 }

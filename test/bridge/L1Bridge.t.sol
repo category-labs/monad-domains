@@ -65,10 +65,14 @@ contract L1BridgeTest is Test {
         // The recorded message: from the bridge, to the counterpart, transfer payload.
         bytes memory data = MessageLib.encodeTransfer(bob, address(token), 100 ether);
         bytes32 expectedHash = MessageLib.hashMessage(
-            MessageLib.Message({from: address(bridge), to: DOMAIN_BRIDGE, data: data, nonce: 0})
+            MessageLib.Message({
+                sourceChainId: uint64(block.chainid), from: address(bridge), to: DOMAIN_BRIDGE, data: data, nonce: 0
+            })
         );
         vm.expectEmit(address(hub));
-        emit IDomainHub.L1MessageRecorded(CHAIN_ID, address(bridge), DOMAIN_BRIDGE, data, 0, expectedHash);
+        emit IDomainHub.L1MessageRecorded(
+            CHAIN_ID, uint64(block.chainid), address(bridge), DOMAIN_BRIDGE, data, 0, expectedHash
+        );
         vm.expectEmit(address(bridge));
         emit L1Bridge.BridgeInitiated(alice, bob, address(token), 100 ether);
         vm.prank(alice);
@@ -149,8 +153,8 @@ contract L1BridgeTest is Test {
         bridge.bridgeToDomain(bob, address(token), 1 ether);
 
         // ...but withdrawals of the already-locked collateral still finalize.
-        MessageLib.Message memory message = _anchoredWithdrawal(bob, 100 ether, 0);
-        hub.relayDomainMessage(CHAIN_ID, message, MessageLib.hashMessage(message), new bytes32[](0));
+        MessageLib.DomainMessage memory message = _anchoredWithdrawal(bob, 100 ether, 0);
+        hub.relayDomainMessage(message, _hash(message), new bytes32[](0));
         assertEq(token.balanceOf(bob), 100 ether);
     }
 
@@ -178,25 +182,27 @@ contract L1BridgeTest is Test {
     /// single-leaf anchor under CHAIN_ID (single leaf = own root, empty proof).
     function _anchoredWithdrawal(address recipient, uint256 amount, uint256 nonce)
         internal
-        returns (MessageLib.Message memory message)
+        returns (MessageLib.DomainMessage memory message)
     {
-        message = MessageLib.Message({
+        message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
             to: address(bridge),
             data: MessageLib.encodeTransfer(recipient, address(token), amount),
-            nonce: nonce
+            sourceNonce: nonce
         });
-        _advanceState(CHAIN_ID, bytes32(0), MessageLib.hashMessage(message));
+        _advanceState(CHAIN_ID, bytes32(0), _hash(message));
     }
 
     function test_withdraw_releasesTokens() public {
         token.mint(address(bridge), 100 ether); // locked collateral
-        MessageLib.Message memory message = _anchoredWithdrawal(bob, 40 ether, 0);
-        bytes32 messageHash = MessageLib.hashMessage(message);
+        MessageLib.DomainMessage memory message = _anchoredWithdrawal(bob, 40 ether, 0);
+        bytes32 messageHash = _hash(message);
 
         vm.expectEmit(address(bridge));
         emit L1Bridge.WithdrawalFinalized(bob, address(token), 40 ether);
-        hub.relayDomainMessage(CHAIN_ID, message, messageHash, new bytes32[](0));
+        hub.relayDomainMessage(message, messageHash, new bytes32[](0));
 
         assertEq(token.balanceOf(bob), 40 ether);
         assertEq(token.balanceOf(address(bridge)), 60 ether);
@@ -205,93 +211,103 @@ contract L1BridgeTest is Test {
 
     function test_withdraw_rejectsReplay() public {
         token.mint(address(bridge), 100 ether);
-        MessageLib.Message memory message = _anchoredWithdrawal(bob, 40 ether, 0);
-        bytes32 messageHash = MessageLib.hashMessage(message);
-        hub.relayDomainMessage(CHAIN_ID, message, messageHash, new bytes32[](0));
+        MessageLib.DomainMessage memory message = _anchoredWithdrawal(bob, 40 ether, 0);
+        bytes32 messageHash = _hash(message);
+        hub.relayDomainMessage(message, messageHash, new bytes32[](0));
 
         vm.expectRevert("DomainHub: message already relayed");
-        hub.relayDomainMessage(CHAIN_ID, message, messageHash, new bytes32[](0));
+        hub.relayDomainMessage(message, messageHash, new bytes32[](0));
     }
 
     function test_withdraw_rejectsForgedSender() public {
         token.mint(address(bridge), 100 ether);
         // Anchored message whose `from` is not the counterpart: rejected even though
         // the proof itself is valid.
-        MessageLib.Message memory message = MessageLib.Message({
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
             from: makeAddr("attacker"),
             to: address(bridge),
             data: MessageLib.encodeTransfer(bob, address(token), 40 ether),
-            nonce: 0
+            sourceNonce: 0
         });
-        bytes32 messageHash = MessageLib.hashMessage(message);
+        bytes32 messageHash = _hash(message);
         _advanceState(CHAIN_ID, bytes32(0), messageHash);
 
-        assertFalse(hub.relayDomainMessage(CHAIN_ID, message, messageHash, new bytes32[](0)));
+        assertFalse(hub.relayDomainMessage(message, messageHash, new bytes32[](0)));
         assertTrue(hub.failedDomainMessages(CHAIN_ID, messageHash));
         assertEq(token.balanceOf(bob), 0);
     }
 
     function test_messageToOtherDestinationDoesNotReleaseCollateral() public {
         token.mint(address(bridge), 40 ether);
-        MessageLib.Message memory message = MessageLib.Message({
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
             to: makeAddr("someOtherContract"),
             data: MessageLib.encodeTransfer(bob, address(token), 40 ether),
-            nonce: 0
+            sourceNonce: 0
         });
-        bytes32 messageHash = MessageLib.hashMessage(message);
+        bytes32 messageHash = _hash(message);
         _advanceState(CHAIN_ID, bytes32(0), messageHash);
 
-        assertTrue(hub.relayDomainMessage(CHAIN_ID, message, messageHash, new bytes32[](0)));
+        assertTrue(hub.relayDomainMessage(message, messageHash, new bytes32[](0)));
         assertEq(token.balanceOf(bob), 0);
         assertEq(token.balanceOf(address(bridge)), 40 ether);
     }
 
     function test_withdraw_rejectsUnknownAnchor() public {
-        MessageLib.Message memory message = MessageLib.Message({
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
             to: address(bridge),
             data: MessageLib.encodeTransfer(bob, address(token), 40 ether),
-            nonce: 0
+            sourceNonce: 0
         });
         vm.expectRevert("DomainHub: unknown anchor");
-        hub.relayDomainMessage(CHAIN_ID, message, MessageLib.hashMessage(message), new bytes32[](0));
+        hub.relayDomainMessage(message, _hash(message), new bytes32[](0));
     }
 
     function test_withdraw_rejectsAnchorFromOtherDomain() public {
         // Anchor recorded under a different chain id: this bridge must not accept it,
         // even with a valid proof — this is the asset-isolation property.
-        MessageLib.Message memory message = MessageLib.Message({
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
             to: address(bridge),
             data: MessageLib.encodeTransfer(bob, address(token), 40 ether),
-            nonce: 0
+            sourceNonce: 0
         });
-        bytes32 messageHash = MessageLib.hashMessage(message);
+        bytes32 messageHash = _hash(message);
         hub.registerDomain(8888, 0, _validatorSet(), 1); // operator of 8888 posts the anchor there
         _advanceState(8888, bytes32(0), messageHash);
 
         vm.expectRevert("DomainHub: unknown anchor");
-        hub.relayDomainMessage(CHAIN_ID, message, messageHash, new bytes32[](0));
+        hub.relayDomainMessage(message, messageHash, new bytes32[](0));
     }
 
     function test_withdraw_rejectsInvalidProof() public {
-        MessageLib.Message memory message = _anchoredWithdrawal(bob, 40 ether, 0);
-        bytes32 anchor = MessageLib.hashMessage(message);
+        MessageLib.DomainMessage memory message = _anchoredWithdrawal(bob, 40 ether, 0);
+        bytes32 anchor = _hash(message);
 
         // Valid anchor, but the altered message no longer hashes into it.
-        message.nonce = 999;
+        message.sourceNonce = 999;
         vm.expectRevert("DomainHub: invalid proof");
-        hub.relayDomainMessage(CHAIN_ID, message, anchor, new bytes32[](0));
+        hub.relayDomainMessage(message, anchor, new bytes32[](0));
     }
 
     function test_withdraw_rejectsUnregisteredCounterpart() public {
         L1Bridge fresh = new L1Bridge(hub, CHAIN_ID);
-        MessageLib.Message memory message = MessageLib.Message({
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
             from: address(0),
             to: address(fresh),
             data: MessageLib.encodeTransfer(bob, address(token), 40 ether),
-            nonce: 0
+            sourceNonce: 0
         });
         vm.prank(address(hub));
         vm.expectRevert("L1Bridge: counterpart not registered");
@@ -317,27 +333,33 @@ contract L1BridgeTest is Test {
 
     function test_withdraw_otherDomainCannotReleaseCollateral() public {
         token.mint(address(bridge), 100 ether);
-        MessageLib.Message memory message = _anchoredWithdrawal(bob, 40 ether, 0);
-        bytes32 messageHash = MessageLib.hashMessage(message);
+        MessageLib.DomainMessage memory message = _anchoredWithdrawal(bob, 40 ether, 0);
         hub.registerDomain(8888, 0, _validatorSet(), 1);
-        _advanceState(8888, bytes32(0), messageHash);
-        assertFalse(hub.relayDomainMessage(8888, message, messageHash, new bytes32[](0)));
-        assertTrue(hub.failedDomainMessages(8888, messageHash));
+        message.sourceChainId = 8888;
+        bytes32 otherHash = _hash(message);
+        _advanceState(8888, bytes32(0), otherHash);
+        assertFalse(hub.relayDomainMessage(message, otherHash, new bytes32[](0)));
+        assertTrue(hub.failedDomainMessages(8888, otherHash));
         assertEq(token.balanceOf(bob), 0);
-        assertTrue(hub.relayDomainMessage(CHAIN_ID, message, messageHash, new bytes32[](0)));
+        message.sourceChainId = CHAIN_ID;
+        assertTrue(hub.relayDomainMessage(message, _hash(message), new bytes32[](0)));
         assertEq(token.balanceOf(bob), 40 ether);
     }
 
     function test_withdraw_failedTransferCanRetry() public {
-        MessageLib.Message memory message = _anchoredWithdrawal(bob, 40 ether, 0);
-        bytes32 messageHash = MessageLib.hashMessage(message);
-        assertFalse(hub.relayDomainMessage(CHAIN_ID, message, messageHash, new bytes32[](0)));
+        MessageLib.DomainMessage memory message = _anchoredWithdrawal(bob, 40 ether, 0);
+        bytes32 messageHash = _hash(message);
+        assertFalse(hub.relayDomainMessage(message, messageHash, new bytes32[](0)));
         assertTrue(hub.failedDomainMessages(CHAIN_ID, messageHash));
         token.mint(address(bridge), 40 ether);
-        hub.retryDomainMessage(CHAIN_ID, message);
+        hub.retryDomainMessage(message);
         assertFalse(hub.failedDomainMessages(CHAIN_ID, messageHash));
         assertEq(token.balanceOf(bob), 40 ether);
         vm.expectRevert("DomainHub: not a failed message");
-        hub.retryDomainMessage(CHAIN_ID, message);
+        hub.retryDomainMessage(message);
+    }
+
+    function _hash(MessageLib.DomainMessage memory message) internal view returns (bytes32) {
+        return MessageLib.hashDomainMessage(message, block.chainid, address(hub));
     }
 }

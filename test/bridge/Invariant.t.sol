@@ -37,7 +37,14 @@ contract BridgeHandler is Test {
     }
 
     Transfer[] internal _deposits;
-    Transfer[] internal _withdrawals;
+
+    struct Withdrawal {
+        MessageLib.DomainMessage message;
+        bytes32 messageHash;
+        uint256 amount;
+        bool finalized;
+    }
+    Withdrawal[] internal _withdrawals;
 
     /// @notice Locked on the L1 but not yet minted on the domain.
     uint256 public ghost_inFlightDeposits;
@@ -58,7 +65,7 @@ contract BridgeHandler is Test {
         address[] memory validators = new address[](1);
         validators[0] = vm.addr(VALIDATOR_KEY);
         HUB.registerDomain(CHAIN_ID, 0, validators, 1); // handler is operator; one validator
-        SPOKE = new DomainSpoke(CHAIN_ID, address(this)); // handler is the spoke operator
+        SPOKE = new DomainSpoke(CHAIN_ID, address(this), block.chainid, address(HUB)); // handler is the spoke operator
 
         L1_BRIDGE = new L1Bridge(HUB, CHAIN_ID);
         DOMAIN_BRIDGE = new DomainBridge(SPOKE, address(L1_BRIDGE));
@@ -86,6 +93,7 @@ contract BridgeHandler is Test {
         // Reconstruct the recorded message (the handler mirrors the hub's per-domain
         // nonce counter; the require cross-checks that mirror against the hub).
         MessageLib.Message memory message = MessageLib.Message({
+            sourceChainId: uint64(block.chainid),
             from: address(L1_BRIDGE),
             to: address(DOMAIN_BRIDGE),
             data: MessageLib.encodeTransfer(recipient, address(TOKEN), amount),
@@ -108,7 +116,13 @@ contract BridgeHandler is Test {
         ghost_inFlightDeposits -= transfer.amount;
 
         vm.prank(SPOKE.SYSTEM_RELAYER());
-        SPOKE.relayL1Message(transfer.message.from, transfer.message.to, transfer.message.data, transfer.message.nonce);
+        SPOKE.relayL1Message(
+            uint64(block.chainid),
+            transfer.message.from,
+            transfer.message.to,
+            transfer.message.data,
+            transfer.message.nonce
+        );
         require(!SPOKE.failedL1Messages(transfer.messageHash), "handler: deposit delivery failed");
     }
 
@@ -127,28 +141,33 @@ contract BridgeHandler is Test {
         // Reconstruct the just-recorded message (the handler mirrors the spoke's nonce
         // counter), finalize its single-message batch, and advance the state as the
         // validator. The require cross-checks the reconstruction against the anchor.
-        MessageLib.Message memory message = MessageLib.Message({
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
             from: address(DOMAIN_BRIDGE),
             to: address(L1_BRIDGE),
             data: MessageLib.encodeTransfer(recipient, address(TOKEN), amount),
-            nonce: _domainNonce++
+            sourceNonce: _domainNonce++
         });
         bytes32 anchor = SPOKE.finalizeDomainMessages();
         _advanceState(anchor);
-        require(anchor == MessageLib.hashMessage(message), "handler: message reconstruction desync");
+        require(
+            anchor == MessageLib.hashDomainMessage(message, block.chainid, address(HUB)),
+            "handler: message reconstruction desync"
+        );
 
-        _withdrawals.push(Transfer({message: message, messageHash: anchor, amount: amount, finalized: false}));
+        _withdrawals.push(Withdrawal({message: message, messageHash: anchor, amount: amount, finalized: false}));
         ghost_inFlightWithdrawals += amount;
     }
 
     function finalizeWithdrawal(uint256 seed) external {
         uint256 index = _pickUnfinalized(_withdrawals, seed);
         if (index == type(uint256).max) return;
-        Transfer storage transfer = _withdrawals[index];
+        Withdrawal storage transfer = _withdrawals[index];
         transfer.finalized = true;
         ghost_inFlightWithdrawals -= transfer.amount;
         require(
-            HUB.relayDomainMessage(CHAIN_ID, transfer.message, transfer.messageHash, new bytes32[](0)),
+            HUB.relayDomainMessage(transfer.message, transfer.messageHash, new bytes32[](0)),
             "handler: withdrawal delivery failed"
         );
     }
@@ -176,7 +195,7 @@ contract BridgeHandler is Test {
         return _actors[bound(seed, 0, _actors.length - 1)];
     }
 
-    function _pickUnfinalized(Transfer[] storage list, uint256 seed) internal view returns (uint256) {
+    function _pickUnfinalized(Withdrawal[] storage list, uint256 seed) internal view returns (uint256) {
         uint256 n = list.length;
         if (n == 0) return type(uint256).max;
         uint256 start = bound(seed, 0, n - 1);

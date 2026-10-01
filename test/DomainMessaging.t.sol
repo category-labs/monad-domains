@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
-import {IL1MessageReceiver, IDomainHub, IDomainSpoke} from "../src/interfaces/IDomain.sol";
+import {IDomainMessageReceiver, IDomainHub, IDomainSpoke} from "../src/interfaces/IDomain.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
 import {DomainHub} from "../src/DomainHub.sol";
@@ -32,7 +32,7 @@ contract DomainMessagingTest is Test {
     function setUp() public {
         hub = new DomainHub();
         hub.registerDomain(CHAIN_ID, 0, _validators(), 2); // test contract is the operator
-        spoke = new DomainSpoke(CHAIN_ID, address(this));
+        spoke = new DomainSpoke(CHAIN_ID, address(this), block.chainid, address(hub));
     }
 
     // ---------------------------------------------------------------------
@@ -130,10 +130,12 @@ contract DomainMessagingTest is Test {
 
     function test_sendL1Message_recordsHashAndEmitsPreimage() public {
         bytes memory data = MessageLib.encodeTransfer(bob, address(0x1234), 100 ether);
-        bytes32 expectedHash = MessageLib.hashMessage(MessageLib.Message({from: alice, to: bob, data: data, nonce: 0}));
+        bytes32 expectedHash = MessageLib.hashMessage(
+            MessageLib.Message({sourceChainId: uint64(block.chainid), from: alice, to: bob, data: data, nonce: 0})
+        );
 
         vm.expectEmit(address(hub));
-        emit IDomainHub.L1MessageRecorded(CHAIN_ID, alice, bob, data, 0, expectedHash);
+        emit IDomainHub.L1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, bob, data, 0, expectedHash);
         vm.prank(alice);
         hub.sendL1Message(CHAIN_ID, bob, data);
 
@@ -147,21 +149,39 @@ contract DomainMessagingTest is Test {
         // preimages.
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
-            CHAIN_ID, alice, bob, hex"01", 0, MessageLib.hashMessage(MessageLib.Message(alice, bob, hex"01", 0))
+            CHAIN_ID,
+            uint64(block.chainid),
+            alice,
+            bob,
+            hex"01",
+            0,
+            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
         );
         vm.prank(alice);
         hub.sendL1Message(CHAIN_ID, bob, hex"01");
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
-            4444, alice, bob, hex"01", 0, MessageLib.hashMessage(MessageLib.Message(alice, bob, hex"01", 0))
+            4444,
+            uint64(block.chainid),
+            alice,
+            bob,
+            hex"01",
+            0,
+            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
         );
         vm.prank(alice);
         hub.sendL1Message(4444, bob, hex"01");
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
-            CHAIN_ID, alice, bob, hex"01", 1, MessageLib.hashMessage(MessageLib.Message(alice, bob, hex"01", 1))
+            CHAIN_ID,
+            uint64(block.chainid),
+            alice,
+            bob,
+            hex"01",
+            1,
+            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 1))
         );
         vm.prank(alice);
         hub.sendL1Message(CHAIN_ID, bob, hex"01");
@@ -180,7 +200,7 @@ contract DomainMessagingTest is Test {
         bytes memory ciphertext = hex"c0ffee";
 
         vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, alice, ciphertext, 0);
+        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, ciphertext, 0);
         vm.prank(alice);
         hub.sendEncryptedL1Message(CHAIN_ID, ciphertext);
 
@@ -194,13 +214,19 @@ contract DomainMessagingTest is Test {
         hub.sendL1Message(CHAIN_ID, bob, hex"01"); // nonce 0
 
         vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, alice, hex"02", 1);
+        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, hex"02", 1);
         vm.prank(alice);
         hub.sendEncryptedL1Message(CHAIN_ID, hex"02"); // nonce 1
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
-            CHAIN_ID, alice, bob, hex"03", 2, MessageLib.hashMessage(MessageLib.Message(alice, bob, hex"03", 2))
+            CHAIN_ID,
+            uint64(block.chainid),
+            alice,
+            bob,
+            hex"03",
+            2,
+            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"03", 2))
         );
         vm.prank(alice);
         hub.sendL1Message(CHAIN_ID, bob, hex"03"); // nonce 2
@@ -215,53 +241,59 @@ contract DomainMessagingTest is Test {
     function test_relayL1Message_onlySystemRelayer() public {
         vm.prank(stranger);
         vm.expectRevert("DomainSpoke: not system relayer");
-        spoke.relayL1Message(alice, bob, hex"01", 0);
+        spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"01", 0);
     }
 
     function test_relayL1Message_deliversInOrder() public {
         RecordingReceiver receiver = new RecordingReceiver();
 
         vm.startPrank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(alice, address(receiver), hex"01", 0);
-        spoke.relayL1Message(bob, address(receiver), hex"02", 1);
+        spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), hex"01", 0);
+        spoke.relayL1Message(uint64(block.chainid), bob, address(receiver), hex"02", 1);
         vm.stopPrank();
 
         assertEq(spoke.nextL1Nonce(), 2);
         assertEq(receiver.callCount(), 2);
+        assertEq(receiver.lastSource(), block.chainid);
         assertEq(receiver.lastFrom(), bob);
         assertEq(receiver.lastData(), hex"02");
     }
 
     function test_relayL1Message_rejectsReplayedOrRegressedNonce() public {
         vm.startPrank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(alice, bob, hex"01", 3);
+        spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"01", 3);
 
         // Nonces are strictly increasing: a delivered nonce cannot be replayed and no earlier
         // nonce can be delivered afterwards.
         vm.expectRevert("DomainSpoke: out-of-order nonce");
-        spoke.relayL1Message(alice, bob, hex"01", 3);
+        spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"01", 3);
         vm.expectRevert("DomainSpoke: out-of-order nonce");
-        spoke.relayL1Message(alice, bob, hex"02", 1);
+        spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"02", 1);
         vm.stopPrank();
     }
 
-    function test_relayL1Message_toEOASucceedsVacuously() public {
+    function test_relayL1Message_toEOAFailsAndIsRetryable() public {
         vm.prank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(alice, bob, hex"01", 0);
+        spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"01", 0);
         assertEq(spoke.nextL1Nonce(), 1);
-        assertFalse(spoke.failedL1Messages(MessageLib.hashMessage(MessageLib.Message(alice, bob, hex"01", 0))));
+        assertTrue(
+            spoke.failedL1Messages(
+                MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
+            )
+        );
     }
 
     function test_relayL1Message_marksFailedAndAdvancesQueue() public {
         RecordingReceiver receiver = new RecordingReceiver();
         receiver.setRejecting(true);
-        MessageLib.Message memory message = MessageLib.Message(alice, address(receiver), hex"01", 0);
+        MessageLib.Message memory message =
+            MessageLib.Message(uint64(block.chainid), alice, address(receiver), hex"01", 0);
         bytes32 messageHash = MessageLib.hashMessage(message);
 
         vm.expectEmit(address(spoke));
-        emit IDomainSpoke.L1MessageRelayed(messageHash, alice, address(receiver), 0, false);
+        emit IDomainSpoke.L1MessageRelayed(messageHash, uint64(block.chainid), alice, address(receiver), 0, false);
         vm.prank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(alice, address(receiver), hex"01", 0);
+        spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), hex"01", 0);
 
         // The failure is recorded and the queue moved past it.
         assertTrue(spoke.failedL1Messages(messageHash));
@@ -275,10 +307,13 @@ contract DomainMessagingTest is Test {
 
         // Once the target accepts, anyone can re-execute the delivery.
         receiver.setRejecting(false);
+        vm.expectEmit(address(spoke));
+        emit IDomainSpoke.L1MessageRelayed(messageHash, uint64(block.chainid), alice, address(receiver), 0, true);
         vm.prank(stranger);
         spoke.retryL1Message(message);
         assertFalse(spoke.failedL1Messages(messageHash));
         assertEq(receiver.callCount(), 1);
+        assertEq(receiver.lastSource(), block.chainid);
         assertEq(receiver.lastFrom(), alice);
 
         // A retried message cannot be replayed.
@@ -292,8 +327,8 @@ contract DomainMessagingTest is Test {
         // Nonce 1 is an undecryptable encrypted message: the client never delivers it, and
         // the delivery of nonce 2 consumes the gap.
         vm.startPrank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(alice, address(receiver), hex"01", 0);
-        spoke.relayL1Message(bob, address(receiver), hex"02", 2);
+        spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), hex"01", 0);
+        spoke.relayL1Message(uint64(block.chainid), bob, address(receiver), hex"02", 2);
         vm.stopPrank();
 
         assertEq(spoke.nextL1Nonce(), 3);
@@ -302,12 +337,12 @@ contract DomainMessagingTest is Test {
         // The skipped nonce is consumed for good: it cannot be delivered afterwards.
         vm.prank(spoke.SYSTEM_RELAYER());
         vm.expectRevert("DomainSpoke: out-of-order nonce");
-        spoke.relayL1Message(alice, address(receiver), hex"03", 1);
+        spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), hex"03", 1);
     }
 
     function test_retryL1Message_rejectsUnknownMessage() public {
         vm.expectRevert("DomainSpoke: not a failed message");
-        spoke.retryL1Message(MessageLib.Message(alice, bob, hex"01", 0));
+        spoke.retryL1Message(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0));
     }
 
     function test_deliverL1Messages_endToEnd() public {
@@ -319,7 +354,7 @@ contract DomainMessagingTest is Test {
             hub.sendL1Message(CHAIN_ID, address(receiver), data);
 
             vm.prank(spoke.SYSTEM_RELAYER());
-            spoke.relayL1Message(alice, address(receiver), data, i);
+            spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), data, i);
         }
 
         assertEq(hub.l1MessageCounts(CHAIN_ID), 3);
@@ -333,12 +368,14 @@ contract DomainMessagingTest is Test {
     // ---------------------------------------------------------------------
 
     function test_sendDomainMessage_recordsHashAndEmitsPreimage() public {
-        bytes32 expectedHash = MessageLib.hashMessage(MessageLib.Message(alice, bob, hex"cafe", 0));
+        MessageLib.DomainMessage memory message =
+            MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, 0, hex"cafe");
+        bytes32 expectedHash = MessageLib.hashDomainMessage(message, block.chainid, address(hub));
 
         vm.expectEmit(address(spoke));
-        emit IDomainSpoke.DomainMessageRecorded(alice, bob, hex"cafe", 0, expectedHash);
+        emit IDomainSpoke.DomainMessageRecorded(expectedHash, abi.encode(message));
         vm.prank(alice);
-        spoke.sendDomainMessage(bob, hex"cafe");
+        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"cafe");
 
         assertEq(spoke.pendingDomainMessages(0), expectedHash);
     }
@@ -428,7 +465,7 @@ contract DomainMessagingTest is Test {
     function test_consumeDomainMessage_endToEnd() public {
         for (uint256 i = 0; i < 5; i++) {
             vm.prank(alice);
-            spoke.sendDomainMessage(bob, abi.encodePacked(i));
+            spoke.sendDomainMessage(uint64(block.chainid), bob, abi.encodePacked(i));
         }
         bytes32[] memory leaves = spoke.getPendingDomainMessages();
         bytes32 anchor = spoke.finalizeDomainMessages();
@@ -490,8 +527,9 @@ contract RejectingOperator {}
 
 /// @dev Receiver that records what the spoke delivers, with a toggleable rejection mode to
 /// exercise the failed-delivery path.
-contract RecordingReceiver is IL1MessageReceiver {
+contract RecordingReceiver is IDomainMessageReceiver {
     uint256 public callCount;
+    uint64 public lastSource;
     address public lastFrom;
     bytes public lastData;
 
@@ -501,9 +539,10 @@ contract RecordingReceiver is IL1MessageReceiver {
         _rejecting = rejecting;
     }
 
-    function onL1Message(address from, bytes calldata data) external {
+    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
         require(!_rejecting, "RecordingReceiver: rejecting");
         callCount++;
+        lastSource = sourceChainId;
         lastFrom = from;
         lastData = data;
     }

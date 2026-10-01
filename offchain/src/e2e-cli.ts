@@ -26,7 +26,7 @@ import {
   type L1DeliveryStatus,
   type RecordedMessage,
 } from "./prover.js";
-import { hashMessage, type Message } from "./message.js";
+import { type DomainMessage, type MessageContext } from "./message.js";
 
 /**
  * End-to-end exercise of the domain token bridge against a live L1-sequencing
@@ -116,12 +116,13 @@ async function fetchDomainMessagesPerBlock(
   domain: PublicClient,
   range: { fromBlock: bigint; toBlock: bigint },
   spoke: Address,
-): Promise<RecordedMessage[]> {
-  const messages: RecordedMessage[] = [];
+  context: MessageContext,
+): Promise<RecordedMessage<DomainMessage>[]> {
+  const messages: RecordedMessage<DomainMessage>[] = [];
   const seen = new Set<Hex>();
   for (let b = range.fromBlock; b <= range.toBlock; b++) {
     try {
-      for (const recorded of await fetchDomainMessages(domain, { fromBlock: b, toBlock: b }, spoke)) {
+      for (const recorded of await fetchDomainMessages(domain, { fromBlock: b, toBlock: b }, spoke, context)) {
         if (seen.has(recorded.messageHash)) continue;
         seen.add(recorded.messageHash);
         messages.push(recorded);
@@ -373,7 +374,7 @@ async function main() {
   // Off-chain listener: index the recorded domain -> L1 messages from spoke events.
   const withdrawalBatch = await retry(
     "DomainMessageRecorded event",
-    async () => fetchDomainMessagesPerBlock(domain, { fromBlock: hubDeployBlock, toBlock: await domain.getBlockNumber() }, spoke),
+    async () => fetchDomainMessagesPerBlock(domain, { fromBlock: hubDeployBlock, toBlock: await domain.getBlockNumber() }, spoke, { l1ChainId: BigInt(await l1.getChainId()), hub }),
     (batch) => batch.length === 1,
   );
   console.log(`  listener indexed ${withdrawalBatch.length} DomainMessageRecorded event(s)`);
@@ -441,7 +442,7 @@ async function main() {
       address: hub,
       abi: hubArt.abi,
       functionName: "relayDomainMessage",
-      args: [DOMAIN_CHAIN_ID, withdrawalProof.message as unknown as Message, withdrawalProof.anchor, withdrawalProof.proof],
+      args: [withdrawalProof.message, withdrawalProof.anchor, withdrawalProof.proof],
       // Caller-selected budget for this test token's callback. Estimating the hub call
       // alone can underestimate gas because a failed delivery also returns successfully.
       gas: 500_000n,
@@ -449,7 +450,7 @@ async function main() {
     "hub.relayDomainMessage",
   );
   const withdrawalStatus = await domainMessageDeliveryStatus(
-    l1, DOMAIN_CHAIN_ID, hashMessage(withdrawalProof.message), hub,
+    l1, withdrawalProof.message, { l1ChainId: BigInt(await l1.getChainId()), hub },
   );
   if (withdrawalStatus !== "delivered") {
     throw new Error(`withdrawal delivery ${withdrawalStatus}; failed calls can be retried via hub.retryDomainMessage`);

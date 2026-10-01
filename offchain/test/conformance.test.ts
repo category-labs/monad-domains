@@ -11,12 +11,13 @@ import { domainFeeCaps, sponsoredOuterGasLimit } from "../src/transaction-policy
  * MerkleTreeLib via a forge script). The TS implementation must reproduce them
  * byte-for-byte, or on-chain verification of off-chain proofs would fail.
  *
- * Message i: from=0x1000+i, to=0x2000+i, data=encodeTransfer(0x3000+i, 0x4000+i,
+ * Message i: sourceChainId=1, from=0x1000+i, to=0x2000+i, data=encodeTransfer(0x3000+i, 0x4000+i,
  * (i+1)*1e18), nonce=i.
  */
 function vectorMessage(i: number): Message {
   const addr = (base: number): Address => toHex(base + i, { size: 20 }) as Address;
   return {
+    sourceChainId: 1n,
     from: addr(0x1000),
     to: addr(0x2000),
     data: encodeTransfer(addr(0x3000), addr(0x4000), BigInt(i + 1) * 10n ** 18n),
@@ -25,44 +26,45 @@ function vectorMessage(i: number): Message {
 }
 
 const EXPECTED_LEAVES: Hex[] = [
-  "0x742f6e8b6e002a8e3ee64f62165a1a8957d2101f1806d1bf0fbbc407c01af032",
-  "0x87bc5996bd1b7ae2d7ac5b2df82375d328299dc9222d0dd5819315ac0c498f56",
-  "0x2cb40685cdb5a1cde214270edb31ace3ffadf5902580b782c92f3b61fc2c06c5",
-  "0x7803c562ca5a00731379ff47626b28628dc7815ee5abd9297ddbca696d821fb6",
-  "0x2e2cd1b73094d1ea53620700da65dcf492c0807b3dd033ffcdf59d7be78de920",
+  "0x5f9026553b479ab6c7f6634745aafb4b320183912787adc801e2b85d4ccdefc2",
+  "0x4e7dd7d1a45c3d0c283bd8874f54593128978f924c6f2a1cad2e6abac8efb487",
+  "0xe099960fbea6b5751bd0210e723748e7f24896cc9b95bec55c10d485068b1b90",
+  "0xec5fd527abb2f61f8d723e20faf304273ff0008d7b14db82eafcc7f4eb5e93d0",
+  "0x6437daff75e946f79fb2ae774816c6f97dfa52a7430c8cb2f7d4f9e372e00a15"
 ];
 
 const EXPECTED_ROOTS: Hex[] = [
-  // root over leaves[0..n) for n = 1..5
-  "0x742f6e8b6e002a8e3ee64f62165a1a8957d2101f1806d1bf0fbbc407c01af032",
-  "0xa5da4a0aee070643b8128feb5f2e60f0ab397e97854dea9b608d22722710927b",
-  "0x5afaaffe57e7940eb069f38f44cff284641f95812a40bfec0705ae819fa0c395",
-  "0xf0856be4d248dfea9065130a8eac2b3f835c6b75b8d18baa4b6bf4bcc0c22864",
-  "0x848e6a51b293d6d1ccb90e739e53ab20caff9b86f2ae838a355d6f030f63261c",
+  "0x5f9026553b479ab6c7f6634745aafb4b320183912787adc801e2b85d4ccdefc2",
+  "0x264718a72384f78611e6e995979382477d986cace07e7ddb632732d81232131c",
+  "0xf33db6dfaad9d1ad78d4f408cf972587d2c885b774e7bde4959345b04f0fb8f9",
+  "0xb9d10b8e3cddb9737ed70140f7d307cb1ca20a6e6f1fb73532cfd852e4937921",
+  "0x2aca8eb7e9cd1ffdadf270fce3bce105093e15369396f498edbd8bf0cb673056"
 ];
 
 const EXPECTED_PROOFS: Hex[][] = [
   [
-    "0x87bc5996bd1b7ae2d7ac5b2df82375d328299dc9222d0dd5819315ac0c498f56",
-    "0xb07379effc1bbff097ca7ccf0be3be9c006b759e8f3fee1891f6d91b438d65a0",
-    "0x2e2cd1b73094d1ea53620700da65dcf492c0807b3dd033ffcdf59d7be78de920",
+    "0x4e7dd7d1a45c3d0c283bd8874f54593128978f924c6f2a1cad2e6abac8efb487",
+    "0x0fc25524c0830fe6ecfcf8a737a78522640d9ced6da96d331b5c722140bc9aec",
+    "0x6437daff75e946f79fb2ae774816c6f97dfa52a7430c8cb2f7d4f9e372e00a15"
   ],
   [
-    "0x742f6e8b6e002a8e3ee64f62165a1a8957d2101f1806d1bf0fbbc407c01af032",
-    "0xb07379effc1bbff097ca7ccf0be3be9c006b759e8f3fee1891f6d91b438d65a0",
-    "0x2e2cd1b73094d1ea53620700da65dcf492c0807b3dd033ffcdf59d7be78de920",
+    "0x5f9026553b479ab6c7f6634745aafb4b320183912787adc801e2b85d4ccdefc2",
+    "0x0fc25524c0830fe6ecfcf8a737a78522640d9ced6da96d331b5c722140bc9aec",
+    "0x6437daff75e946f79fb2ae774816c6f97dfa52a7430c8cb2f7d4f9e372e00a15"
   ],
   [
-    "0x7803c562ca5a00731379ff47626b28628dc7815ee5abd9297ddbca696d821fb6",
-    "0xa5da4a0aee070643b8128feb5f2e60f0ab397e97854dea9b608d22722710927b",
-    "0x2e2cd1b73094d1ea53620700da65dcf492c0807b3dd033ffcdf59d7be78de920",
+    "0xec5fd527abb2f61f8d723e20faf304273ff0008d7b14db82eafcc7f4eb5e93d0",
+    "0x264718a72384f78611e6e995979382477d986cace07e7ddb632732d81232131c",
+    "0x6437daff75e946f79fb2ae774816c6f97dfa52a7430c8cb2f7d4f9e372e00a15"
   ],
   [
-    "0x2cb40685cdb5a1cde214270edb31ace3ffadf5902580b782c92f3b61fc2c06c5",
-    "0xa5da4a0aee070643b8128feb5f2e60f0ab397e97854dea9b608d22722710927b",
-    "0x2e2cd1b73094d1ea53620700da65dcf492c0807b3dd033ffcdf59d7be78de920",
+    "0xe099960fbea6b5751bd0210e723748e7f24896cc9b95bec55c10d485068b1b90",
+    "0x264718a72384f78611e6e995979382477d986cace07e7ddb632732d81232131c",
+    "0x6437daff75e946f79fb2ae774816c6f97dfa52a7430c8cb2f7d4f9e372e00a15"
   ],
-  ["0xf0856be4d248dfea9065130a8eac2b3f835c6b75b8d18baa4b6bf4bcc0c22864"],
+  [
+    "0xb9d10b8e3cddb9737ed70140f7d307cb1ca20a6e6f1fb73532cfd852e4937921"
+  ]
 ];
 
 test("hashMessage matches Solidity MessageLib for all vector messages", () => {

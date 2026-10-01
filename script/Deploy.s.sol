@@ -18,7 +18,7 @@ import {DomainSpoke} from "../src/DomainSpoke.sol";
 ///        forge script script/Deploy.s.sol:DeployHub --rpc-url $L1_RPC --broadcast
 ///      Records the broadcaster as the domain operator, and the validator set + quorum that
 ///      must sign to advance the domain state. Outputs the hub address.
-///   2. On the domain: DOMAIN_CHAIN_ID=<id> OPERATOR_ADDRESS=<operator from step 1> \
+///   2. On the domain: DOMAIN_CHAIN_ID=<id> OPERATOR_ADDRESS=<operator from step 1> L1_CHAIN_ID=<L1 id> HUB_ADDRESS=<step 1> \
 ///        forge script script/Deploy.s.sol:DeploySpoke --rpc-url $DOMAIN_RPC --broadcast
 ///   3. On the L1:        DOMAIN_CHAIN_ID=<id> HUB_ADDRESS=<step 1> \
 ///        forge script script/Deploy.s.sol:DeployL1Bridge --rpc-url $L1_RPC --broadcast
@@ -56,9 +56,10 @@ contract DeploySpoke is Script {
     function run() external returns (DomainSpoke spoke) {
         uint64 domainChainId = uint64(vm.envUint("DOMAIN_CHAIN_ID"));
         address operator = vm.envAddress("OPERATOR_ADDRESS");
+        require(domainChainId == block.chainid, "Deploy: wrong domain chain");
 
         vm.startBroadcast();
-        spoke = new DomainSpoke(domainChainId, operator);
+        spoke = new DomainSpoke(domainChainId, operator, vm.envUint("L1_CHAIN_ID"), vm.envAddress("HUB_ADDRESS"));
         vm.stopBroadcast();
 
         console.log("DomainSpoke deployed:", address(spoke));

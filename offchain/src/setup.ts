@@ -24,7 +24,7 @@ import { domainFeeCaps, sponsoredOuterGasLimit } from "./transaction-policy.js";
  * be wired immediately.
  *
  * Order:
- *   L1:  deploy DomainHub -> registerDomain (admin becomes operator)
+ *   L1:  deploy/reuse DomainHub -> registerDomain (admin becomes operator)
  *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
  *   -    precompute domain spoke = CREATE(seed, 0), domainBridge = CREATE(seed, 1)
  *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx)   [nonce 0]
@@ -37,6 +37,8 @@ export interface SetupConfig {
   l1RpcUrl: string;
   /** Key that deploys the hub + L1Bridge on the L1; becomes the hub operator and L1Bridge owner. */
   adminKey: Hex;
+  /** Reuse this native-routing hub for another domain. Omit to deploy a new hub. */
+  existingHub?: Address;
   /** The domain chain id. */
   domainChainId: bigint;
   /** Validator addresses whose signatures attest domain state transitions. */
@@ -116,18 +118,29 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
 
   const deployedAddress = async (hash: Hex): Promise<Address> => {
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
-    if (!receipt.contractAddress) throw new Error("setup: deployment produced no contract address");
+    if (receipt.status !== "success" || !receipt.contractAddress) throw new Error("setup: deployment failed");
     return receipt.contractAddress;
   };
-  const confirm = (hash: Hex) => publicClient.waitForTransactionReceipt({ hash });
+  const confirm = async (hash: Hex) => {
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") throw new Error(`setup: transaction reverted: ${hash}`);
+    return receipt;
+  };
 
   const hubArt = loadArtifact("DomainHub.sol", "DomainHub");
   const l1BridgeArt = loadArtifact("L1Bridge.sol", "L1Bridge");
   const spokeArt = loadArtifact("DomainSpoke.sol", "DomainSpoke");
   const domainBridgeArt = loadArtifact("DomainBridge.sol", "DomainBridge");
 
-  // 1. Deploy the hub and register the domain (admin becomes operator).
-  const hub = await deployedAddress(await wallet.deployContract({ abi: hubArt.abi, bytecode: hubArt.bytecode }));
+  // 1. Deploy/reuse the hub and register the domain (admin becomes operator).
+  const hub = config.existingHub ?? await deployedAddress(
+    await wallet.deployContract({ abi: hubArt.abi, bytecode: hubArt.bytecode }),
+  );
+  if (config.existingHub) {
+    // Fail before sending setup transactions if the address is not a hub.
+    await publicClient.readContract({ address: hub, abi: hubArt.abi,
+      functionName: "domainConfigs", args: [domainChainId] });
+  }
   console.log("DomainHub:", hub);
   await confirm(
     await wallet.writeContract({
@@ -164,7 +177,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const rawSpokeTx = await seed.signTransaction({
     ...domainTxDefaults,
     nonce: 0,
-    data: encodeDeployData({ abi: spokeArt.abi, bytecode: spokeArt.bytecode, args: [domainChainId, spokeOperator] }),
+    data: encodeDeployData({ abi: spokeArt.abi, bytecode: spokeArt.bytecode, args: [domainChainId, spokeOperator, BigInt(l1ChainId), hub] }),
   });
   const rawBridgeTx = await seed.signTransaction({
     ...domainTxDefaults,
