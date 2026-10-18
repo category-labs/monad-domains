@@ -1,0 +1,10 @@
+# Relayer service for one or more domains (offchain, `npm run relayer`): finalizes, attests
+# and relays domain-origin messages. Configure with the RELAYER_* variables from
+# offchain/.env.example. Build context is the repository root.
+FROM node:20-alpine
+WORKDIR /app/offchain
+COPY offchain/package.json offchain/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm install --no-save tsx@^4.19.0 typescript@^5.6.0
+COPY offchain .
+ENV NODE_ENV=production
+CMD ["npx", "tsx", "src/relayer-cli.ts"]

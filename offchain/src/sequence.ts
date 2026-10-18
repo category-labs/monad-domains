@@ -8,8 +8,20 @@ import {
   type Address,
   type Hex,
 } from "viem";
+import { nonceManager as defaultNonceManager, parseAbi, type NonceManager } from "viem";
+
+/**
+ * The shape of viem's `NonceManager`, typed loosely so a manager created by another copy
+ * of viem (for example in a package that depends on this one) can be shared: concurrent L1
+ * sends from one key only stay ordered when every sender consumes from the same manager.
+ */
+export interface NonceManagerLike {
+  consume(parameters: never): Promise<number>;
+  increment(parameters: never): void;
+  get(parameters: never): Promise<number>;
+  reset(parameters: never): void;
+}
 import { privateKeyToAccount } from "viem/accounts";
-import { loadArtifact } from "./artifacts.js";
 import { encryptTransaction } from "./encryption.js";
 import { domainFeeCaps, sponsoredOuterGasLimit } from "./transaction-policy.js";
 
@@ -53,7 +65,16 @@ export interface SequenceConfig {
    * published on the hub at registration is used; plaintext only if the hub holds none.
    */
   viewingKey?: Hex;
+  /** Nonce manager for the L1 sender; defaults to viem's shared one. See `NonceManagerLike`. */
+  nonceManager?: NonceManagerLike;
 }
+
+/** The slice of the DomainHub ABI sequencing needs, so no Foundry artifacts are required at runtime. */
+export const SEQUENCE_ABI = parseAbi([
+  "function sequenceToDomain(uint64 domainChainId, bytes rlpTx) payable",
+  "function viewingKeys(uint64 domainChainId) view returns (bytes)",
+  "event DomainTransactionSequenced(uint64 indexed domainChainId, bytes rlpTx, uint256 fee)",
+]);
 
 export interface SequenceResult {
   /** The `sequenceToDomain` transaction hash on the L1. */
@@ -79,9 +100,11 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
     domainRpcUrl,
     sequencingFee = 0n,
     viewingKey,
+    nonceManager = defaultNonceManager,
   } = config;
 
-  const sender = privateKeyToAccount(senderKey);
+  // The nonce manager keeps concurrent L1 sends from one key in this process ordered.
+  const sender = privateKeyToAccount(senderKey, { nonceManager: nonceManager as NonceManager });
 
   // Build L1 clients before signing so the embedded transaction can use
   // fee fields valid for the current L1 execution environment.
@@ -124,14 +147,13 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
   // The hub forwards `rlpTx` as opaque bytes: when the domain has a viewing key, what it
   // records is the HPKE ciphertext of the signed transaction. Without an explicit key, use
   // the one the domain published on the hub.
-  const hubArt = loadArtifact("DomainHub.sol", "DomainHub");
   let encryptionKey = viewingKey;
   if (!encryptionKey) {
     let published: Hex;
     try {
       published = (await publicClient.readContract({
         address: hub,
-        abi: hubArt.abi,
+        abi: SEQUENCE_ABI,
         functionName: "viewingKeys",
         args: [domainChainId],
       })) as Hex;
@@ -151,7 +173,7 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
   // consensus-verifiable sponsorship envelope for the embedded transaction.
   const request = {
     address: hub,
-    abi: hubArt.abi,
+    abi: SEQUENCE_ABI,
     functionName: "sequenceToDomain",
     args: [domainChainId, rlpTx],
     value: sequencingFee,
@@ -165,15 +187,11 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
 
   // Decode the DomainTransactionSequenced event from the receipt to confirm it fired.
   const [log] = parseEventLogs({
-    abi: hubArt.abi,
+    abi: SEQUENCE_ABI,
     eventName: "DomainTransactionSequenced",
     logs: receipt.logs,
   });
-  const args = log?.args as { domainChainId?: bigint; fee?: bigint } | undefined;
-  const event =
-    args && args.domainChainId !== undefined && args.fee !== undefined
-      ? { domainChainId: args.domainChainId, fee: args.fee }
-      : null;
+  const event = log ? { domainChainId: log.args.domainChainId, fee: log.args.fee } : null;
 
   return { l1TxHash, domainTxHash, rawTransaction, event };
 }

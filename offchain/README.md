@@ -1,4 +1,4 @@
-# Off-chain prover
+# Off-chain prover and relayer
 
 ## Domain setup
 
@@ -45,6 +45,39 @@ of the domain-origin messages recorded since the previous checkpoint, signs the 
 such pass; `src/checkpoint.ts` exports the pieces (`nextCheckpointHeight`, `buildCheckpoint`,
 `stateTransitionDigest`, `attestCheckpoint`). Every validator runs it independently with its
 own key; the hub advances once a quorum signed the same proposal.
+
+## Relayer service
+
+`npm run relayer` (`src/relayer.ts`) is the long-running service a domain needs besides the
+execution client. The protocol delivers L1 -> domain messages on its own; everything that
+moves from a domain to the L1 needs validator signatures and a prover, and this service
+provides both for each configured domain:
+
+1. once the L1 has finalized a new height on the domain's checkpoint schedule, it signs the
+   checkpoint with the configured validator keys and submits it (`buildCheckpoint` /
+   `attestCheckpoint`), as soon as messages were recorded since the hub's previous
+   checkpoint and otherwise every `ATTEST_INTERVAL_MS`;
+2. it walks the hub's `DomainStateUpdated` events, rebuilds each attested batch from the
+   spoke's events and state (`fetchDomainBatch`) and proves every message the hub has not
+   relayed yet to `relayDomainMessage`: an L1 destination executes the receiver callback, a
+   domain destination is forwarded by the hub and delivered by the protocol.
+
+Every step is idempotent against `domainBlockNumbers`, `hasVotedFor` and
+`relayedDomainMessages`, so the service can be restarted at any time; it re-indexes the hub's
+attestations from `RELAYER_<id>_START_BLOCK`. It attests the latest finalized scheduled height
+and skips missed ones, which suits a service holding the validator keys it submits for;
+validators that run independently of each other should use `npm run checkpoint`, whose rule
+converges without coordination.
+
+Configure it in `.env` (see `.env.example`: `HUB_ADDRESS`, `SUBMITTER_KEY`, `RELAYER_DOMAINS`
+and one `RELAYER_<chain id>_*` block per domain) and run:
+
+```sh
+set -a && source .env && set +a
+npm run relayer
+```
+
+`DomainRelayer` is also exported for embedding (`start()` / `stop()` / `tick()` / `status()`).
 
 ## Domain messages
 

@@ -2,7 +2,7 @@
   "name": "@domain-bridging/prover",
   "version": "0.1.0",
   "private": true,
-  "description": "Off-chain tooling for the domain token bridge: domain setup, encrypted L1 sequencing of domain transactions, viewing-key management, the message prover for hub relayDomainMessage, and delivery tracking of protocol-delivered L1 -> domain messages",
+  "description": "Off-chain tooling for the domain token bridge: domain setup, encrypted L1 sequencing of domain transactions, viewing-key management, the message prover, and the relayer service that finalizes, attests and relays domain-origin messages",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
@@ -11,6 +11,8 @@
     "setup": "tsx src/setup-cli.ts",
     "sequence": "tsx src/sequence-cli.ts",
     "checkpoint": "tsx src/checkpoint-cli.ts",
+    "relayer": "tsx src/relayer-cli.ts",
+    "e2e": "tsx src/e2e-cli.ts",
     "viewing-key": "tsx src/viewing-key-cli.ts"
   },
   "dependencies": {

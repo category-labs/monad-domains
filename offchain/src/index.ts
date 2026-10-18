@@ -1,5 +1,5 @@
 export { setupDomain, type SetupConfig, type SetupResult } from "./setup.js";
-export { sequenceTransaction, type SequenceConfig, type SequenceResult } from "./sequence.js";
+export { sequenceTransaction, SEQUENCE_ABI, type NonceManagerLike, type SequenceConfig, type SequenceResult } from "./sequence.js";
 export { loadArtifact, type Artifact } from "./artifacts.js";
 export {
   EncryptionError,
@@ -68,3 +68,10 @@ export {
   DOMAIN_MESSAGE_ROUTED_EVENT,
   routedMessageDeliveryStatus, type RoutedDeliveryStatus,
 } from "./routing.js";
+export {
+  DomainRelayer,
+  latestScheduledHeight,
+  type DomainRelayerStatus,
+  type RelayerConfig,
+  type RelayerDomainConfig,
+} from "./relayer.js";

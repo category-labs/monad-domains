@@ -171,6 +171,11 @@ interface IDomainSpoke is IDomainAccessControl {
         bool success
     );
 
+    /// @notice Emitted when the operator finalizes the pending domain -> L1 messages.
+    /// `messageHashes` are the batch leaves in recording order and `anchor` is their merkle
+    /// root, so a prover can rebuild the exact batch from this event alone.
+    event DomainMessagesFinalized(bytes32 indexed anchor, bytes32[] messageHashes);
+
     // --- Delivery of L1 messages (protocol system transactions) ---
 
     /// @notice Delivers one L1 -> domain message. Callable ONLY from the protocol's system

@@ -1,0 +1,9 @@
+.git
+**/node_modules
+**/dist
+**/screenshots
+out
+cache
+broadcast
+lib
+docs
