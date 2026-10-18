@@ -202,6 +202,7 @@ contract DomainSpoke is IDomainSpoke {
     function finalizeDomainMessages() external onlyOperator returns (bytes32 anchor) {
         if (_pendingDomainMessages.length == 0) return bytes32(0);
         anchor = MerkleTreeLib.root(_pendingDomainMessages);
+        emit DomainMessagesFinalized(anchor, _pendingDomainMessages);
         delete _pendingDomainMessages;
     }
 }

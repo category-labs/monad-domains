@@ -1,4 +1,4 @@
-import { parseAbiItem, type Address, type Hex, type PublicClient } from "viem";
+import { parseAbiItem, parseEventLogs, type Address, type Hex, type Log, type PublicClient } from "viem";
 import { decryptMessage } from "./encryption.js";
 import { hashMessage, hashDomainMessage, decodeDomainMessage, type DomainMessage, type MessageContext, type Message } from "./message.js";
 import { getProof, root } from "./merkle.js";
@@ -24,6 +24,11 @@ export const DOMAIN_MESSAGE_RELAYED_EVENT = parseAbiItem(
   "event DomainMessageRelayed(uint64 indexed domainChainId, bytes32 indexed messageHash, address indexed from, address to, uint256 nonce, bool success)",
 );
 
+/** Emitted by the spoke when the operator finalizes a batch of domain -> L1 messages. */
+export const DOMAIN_MESSAGES_FINALIZED_EVENT = parseAbiItem(
+  "event DomainMessagesFinalized(bytes32 indexed anchor, bytes32[] messageHashes)",
+);
+
 const HUB_DELIVERY_ABI = [
   parseAbiItem("function relayedDomainMessages(uint64 domainChainId, bytes32 messageHash) view returns (bool)"),
   parseAbiItem("function failedDomainMessages(uint64 domainChainId, bytes32 messageHash) view returns (bool)"),
@@ -46,6 +51,16 @@ export interface MessageProof<T = DomainMessage> {
   message: T;
   anchor: Hex;
   proof: Hex[];
+}
+
+/** One finalized batch of domain -> L1 messages, exactly as the spoke anchored it. */
+export interface FinalizedBatch {
+  anchor: Hex;
+  /** Batch leaves (message hashes) in recording order. */
+  leaves: Hex[];
+  /** Domain block in which `finalizeDomainMessages` executed. */
+  blockNumber: bigint;
+  logIndex: number;
 }
 
 function toRecorded(log: {
@@ -172,6 +187,47 @@ export async function fetchDomainMessages(
     return { message, messageHash: messageId, blockNumber: log.blockNumber, logIndex: log.logIndex };
   });
   return sortByPosition(messages);
+}
+
+/**
+ * Decodes the finalized batches among `logs` (for example the logs of the finalize
+ * transaction's receipt, or a spoke log scan). Every batch is checked against its leaves:
+ * an anchor that is not the merkle root of its leaves is rejected.
+ */
+export function parseFinalizedBatches(logs: readonly Log[], spoke: Address): FinalizedBatch[] {
+  const batches: FinalizedBatch[] = [];
+  for (const log of parseEventLogs({ abi: [DOMAIN_MESSAGES_FINALIZED_EVENT], logs: [...logs] })) {
+    if (log.address.toLowerCase() !== spoke.toLowerCase()) continue;
+    const { anchor, messageHashes } = log.args;
+    if (!anchor || !messageHashes || log.blockNumber === null || log.logIndex === null) {
+      throw new Error("prover: incomplete finalize event log");
+    }
+    const leaves = [...messageHashes];
+    if (leaves.length === 0 || root(leaves).toLowerCase() !== anchor.toLowerCase()) {
+      throw new Error(`prover: finalized anchor ${anchor} is not the root of its leaves`);
+    }
+    batches.push({ anchor, leaves, blockNumber: log.blockNumber, logIndex: log.logIndex });
+  }
+  return batches;
+}
+
+/**
+ * Fetches the batches the operator finalized on the spoke in the block range, in
+ * recording order. Pair each with the recorded messages of its leaves to relay them.
+ */
+export async function fetchFinalizedBatches(
+  client: PublicClient,
+  range: { fromBlock: bigint; toBlock: bigint },
+  spoke: Address,
+): Promise<FinalizedBatch[]> {
+  const logs = await client.getLogs({
+    address: spoke,
+    event: DOMAIN_MESSAGES_FINALIZED_EVENT,
+    ...range,
+  });
+  return parseFinalizedBatches(logs, spoke).sort((a, b) =>
+    a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1,
+  );
 }
 
 /**

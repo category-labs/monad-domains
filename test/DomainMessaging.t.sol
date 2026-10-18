@@ -386,6 +386,26 @@ contract DomainMessagingTest is Test {
         spoke.finalizeDomainMessages();
     }
 
+    function test_finalizeDomainMessages_emitsBatchLeavesAndAnchor() public {
+        vm.prank(alice);
+        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"01");
+        vm.prank(alice);
+        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"02");
+        bytes32[] memory leaves = spoke.getPendingDomainMessages();
+        bytes32 expectedAnchor = MerkleTreeLib.root(leaves);
+
+        vm.expectEmit(address(spoke));
+        emit IDomainSpoke.DomainMessagesFinalized(expectedAnchor, leaves);
+        assertEq(spoke.finalizeDomainMessages(), expectedAnchor);
+        assertEq(spoke.getPendingDomainMessages().length, 0);
+    }
+
+    function test_finalizeDomainMessages_emitsNothingWhenEmpty() public {
+        vm.recordLogs();
+        assertEq(spoke.finalizeDomainMessages(), bytes32(0));
+        assertEq(vm.getRecordedLogs().length, 0);
+    }
+
     // ---------------------------------------------------------------------
     // Multisig state verification (on-chain vote accumulation)
     // ---------------------------------------------------------------------
