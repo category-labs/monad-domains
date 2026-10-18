@@ -1,0 +1,18 @@
+# Demo page: the Vite build served by server.mjs, which proxies /rpc and /api to the operator
+# so the browser only talks to this origin. Build context is the repository root (it needs
+# deployments/).
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY deployments ./deployments
+COPY demo/frontend/package.json demo/frontend/package-lock.json ./demo/frontend/
+RUN cd demo/frontend && npm ci --ignore-scripts
+COPY demo/frontend ./demo/frontend
+RUN cd demo/frontend && npx vite build
+
+FROM node:20-alpine
+WORKDIR /app/demo/frontend
+COPY --from=build /app/demo/frontend/dist ./dist
+COPY demo/frontend/server.mjs demo/frontend/proxy.mjs demo/frontend/package.json ./
+ENV NODE_ENV=production
+EXPOSE 4173
+CMD ["node", "server.mjs"]

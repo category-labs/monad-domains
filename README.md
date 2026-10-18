@@ -53,26 +53,6 @@ set -a && source .env && set +a
 npm run sequence
 ```
 
-## Domain-to-domain messaging
-
-Domains only ever talk to the L1. `spoke.sendDomainMessage(destinationChainId, to, data)`
-records one authenticated envelope whatever the destination: proven on the hub by the
-relayer, an L1 destination executes `onDomainMessage` on the target, while another domain
-as destination makes the hub queue the message through the same path as `sendL1Message`,
-and the protocol delivers it on the destination domain as a system transaction. Tokens
-follow the same shape with the bridge contracts: burn on A for an L1 recipient, then
-deposit the released tokens into B (`test/bridge/DomainToDomain.t.sol` shows a router that
-collapses the L1 leg into one transaction).
-
-## End-to-end run against a single node
-
-`offchain/src/e2e-cli.ts` (`npm run e2e`) exercises the protocol against the monad
-single-node devnet from `monad-bft/docker/single-node/nets` (execution client started with
-`--private-domain` and `--private-domain-sequencer`): setup, an L1 -> domain deposit
-delivered by the protocol, a domain -> L1 withdrawal and the access-control checks. It
-assumes a fresh chain (the hub must land at the address the node watches). Configure
-`L1_RPC_URL`, `DOMAIN_CHAIN_ID` and `VIEWING_KEY`, then `forge build && cd offchain && npm run e2e`.
-
 ## Relaying: the operators' side
 
 The protocol delivers L1 -> domain messages on its own (the node derives a system

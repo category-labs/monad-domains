@@ -55,3 +55,31 @@ jobs:
 
       - name: Test
         run: npm test
+
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            offchain/package-lock.json
+            demo/operator/package-lock.json
+            demo/frontend/package-lock.json
+
+      - name: Install offchain (the operator depends on it)
+        run: npm ci
+        working-directory: offchain
+
+      - name: Operator - install, typecheck, test
+        run: npm ci && npm run typecheck && npm test
+        working-directory: demo/operator
+
+      - name: Frontend - install, typecheck, build
+        run: npm ci && npm run build
+        working-directory: demo/frontend

@@ -1,0 +1,17 @@
+# Demo operator service: relayer for both domains, Bank A's back office, onboarding faucet,
+# HTTP API and RPC gateway. Build context is the repository root (it needs offchain/ and
+# deployments/). openssh-client backs the optional RPC_SSH_* port-forward to the node.
+FROM node:20-alpine
+RUN apk add --no-cache openssh-client
+WORKDIR /app
+COPY offchain/package.json offchain/package-lock.json ./offchain/
+RUN cd offchain && npm ci --omit=dev --ignore-scripts
+COPY demo/operator/package.json demo/operator/package-lock.json ./demo/operator/
+RUN cd demo/operator && npm ci --omit=dev --ignore-scripts && npm install --no-save tsx@^4.19.0 typescript@^5.6.0
+COPY offchain ./offchain
+COPY demo/operator ./demo/operator
+COPY deployments ./deployments
+WORKDIR /app/demo/operator
+ENV NODE_ENV=production
+EXPOSE 8787
+CMD ["npx", "tsx", "src/operator-cli.ts"]
