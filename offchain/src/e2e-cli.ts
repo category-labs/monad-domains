@@ -461,6 +461,7 @@ async function main() {
   // -------------------------------------------------------------------------
   const readerArt = loadArtifact("BalanceReader.sol", "BalanceReader");
   const BALANCE_OF = toFunctionSelector("balanceOf(address)");
+  const SUBJECT_MATCH = 1;
   const PRIVATE_SUPPLY = 1000n * 10n ** 18n;
   const sequence = (senderKey: Hex, to: Address, data: Hex, gas = 300_000n) =>
     sequenceTransaction({
@@ -519,20 +520,20 @@ async function main() {
   if (openRead !== PRIVATE_SUPPLY) throw new Error(`unrestricted read returned ${openRead}, expected ${PRIVATE_SUPPLY}`);
   console.log(`  before any rule, bob reads alice's balance: ${openRead}`);
 
-  // The policy owner restricts balanceOf to its subject (argument 0) and approved readers.
+  // The policy owner restricts balanceOf to its subject (argument 0); approved readers bypass the rule.
   const restrict = await sequence(
     ADMIN_KEY,
     spoke,
-    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessControl", args: [privateToken, BALANCE_OF, true, 0] }),
+    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessControl", args: [privateToken, BALANCE_OF, SUBJECT_MATCH, 0] }),
   );
-  await waitForDomainTx(domain, restrict.domainTxHash, "spoke.setAccessControl(privateToken, balanceOf, requireSubjectMatch, arg 0)");
-  const [ruleOn, ruleIndex] = (await domain.readContract({
+  await waitForDomainTx(domain, restrict.domainTxHash, "spoke.setAccessControl(privateToken, balanceOf, SubjectMatch, arg 0)");
+  const [ruleMode, ruleIndex] = (await domain.readContract({
     address: spoke,
     abi: spokeArt.abi,
     functionName: "accessControl",
     args: [privateToken, BALANCE_OF],
-  })) as [boolean, number];
-  if (!ruleOn || ruleIndex !== 0) throw new Error(`rule not stored: (${ruleOn}, ${ruleIndex})`);
+  })) as [number, number];
+  if (ruleMode !== SUBJECT_MATCH || ruleIndex !== 0) throw new Error(`rule not stored: (${ruleMode}, ${ruleIndex})`);
 
   // The spoke's own verdicts, read directly.
   const verdict = (caller: Address, subject: Address) =>
@@ -570,13 +571,13 @@ async function main() {
   const readsBeforeGrant = (await domain.readContract({ address: reader, abi: readerArt.abi, functionName: "reads" })) as bigint;
   if (readsBeforeGrant !== 0n) throw new Error(`reader state changed by denied transactions: reads = ${readsBeforeGrant}`);
 
-  // The policy owner approves the reader contract for alice's balance; the nested read now works.
+  // The policy owner approves the reader contract; nested reads of any subject now work.
   const grant = await sequence(
     ADMIN_KEY,
     spoke,
-    encodeFunctionData({ abi: spokeArt.abi, functionName: "setReaderAllowed", args: [privateToken, BALANCE_OF, alice.address, reader, true] }),
+    encodeFunctionData({ abi: spokeArt.abi, functionName: "setReaderAllowed", args: [privateToken, BALANCE_OF, reader, true] }),
   );
-  await waitForDomainTx(domain, grant.domainTxHash, "spoke.setReaderAllowed(privateToken, balanceOf, subject alice, reader)");
+  await waitForDomainTx(domain, grant.domainTxHash, "spoke.setReaderAllowed(privateToken, balanceOf, reader)");
   const bobViaApprovedReader = await sequence(
     BOB_KEY,
     reader,
@@ -591,7 +592,7 @@ async function main() {
     reader,
     encodeFunctionData({ abi: readerArt.abi, functionName: "tryRead", args: [privateToken, bob.address] }),
   );
-  await expectDomainRevert(domain, bobOwnViaReader.domainTxHash, "bob -> reader.tryRead(privateToken, bob) [grant is per subject]");
+  await waitForDomainTx(domain, bobOwnViaReader.domainTxHash, "bob -> reader.tryRead(privateToken, bob) [reader approved for every subject]");
 
   // eth_estimateGas on the domain route accounts for the canCall frames.
   const estimate = await domain.estimateContractGas({

@@ -31,7 +31,7 @@ contract DomainSpoke is IDomainSpoke {
 
     mapping(address => address) public policyOwners;
     mapping(address => mapping(bytes4 => AccessRule)) public accessControl;
-    mapping(address => mapping(bytes4 => mapping(address => mapping(address => bool)))) public approvedReaders;
+    mapping(address => mapping(bytes4 => mapping(address => bool))) public approvedReaders;
 
     /// @notice Minimum nonce the next delivered L1 -> domain message may carry.
     uint256 public nextL1Nonce;
@@ -82,21 +82,21 @@ contract DomainSpoke is IDomainSpoke {
         emit ContractDeployed(deployed, msg.sender, policyOwner);
     }
 
-    function setAccessControl(address target, bytes4 selector, bool requireSubjectMatch, uint16 subjectArgumentIndex)
+    function setAccessControl(address target, bytes4 selector, AccessMode mode, uint16 subjectArgumentIndex)
         external
         onlyPolicyOwner(target)
     {
-        uint16 index = requireSubjectMatch ? subjectArgumentIndex : 0;
-        accessControl[target][selector] = AccessRule(requireSubjectMatch, index);
-        emit AccessControlSet(target, selector, requireSubjectMatch, index);
+        uint16 index = mode == AccessMode.SubjectMatch ? subjectArgumentIndex : 0;
+        accessControl[target][selector] = AccessRule(mode, index);
+        emit AccessControlSet(target, selector, mode, index);
     }
 
-    function setReaderAllowed(address target, bytes4 selector, address subject, address reader, bool allowed)
+    function setReaderAllowed(address target, bytes4 selector, address reader, bool allowed)
         external
         onlyPolicyOwner(target)
     {
-        approvedReaders[target][selector][subject][reader] = allowed;
-        emit ReaderAllowedSet(target, selector, subject, reader, allowed);
+        approvedReaders[target][selector][reader] = allowed;
+        emit ReaderAllowedSet(target, selector, reader, allowed);
     }
 
     /// @notice Evaluate stored rules without executing the proposed call.
@@ -113,7 +113,9 @@ contract DomainSpoke is IDomainSpoke {
         returns (bool)
     {
         AccessRule memory rule = accessControl[target][selector];
-        if (!rule.requireSubjectMatch) return true;
+        if (rule.mode == AccessMode.Open) return true;
+        if (approvedReaders[target][selector][caller]) return true;
+        if (rule.mode == AccessMode.ReadersOnly) return false;
 
         uint256 offset = 4 + uint256(rule.subjectArgumentIndex) * 32;
         if (data.length < offset + 32) return false;
@@ -125,7 +127,7 @@ contract DomainSpoke is IDomainSpoke {
         if (word > type(uint160).max) return false;
         // forge-lint: disable-next-line(unsafe-typecast)
         address subject = address(uint160(word));
-        return caller == subject || approvedReaders[target][selector][subject][caller];
+        return caller == subject;
     }
 
     // ---------------------------------------------------------------------
