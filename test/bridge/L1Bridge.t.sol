@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IDomainHub} from "../../src/interfaces/IDomain.sol";
 import {L1Bridge} from "../../src/bridge/L1Bridge.sol";
 import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {TestERC20, FeeOnTransferERC20} from "../mocks/TestERC20.sol";
+import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 
-contract L1BridgeTest is Test {
+contract L1BridgeTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
     address internal constant DOMAIN_BRIDGE = address(0xB41D6E);
     uint256 internal constant VALIDATOR_KEY = 0xA11CE;
@@ -23,7 +23,7 @@ contract L1BridgeTest is Test {
 
     function setUp() public {
         hub = new DomainHub();
-        hub.registerDomain(CHAIN_ID, 0, _validatorSet(), 1);
+        _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
 
         bridge = new L1Bridge(hub, CHAIN_ID);
         bridge.registerDomainBridge(DOMAIN_BRIDGE);
@@ -162,20 +162,11 @@ contract L1BridgeTest is Test {
     // Domain -> L1 delivery
     // ---------------------------------------------------------------------
 
-    /// @dev Single validator, quorum 1 — enough for anchor-seeding in these unit tests.
-    function _validatorSet() internal view returns (address[] memory vs) {
-        vs = new address[](1);
-        vs[0] = vm.addr(VALIDATOR_KEY);
-    }
-
-    /// @dev The single validator (quorum 1) votes for the transition, advancing it and
-    /// recording `anchor` under `chainId`. Block numbers must strictly increase, so derive
-    /// the next one from the committed block number.
-    function _advanceState(uint64 chainId, bytes32 root, bytes32 anchor) internal {
-        uint64 blockNumber = hub.domainBlockNumbers(chainId) + 1;
-        (uint8 v, bytes32 r, bytes32 s) =
-            vm.sign(VALIDATOR_KEY, hub.stateTransitionDigest(chainId, blockNumber, root, anchor));
-        hub.submitStateSignature(chainId, blockNumber, root, anchor, abi.encodePacked(r, s, v));
+    /// @dev The single validator (quorum 1) attests `anchor` under `chainId` at its next
+    /// checkpoint height, recording it on the hub. These unit tests post hand-made anchors
+    /// for a counterpart that is only an address, so no spoke batch is involved.
+    function _anchor(uint64 chainId, bytes32 anchor) internal {
+        _attestNext(hub, chainId, bytes32(0), anchor, _keys(VALIDATOR_KEY));
     }
 
     /// @dev Builds a withdrawal message from the counterpart and records its hash as a
@@ -192,7 +183,7 @@ contract L1BridgeTest is Test {
             data: MessageLib.encodeTransfer(recipient, address(token), amount),
             sourceNonce: nonce
         });
-        _advanceState(CHAIN_ID, bytes32(0), _hash(message));
+        _anchor(CHAIN_ID, _hash(message));
     }
 
     function test_withdraw_releasesTokens() public {
@@ -232,7 +223,7 @@ contract L1BridgeTest is Test {
             sourceNonce: 0
         });
         bytes32 messageHash = _hash(message);
-        _advanceState(CHAIN_ID, bytes32(0), messageHash);
+        _anchor(CHAIN_ID, messageHash);
 
         assertFalse(hub.relayDomainMessage(message, messageHash, new bytes32[](0)));
         assertTrue(hub.failedDomainMessages(CHAIN_ID, messageHash));
@@ -250,7 +241,7 @@ contract L1BridgeTest is Test {
             sourceNonce: 0
         });
         bytes32 messageHash = _hash(message);
-        _advanceState(CHAIN_ID, bytes32(0), messageHash);
+        _anchor(CHAIN_ID, messageHash);
 
         assertTrue(hub.relayDomainMessage(message, messageHash, new bytes32[](0)));
         assertEq(token.balanceOf(bob), 0);
@@ -282,8 +273,8 @@ contract L1BridgeTest is Test {
             sourceNonce: 0
         });
         bytes32 messageHash = _hash(message);
-        hub.registerDomain(8888, 0, _validatorSet(), 1); // operator of 8888 posts the anchor there
-        _advanceState(8888, bytes32(0), messageHash);
+        _registerDomain(hub, 8888, VALIDATOR_KEY); // 8888's validator attests the anchor there
+        _anchor(8888, messageHash);
 
         vm.expectRevert("DomainHub: unknown anchor");
         hub.relayDomainMessage(message, messageHash, new bytes32[](0));
@@ -334,10 +325,10 @@ contract L1BridgeTest is Test {
     function test_withdraw_otherDomainCannotReleaseCollateral() public {
         token.mint(address(bridge), 100 ether);
         MessageLib.DomainMessage memory message = _anchoredWithdrawal(bob, 40 ether, 0);
-        hub.registerDomain(8888, 0, _validatorSet(), 1);
+        _registerDomain(hub, 8888, VALIDATOR_KEY);
         message.sourceChainId = 8888;
         bytes32 otherHash = _hash(message);
-        _advanceState(8888, bytes32(0), otherHash);
+        _anchor(8888, otherHash);
         assertFalse(hub.relayDomainMessage(message, otherHash, new bytes32[](0)));
         assertTrue(hub.failedDomainMessages(8888, otherHash));
         assertEq(token.balanceOf(bob), 0);

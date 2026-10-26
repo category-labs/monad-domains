@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {IDomainHub, IDomainMessageReceiver} from "../src/interfaces/IDomain.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
+import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 contract DomainReceiverMock is IDomainMessageReceiver {
     DomainHub public immutable HUB;
@@ -51,7 +51,7 @@ contract GasHungryDomainReceiver is IDomainMessageReceiver {
     }
 }
 
-contract DomainRelayTest is Test {
+contract DomainRelayTest is DomainTestBase {
     uint64 internal constant CHAIN_A = 7777;
     uint64 internal constant CHAIN_B = 8888;
     uint256 internal constant VALIDATOR_KEY = 0xA11CE;
@@ -61,10 +61,8 @@ contract DomainRelayTest is Test {
 
     function setUp() public {
         hub = new DomainHub();
-        address[] memory validators = new address[](1);
-        validators[0] = vm.addr(VALIDATOR_KEY);
-        hub.registerDomain(CHAIN_A, 0, validators, 1);
-        hub.registerDomain(CHAIN_B, 0, validators, 1);
+        _registerDomain(hub, CHAIN_A, VALIDATOR_KEY);
+        _registerDomain(hub, CHAIN_B, VALIDATOR_KEY);
         receiver = new DomainReceiverMock(hub);
     }
 
@@ -72,11 +70,9 @@ contract DomainRelayTest is Test {
         return MessageLib.DomainMessage(CHAIN_A, uint64(block.chainid), sender, address(receiver), nonce, hex"123456");
     }
 
+    /// @dev Attests `anchor` for `chainId` at its next scheduled height.
     function _anchor(uint64 chainId, bytes32 anchor) internal {
-        uint64 height = hub.domainBlockNumbers(chainId) + 1;
-        (uint8 v, bytes32 r, bytes32 s) =
-            vm.sign(VALIDATOR_KEY, hub.stateTransitionDigest(chainId, height, bytes32(0), anchor));
-        hub.submitStateSignature(chainId, height, bytes32(0), anchor, abi.encodePacked(r, s, v));
+        _attestNext(hub, chainId, bytes32(0), anchor, _keys(VALIDATOR_KEY));
     }
 
     function _relay(MessageLib.DomainMessage memory message) internal returns (bool) {

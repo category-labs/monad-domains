@@ -36,22 +36,38 @@ Programmatic equivalents are exported (`generateViewingKeyFiles`, `viewingPublic
 `viewingSecretKeyFromPem`, `viewingSecretKeyToPem`), alongside `encryptTransaction` /
 `decryptTransaction` for tests and local tooling.
 
+## Checkpoints
+
+Validators attest the domain on a schedule: at every L1 height that is a multiple of the
+domain's checkpoint interval, each validator reads the domain state root there and the root
+of the domain-origin messages recorded since the previous checkpoint, signs the hub's EIP-712
+`StateTransition` digest and submits it. `npm run checkpoint` (`src/checkpoint-cli.ts`) is one
+such pass; `src/checkpoint.ts` exports the pieces (`nextCheckpointHeight`, `buildCheckpoint`,
+`stateTransitionDigest`, `attestCheckpoint`). Every validator runs it independently with its
+own key; the hub advances once a quorum signed the same proposal.
+
 ## Domain messages
 
 All domain-origin operations use `spoke.sendDomainMessage(destinationChainId, to, data)`.
 The destination chain ID selects L1 application execution or native forwarding to
-another domain.
+another domain. The spoke stores every message id by nonce; a checkpoint anchors the nonce
+range recorded since the previous checkpoint, so a batch is identified by the two attested
+heights.
 
 ```ts
 import {
-  fetchDomainMessages, proveMessage, isDomainAnchorRecorded,
+  findBatchForNonce, fetchDomainBatch, proveMessage, isDomainAnchorRecorded,
   domainMessageDeliveryStatus, domainDeliveryEnvelope, routedMessageDeliveryStatus,
 } from "@domain-bridging/prover";
 
 const context = { l1ChainId: L1_CHAIN_ID, hub: HUB_ADDRESS };
-// Use the exact range of messages included in one finalized source batch. Include ALL
-// destinations: filtering the batch before computing its root produces an invalid proof.
-const batch = await fetchDomainMessages(domainA, { fromBlock, toBlock }, SPOKE_A, context);
+// Locate the attested batch covering the message's source nonce (hub DomainStateUpdated
+// events + the spoke's message count at each attested height), then rebuild it from the
+// spoke's events, cross-checked against the spoke's own root at the attested height.
+// Include ALL destinations: filtering the batch before computing its root produces an
+// invalid proof.
+const located = await findBatchForNonce(l1, domainA, HUB_ADDRESS, SPOKE_A, domainAChainId, sourceNonce, { fromBlock, toBlock });
+const batch = await fetchDomainBatch(domainA, SPOKE_A, located, context);
 const { message, anchor, proof } = proveMessage(batch, messageId);
 await isDomainAnchorRecorded(l1, message.sourceChainId, anchor, HUB_ADDRESS);
 // Permissionlessly submit hub.relayDomainMessage(message, anchor, proof).

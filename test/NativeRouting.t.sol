@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, Vm} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Test.sol";
 import {IDomainSpoke} from "../src/interfaces/IDomain.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
@@ -9,6 +9,7 @@ import {DomainBridge} from "../src/bridge/DomainBridge.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
 import {CrossDomainReceiver} from "./mocks/CrossDomainReceiver.sol";
+import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 contract RoutingHubHarness is DomainHub {
     function setDeliveryNonce(uint64 chain, uint256 nonce) external {
@@ -16,7 +17,7 @@ contract RoutingHubHarness is DomainHub {
     }
 }
 
-contract NativeRoutingTest is Test {
+contract NativeRoutingTest is DomainTestBase {
     uint64 internal constant A = 7777;
     uint64 internal constant B = 8888;
     uint64 internal constant C = 9999;
@@ -36,21 +37,18 @@ contract NativeRoutingTest is Test {
         _register(hub, A);
         _register(hub, B);
         _register(hub, C);
-        spokeA = new DomainSpoke(A, address(this), L1, address(hub));
-        spokeB = new DomainSpoke(B, address(this), L1, address(hub));
+        spokeA = new DomainSpoke(A, L1, address(hub));
+        spokeB = new DomainSpoke(B, L1, address(hub));
         receiver = new CrossDomainReceiver(address(spokeB), A, alice);
     }
 
     function _register(DomainHub h, uint64 chain) internal {
-        address[] memory validators = new address[](1);
-        validators[0] = vm.addr(KEY);
-        h.registerDomain(chain, 0, validators, 1);
+        _registerDomain(h, chain, KEY);
     }
 
+    /// @dev Attests an arbitrary `anchor` for `source` at its next scheduled height.
     function _post(DomainHub h, uint64 source, bytes32 anchor) internal {
-        uint64 height = h.domainBlockNumbers(source) + 1;
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(KEY, h.stateTransitionDigest(source, height, bytes32(0), anchor));
-        h.submitStateSignature(source, height, bytes32(0), anchor, abi.encodePacked(r, s, v));
+        _attestNext(h, source, bytes32(0), anchor, _keys(KEY));
     }
 
     function _send(address target, bytes memory data) internal returns (MessageLib.DomainMessage memory message) {
@@ -76,9 +74,10 @@ contract NativeRoutingTest is Test {
         return MessageLib.hashDomainMessage(message, L1, address(hub));
     }
 
+    /// @dev Attests everything spoke A recorded since the last attestation as one batch and
+    /// routes `message` (expected to be that batch's only leaf) through the hub.
     function _route(MessageLib.DomainMessage memory message) internal returns (MessageLib.Message memory envelope) {
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         vm.recordLogs();
         vm.prank(makeAddr("relayer"));
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
@@ -133,9 +132,8 @@ contract NativeRoutingTest is Test {
         CrossDomainReceiver l1Receiver = new CrossDomainReceiver(address(hub), A, alice);
         MessageLib.DomainMessage memory local = _sendTo(uint64(L1), address(l1Receiver), hex"aa");
         MessageLib.DomainMessage memory remote = _send(address(receiver), hex"bb");
-        bytes32[] memory leaves = spokeA.getPendingDomainMessages();
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32[] memory leaves = _pendingLeaves(spokeA);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         assertTrue(hub.relayDomainMessage(local, anchor, MerkleTreeLib.getProof(leaves, 0)));
         assertEq(l1Receiver.calls(), 1);
         assertEq(l1Receiver.payload(), hex"aa");
@@ -153,22 +151,19 @@ contract NativeRoutingTest is Test {
 
     function test_unknownDestinationDoesNotConsumeAuthenticatedMessage() public {
         MessageLib.DomainMessage memory message = _sendTo(1234, address(receiver), hex"");
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         vm.expectRevert("DomainHub: destination not registered");
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(A, _id(message)));
     }
 
     function test_constructorRejectsInvalidBindings() public {
-        vm.expectRevert("DomainSpoke: zero operator");
-        new DomainSpoke(A, address(0), L1, address(hub));
         vm.expectRevert("DomainSpoke: zero hub");
-        new DomainSpoke(A, address(this), L1, address(0));
+        new DomainSpoke(A, L1, address(0));
         vm.expectRevert("DomainSpoke: domain is L1");
-        new DomainSpoke(1, address(this), L1, address(hub));
+        new DomainSpoke(1, L1, address(hub));
         vm.expectRevert("DomainSpoke: L1 chain id too large");
-        new DomainSpoke(A, address(this), uint256(type(uint64).max) + 1, address(hub));
+        new DomainSpoke(A, uint256(type(uint64).max) + 1, address(hub));
     }
 
     function test_senderIdentityIsAssignedAndSameChainAndZeroTargetRejected() public {
@@ -202,8 +197,7 @@ contract NativeRoutingTest is Test {
 
     function test_registeredDomainNeedsNoSpokeRegistration() public {
         MessageLib.DomainMessage memory message = _sendTo(C, address(receiver), hex"");
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         assertTrue(hub.relayDomainMessage(message, anchor, new bytes32[](0)));
         assertTrue(hub.relayedDomainMessages(A, _id(message)));
         assertEq(hub.l1MessageCounts(C), 1);
@@ -212,6 +206,7 @@ contract NativeRoutingTest is Test {
     function test_duplicateRouteAndReanchoringCannotEnqueueTwice() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
         _route(message);
+        // Re-anchoring the same id under a crafted root at the next checkpoint changes nothing.
         bytes32[] memory leaves = new bytes32[](2);
         leaves[0] = _id(message);
         leaves[1] = bytes32(uint256(2));
@@ -225,8 +220,7 @@ contract NativeRoutingTest is Test {
 
     function test_enqueueFailureRollsBackSourceConsumption() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         RoutingHubHarness(address(hub)).setDeliveryNonce(B, type(uint256).max);
         vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", uint256(0x11)));
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
@@ -242,9 +236,8 @@ contract NativeRoutingTest is Test {
         for (uint256 i; i < count; ++i) {
             messages[i] = _send(address(receiver), abi.encode(i));
         }
-        bytes32[] memory leaves = spokeA.getPendingDomainMessages();
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32[] memory leaves = _pendingLeaves(spokeA);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         uint256 initiallyDelivered;
         for (uint256 i; i < count; ++i) {
             uint256 sourceIndex = count - i - 1;
@@ -275,8 +268,7 @@ contract NativeRoutingTest is Test {
 
     function testFuzz_proofBindsEveryEnvelopeField(uint8 field) public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"abcd");
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         _post(hub, C, anchor); // Even reattestation under another source cannot change its identity.
         field = uint8(bound(field, 0, 5));
         if (field == 0) message.sourceChainId = C;
@@ -294,14 +286,13 @@ contract NativeRoutingTest is Test {
 
     function test_proofCannotCrossHubOrL1Deployment() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
-        bytes32 anchor = spokeA.finalizeDomainMessages();
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         DomainHub other = new DomainHub();
         _register(other, A);
         _register(other, B);
         _post(other, A, anchor);
         vm.expectRevert("DomainHub: invalid proof");
         other.relayDomainMessage(message, anchor, new bytes32[](0));
-        _post(hub, A, anchor);
         vm.chainId(2);
         vm.expectRevert("DomainHub: invalid proof");
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
@@ -311,7 +302,8 @@ contract NativeRoutingTest is Test {
 
     function test_wrongAnchorNamespaceRejected() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
-        bytes32 anchor = spokeA.finalizeDomainMessages();
+        // The batch root is attested under C, not under its source A.
+        bytes32 anchor = MerkleTreeLib.root(_pendingLeaves(spokeA));
         _post(hub, C, anchor);
         vm.expectRevert("DomainHub: unknown anchor");
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
@@ -323,20 +315,17 @@ contract NativeRoutingTest is Test {
         MessageLib.DomainMessage memory local = MessageLib.DomainMessage(A, uint64(L1), alice, address(123), 0, hex"01");
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"02");
         assertEq(message.sourceNonce, 1);
-        bytes32[] memory leaves = spokeA.getPendingDomainMessages();
+        bytes32[] memory leaves = _pendingLeaves(spokeA);
         bytes32[] memory l1Proof = MerkleTreeLib.getProof(leaves, 0);
-        leaves = spokeA.getPendingDomainMessages();
         bytes32[] memory routeProof = MerkleTreeLib.getProof(leaves, 1);
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         assertTrue(hub.relayDomainMessage(local, anchor, l1Proof));
         assertTrue(hub.relayDomainMessage(message, anchor, routeProof));
     }
 
     function test_routedProofCannotBeUsedForL1Callback() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
-        bytes32 anchor = spokeA.finalizeDomainMessages();
-        _post(hub, A, anchor);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         message.destinationChainId = uint64(L1);
         vm.expectRevert("DomainHub: invalid proof");
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
@@ -361,12 +350,11 @@ contract NativeRoutingTest is Test {
     function test_sameSenderAndNonceOnDifferentSourcesRemainDistinct() public {
         MessageLib.DomainMessage memory first = _send(address(receiver), hex"");
         _deliver(_route(first));
-        DomainSpoke spokeC = new DomainSpoke(C, address(this), L1, address(hub));
+        DomainSpoke spokeC = new DomainSpoke(C, L1, address(hub));
         vm.prank(alice);
         spokeC.sendDomainMessage(B, address(receiver), hex"");
         MessageLib.DomainMessage memory second = MessageLib.DomainMessage(C, B, alice, address(receiver), 0, hex"");
-        bytes32 anchor = spokeC.finalizeDomainMessages();
-        _post(hub, C, anchor);
+        bytes32 anchor = _attestBatch(hub, spokeC, KEY);
         uint256 nonce = hub.l1MessageCounts(B);
         assertTrue(hub.relayDomainMessage(second, anchor, new bytes32[](0)));
         MessageLib.Message memory envelope =

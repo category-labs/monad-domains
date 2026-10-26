@@ -8,23 +8,22 @@ The core protocol and its actors are as follows:
 
 | Component | Where | Role |
 | --- | --- | --- |
-| DomainHub | L1, one instance | Registry of domains, transaction sequencer inbox, store of attested state roots and outbound message anchors, L1 inbox and outbox for messages |
-| DomainSpoke | One instance at each domain | Receives L1-origin messages as system transactions, records domain-origin messages, holds the access-control rules the client enforces |
+| DomainHub | L1, one instance | Registry of domains (validator set, quorum, fee recipient, viewing public key, checkpoint interval), transaction sequencer inbox, store of attested state roots and outbound message anchors, L1 inbox and outbox for messages |
+| DomainSpoke | One instance at each domain | Receives L1-origin messages as system transactions, records domain-origin messages by nonce, holds the access-control rules the client enforces |
 | Domain execution client | Off-chain, per domain | Modified Monad node. Derives the domain's blocks from hub events, decrypts payloads with the viewing secret key, executes, serves the domain header |
-| Operator | Off-chain key | Registers the domain, relay messages |
-| Validators | Off-chain keys | Sign state transitions. The hub advances the domain's state root once a quorum has signed the same transition |
+| Validators | Off-chain keys, one per replica | Sign checkpoints: the domain state root at a scheduled L1 height together with the root of the domain-origin messages recorded since the previous checkpoint. The hub advances once a quorum signed the same checkpoint |
 
-![Protocol components: hub, client, spoke, relayer](assets/protocol-components.png)
+![Protocol components: hub, client, spoke, validators](assets/protocol-components.png)
 
-Senders and the relayer only ever talk to the hub. The client reads the hub to derive every domain block, and the relayer carries domain headers and message anchors back up.
+Senders and validators only ever talk to the hub. The client reads the hub to derive every domain block, and validators carry domain headers and message anchors back up.
 
-End to end: a sender encrypts a signed domain transaction to the domain's viewing key and hands the ciphertext to the hub. The domain client sees the sequencing event, decrypts, and executes the transaction in the next domain block. For message passing from domain -> L1, the operator merkleizes pending messages into an anchor, validators sign a digest binding the new state root to that anchor, and once the hub holds a quorum of signatures anyone can prove a message against the anchor and have the hub execute or forward it. Messages from L1 to a domain need no proof. The hub records them as events and the client injects one system transaction per event.
+End to end: a sender encrypts a signed domain transaction to the domain's viewing key and hands the ciphertext to the hub. The domain client sees the sequencing event, decrypts, and executes the transaction in the next domain block. For message passing from domain -> L1, every validator independently signs the next scheduled checkpoint, whose anchor is the Merkle root of the messages recorded since the previous one. Once the hub holds a quorum of signatures anyone can prove a message against the anchor and have the hub execute or forward it. Messages from L1 to a domain need no proof. The hub records them as events and the client injects one system transaction per event.
 
 ## Registering a domain
 
-A domain is identified by its chain ID. A domain is created by calling `registerDomain` on the hub. Starting a domain should include the following three steps:
+A domain is identified by its chain ID. A domain is created by calling `registerDomain(domainChainId, validators, quorum, feeRecipient, viewingKey, checkpointInterval)` on the hub. Starting a domain should include the following three steps:
 
-1. **Generate the viewing keypair.** A P-256 key. The secret key goes to every execution client that will serve the domain. The public key is used by users to encrypt domain transactions.
+1. **Generate the viewing keypair.** A P-256 key. The secret key goes to every execution client that will serve the domain. The public key is registered on the hub and used by users to encrypt domain transactions.
 2. **Configure the execution clients.** Each replica is started with the domain's chain ID, the address its spoke will have, and the key file, plus the hub address as the sequencer contract. Every replica must hold the same secret key to decrypt the ciphertext.
 3. **Deploy the spoke inside the domain.** The spoke is a contract in the domain's own state, not on the L1. Its creation transaction is sequenced through the hub like any other domain transaction.
 
@@ -32,34 +31,32 @@ A domain is identified by its chain ID. A domain is created by calling `register
 
 Everything that enters a domain is pushed by the protocol from L1 events.
 
-**Sequenced transactions.** A domain transaction is an ordinary EIP-1559 transaction signed with the domain chain ID, with zero value. Its encrypted bytes are passed to `sequenceToDomain` on the hub, and any value attached is forwarded to the operator as a non-refundable fee. The execution client scans every L1 block for calls to the hub with that selector, decrypts the payload, and executes all eligible transactions of one L1 block as one gasless domain block against the domain state at the parent L1 height. No gas is charged on the domain.
+**Sequenced transactions.** A domain transaction is an ordinary EIP-1559 transaction signed with the domain chain ID, with zero value. Its encrypted bytes are passed to `sequenceToDomain` on the hub, and any value attached is forwarded to the domain's fee recipient as a non-refundable fee. The execution client scans every L1 block for calls to the hub with that selector, decrypts the payload, and executes all eligible transactions of one L1 block as one gasless domain block against the domain state at the parent L1 height. No gas is charged on the domain.
 
 **L1 to domain messages.** A call to `sendL1Message` on the hub records an event carrying the target and payload. The execution client derives one system transaction per event and calls `relayL1Message` on the spoke. Failed messages can be retried with a higher gas limit.
 
 **Domain to L1 messages.**
 
 1. A domain contract calls `sendDomainMessage(destinationChainId, to, data)` on the spoke. The spoke builds an envelope of source chain, destination chain, sender, target and the payload.
-2. The operator sequences `finalizeDomainMessages` through the hub. The spoke computes the Merkle root of every pending messages.
-3. The mssage anchor is posted on the hub contract when state root update is recorded.
+2. A batch is defined by two consecutive checkpoints: messages within these two consecutive checkpoints are put into a merkle tree. The root of the tree is the anchor.
+3. Validators sign the anchor together with the state root. Once a quorum signed, the hub records the anchor.
 4. Anyone calls `relayDomainMessage(message, anchor, proof)` on the hub to execute the message.
 
-## State signature attestation
+## Checkpoint attestation
 
-Validators periodically update domain state root in the hub contract. Each validator signs the digest the hub defines:
+Validators attest checkpoints on a schedule. The hub accepts a checkpoint height that is a multiple of the domain's `checkpointInterval`, above the hub's last attested height.
+
+Each validator signs the EIP-712 digest the hub defines, with domain `{name: "MonadDomainHub", version: "1", chainId: l1ChainId, verifyingContract: hub}` and the struct
 
 ```
-digest = keccak256(abi.encode(
-    hub,                // this hub's address
-    l1ChainId,
-    domainChainId,
-    stateNonce,         // the hub's current per-domain transition counter
-    domainBlockNumber,  // L1 height the attested domain block committed at
-    newStateRoot,       // domain state root at that block
-    domainAnchor        // Merkle root of the outbound batch, or zero
-))
+StateTransition(
+    uint64  domainChainId,
+    uint256 stateNonce,         // the hub's current per-domain transition counter
+    uint64  domainBlockNumber,  // the checkpoint's L1 height
+    bytes32 newStateRoot,       // domain state root at that height
+    bytes32 domainAnchor        // Merkle root of the batch, or zero
+)
 ```
-
-The signature is plain secp256k1 ECDSA over the raw digest, submitted to `submitStateSignature`. When a quorum of signature is achieved, the hub marks the state root as recorded for the domain.
 
 ## Encryption
 

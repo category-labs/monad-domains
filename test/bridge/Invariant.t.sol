@@ -9,6 +9,7 @@ import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {TestERC20} from "../mocks/TestERC20.sol";
+import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 
 /// @notice Performs random deposits, withdrawals, and finalizations across a set of
 /// actors, keeping ghost accounting of value in flight between the two chains. Deposits
@@ -17,9 +18,9 @@ import {TestERC20} from "../mocks/TestERC20.sol";
 /// verification is covered by the unit and end-to-end suites; this suite targets the
 /// accounting.
 ///
-/// The handler deploys and owns the whole stack so that it is the domain operator,
-/// and can therefore finalize domain -> L1 batches.
-contract BridgeHandler is Test {
+/// The handler deploys and owns the whole stack and holds the sole validator key, so it
+/// can attest each domain -> L1 batch on the checkpoint schedule as soon as it is sent.
+contract BridgeHandler is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
     uint256 internal constant VALIDATOR_KEY = 0xA11CE;
 
@@ -60,12 +61,11 @@ contract BridgeHandler is Test {
     address[] internal _actors;
 
     constructor() {
-        // Protocol + application stack, all deployed by (and operated by) this handler.
+        // Protocol + application stack, all deployed by this handler, which holds the
+        // single validator key (quorum 1) and is the fee recipient.
         HUB = new DomainHub();
-        address[] memory validators = new address[](1);
-        validators[0] = vm.addr(VALIDATOR_KEY);
-        HUB.registerDomain(CHAIN_ID, 0, validators, 1); // handler is operator; one validator
-        SPOKE = new DomainSpoke(CHAIN_ID, address(this), block.chainid, address(HUB)); // handler is the spoke operator
+        _registerDomain(HUB, CHAIN_ID, VALIDATOR_KEY);
+        SPOKE = new DomainSpoke(CHAIN_ID, block.chainid, address(HUB));
 
         L1_BRIDGE = new L1Bridge(HUB, CHAIN_ID);
         DOMAIN_BRIDGE = new DomainBridge(SPOKE, address(L1_BRIDGE));
@@ -139,8 +139,8 @@ contract BridgeHandler is Test {
         DOMAIN_BRIDGE.bridgeToL1(recipient, address(TOKEN), amount);
 
         // Reconstruct the just-recorded message (the handler mirrors the spoke's nonce
-        // counter), finalize its single-message batch, and advance the state as the
-        // validator. The require cross-checks the reconstruction against the anchor.
+        // counter) and attest its single-message batch as the validator at the next
+        // checkpoint. The require cross-checks the reconstruction against the anchor.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
@@ -149,8 +149,7 @@ contract BridgeHandler is Test {
             data: MessageLib.encodeTransfer(recipient, address(TOKEN), amount),
             sourceNonce: _domainNonce++
         });
-        bytes32 anchor = SPOKE.finalizeDomainMessages();
-        _advanceState(anchor);
+        bytes32 anchor = _attestBatch(HUB, SPOKE, VALIDATOR_KEY);
         require(
             anchor == MessageLib.hashDomainMessage(message, block.chainid, address(HUB)),
             "handler: message reconstruction desync"
@@ -179,16 +178,6 @@ contract BridgeHandler is Test {
 
     function lockedCollateral() public view returns (uint256) {
         return TOKEN.balanceOf(address(L1_BRIDGE));
-    }
-
-    /// @dev The sole validator (quorum 1) signs the (dummy-root, anchor) transition and votes,
-    /// advancing it in one call. Block numbers must strictly increase, so derive the next one
-    /// from the committed block number.
-    function _advanceState(bytes32 anchor) internal {
-        uint64 blockNumber = HUB.domainBlockNumbers(CHAIN_ID) + 1;
-        bytes32 digest = HUB.stateTransitionDigest(CHAIN_ID, blockNumber, bytes32(0), anchor);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(VALIDATOR_KEY, digest);
-        HUB.submitStateSignature(CHAIN_ID, blockNumber, bytes32(0), anchor, abi.encodePacked(r, s, v));
     }
 
     function _pickActor(uint256 seed) internal view returns (address) {

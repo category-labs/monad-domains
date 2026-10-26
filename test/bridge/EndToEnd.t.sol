@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
 import {BridgedERC20} from "../../src/bridge/BridgedERC20.sol";
 import {L1Bridge} from "../../src/bridge/L1Bridge.sol";
 import {DomainBridge} from "../../src/bridge/DomainBridge.sol";
@@ -10,9 +9,11 @@ import {MerkleTreeLib} from "../../src/libraries/MerkleTreeLib.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {TestERC20} from "../mocks/TestERC20.sol";
+import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 
-/// @notice Full deposit and withdrawal flows through the hub, spoke, and bridge pair.
-contract DepositEndToEndTest is Test {
+/// @notice Full deposit and withdrawal flows through the hub, spoke, and bridge pair. The
+/// sole validator (quorum 1) attests domain -> L1 batches on the checkpoint schedule.
+contract DepositEndToEndTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
     uint256 internal constant VALIDATOR_KEY = 0xA11CE;
 
@@ -29,8 +30,8 @@ contract DepositEndToEndTest is Test {
     function setUp() public {
         // Protocol: hub on the L1, spoke for the domain, domain registered.
         hub = new DomainHub();
-        spoke = new DomainSpoke(CHAIN_ID, address(this), block.chainid, address(hub));
-        hub.registerDomain(CHAIN_ID, 0, _validatorSet(), 1);
+        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
+        _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
 
         // Application: bridge pair wired to each other.
         l1Bridge = new L1Bridge(hub, CHAIN_ID);
@@ -58,22 +59,6 @@ contract DepositEndToEndTest is Test {
             ),
             "deposit delivery failed"
         );
-    }
-
-    /// @dev Protocol step: the operator finalizes the pending domain -> L1 batch on the spoke
-    /// and the sole validator (quorum 1) advances the state, recording the anchor on the hub.
-    function _postDomainAnchor() internal returns (bytes32 anchor) {
-        anchor = spoke.finalizeDomainMessages();
-        uint64 blockNumber = hub.domainBlockNumbers(CHAIN_ID) + 1;
-        (uint8 v, bytes32 r, bytes32 s) =
-            vm.sign(VALIDATOR_KEY, hub.stateTransitionDigest(CHAIN_ID, blockNumber, bytes32(0), anchor));
-        hub.submitStateSignature(CHAIN_ID, blockNumber, bytes32(0), anchor, abi.encodePacked(r, s, v));
-    }
-
-    /// @dev Single validator (quorum 1) approving state transitions in this suite.
-    function _validatorSet() internal view returns (address[] memory vs) {
-        vs = new address[](1);
-        vs[0] = vm.addr(VALIDATOR_KEY);
     }
 
     function test_singleDeposit() public {
@@ -127,9 +112,9 @@ contract DepositEndToEndTest is Test {
         vm.prank(bob);
         domainBridge.bridgeToL1(carol, address(token), 40 ether);
 
-        // 3. Protocol posts the domain state root update: anchor recorded on the L1.
-        bytes32[] memory leaves = spoke.getPendingDomainMessages();
-        bytes32 anchor = _postDomainAnchor();
+        // 3. The validator attests the batch at the next checkpoint: anchor recorded on the L1.
+        bytes32[] memory leaves = _pendingLeaves(spoke);
+        bytes32 anchor = _attestBatch(hub, spoke, VALIDATOR_KEY);
 
         // 4. Anyone finalizes the withdrawal on the L1 with preimage + proof.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
@@ -159,8 +144,8 @@ contract DepositEndToEndTest is Test {
         domainBridge.bridgeToL1(bob, address(token), 30 ether);
         vm.stopPrank();
 
-        bytes32[] memory leaves = spoke.getPendingDomainMessages();
-        bytes32 anchor = _postDomainAnchor();
+        bytes32[] memory leaves = _pendingLeaves(spoke);
+        bytes32 anchor = _attestBatch(hub, spoke, VALIDATOR_KEY);
 
         address[3] memory recipients = [bob, carol, bob];
         uint256[3] memory amounts = [uint256(10 ether), 20 ether, 30 ether];

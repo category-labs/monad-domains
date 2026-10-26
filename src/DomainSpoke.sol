@@ -23,11 +23,11 @@ contract DomainSpoke is IDomainSpoke {
     uint64 public immutable L1_CHAIN_ID;
     address public immutable HUB;
 
-    /// @notice Account authorized to finalize domain -> L1 message batches.
-    address public immutable OPERATOR;
-
-    uint256 internal _nonce;
-    bytes32[] internal _pendingDomainMessages;
+    /// @notice Number of domain-origin messages recorded so far; the nonce the next one gets.
+    uint256 public domainMessageCount;
+    /// @notice Message ID of every recorded domain-origin message, by source nonce. Never
+    /// cleared: an attested batch stays rebuildable from state alone.
+    mapping(uint256 => bytes32) public domainMessageIds;
 
     mapping(address => address) public policyOwners;
     mapping(address => mapping(bytes4 => AccessRule)) public accessControl;
@@ -40,11 +40,6 @@ contract DomainSpoke is IDomainSpoke {
     /// permissionlessly via `retryL1Message`.
     mapping(bytes32 => bool) public failedL1Messages;
 
-    modifier onlyOperator() {
-        require(msg.sender == OPERATOR, "DomainSpoke: not operator");
-        _;
-    }
-
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
         require(policyOwner != address(0) && msg.sender == policyOwner, "DomainSpoke: not policy owner");
@@ -56,13 +51,11 @@ contract DomainSpoke is IDomainSpoke {
         _;
     }
 
-    constructor(uint64 domainChainId, address operator, uint256 l1ChainId, address hub) {
-        require(operator != address(0), "DomainSpoke: zero operator");
+    constructor(uint64 domainChainId, uint256 l1ChainId, address hub) {
         require(hub != address(0), "DomainSpoke: zero hub");
         require(domainChainId != l1ChainId, "DomainSpoke: domain is L1");
         require(l1ChainId <= type(uint64).max, "DomainSpoke: L1 chain id too large");
         DOMAIN_CHAIN_ID = domainChainId;
-        OPERATOR = operator;
         L1_CHAIN_ID = uint64(l1ChainId);
         HUB = hub;
     }
@@ -177,33 +170,34 @@ contract DomainSpoke is IDomainSpoke {
     {
         require(destinationChainId != DOMAIN_CHAIN_ID, "DomainSpoke: same domain");
         require(to != address(0), "DomainSpoke: zero target");
+        uint256 sourceNonce = domainMessageCount++;
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
             sourceChainId: DOMAIN_CHAIN_ID,
             destinationChainId: destinationChainId,
             from: msg.sender,
             to: to,
-            sourceNonce: _nonce++,
+            sourceNonce: sourceNonce,
             data: data
         });
         messageId = MessageLib.hashDomainMessage(message, L1_CHAIN_ID, HUB);
-        _pendingDomainMessages.push(messageId);
+        domainMessageIds[sourceNonce] = messageId;
         emit DomainMessageRecorded(messageId, abi.encode(message));
     }
 
-    function pendingDomainMessages(uint256 index) external view returns (bytes32) {
-        return _pendingDomainMessages[index];
-    }
-
-    function getPendingDomainMessages() external view returns (bytes32[] memory) {
-        return _pendingDomainMessages;
-    }
-
-    /// @notice Operator merkleizes all pending outbound messages (L1 and routed) into an anchor and
-    /// clears them. The operator relays the returned anchor onto the hub via
-    /// `submitStateSignature`. Returns zero if nothing was pending.
-    function finalizeDomainMessages() external onlyOperator returns (bytes32 anchor) {
-        if (_pendingDomainMessages.length == 0) return bytes32(0);
-        anchor = MerkleTreeLib.root(_pendingDomainMessages);
-        delete _pendingDomainMessages;
+    /// @notice Merkle root over the recorded message IDs with nonce in `[fromNonce, toNonce)`,
+    /// in nonce order; zero for an empty range. A validator attesting L1 height `H` after the
+    /// previously attested height `P` anchors the root over `[count(P), count(H))`, where
+    /// `count(x)` is `domainMessageCount` in the domain state at `x`. Convenience view for
+    /// small ranges: hashing happens in memory, so a large batch exceeds an `eth_call` gas cap;
+    /// read `domainMessageIds` nonce by nonce and hash off-chain in that case.
+    function domainMessagesRoot(uint256 fromNonce, uint256 toNonce) external view returns (bytes32) {
+        require(fromNonce <= toNonce, "DomainSpoke: invalid range");
+        require(toNonce <= domainMessageCount, "DomainSpoke: range beyond recorded messages");
+        if (fromNonce == toNonce) return bytes32(0);
+        bytes32[] memory leaves = new bytes32[](toNonce - fromNonce);
+        for (uint256 i = 0; i < leaves.length; i++) {
+            leaves[i] = domainMessageIds[fromNonce + i];
+        }
+        return MerkleTreeLib.root(leaves);
     }
 }

@@ -24,7 +24,8 @@ import { domainFeeCaps, sponsoredOuterGasLimit } from "./transaction-policy.js";
  * be wired immediately.
  *
  * Order:
- *   L1:  deploy/reuse DomainHub -> registerDomain (admin becomes operator)
+ *   L1:  deploy/reuse DomainHub -> registerDomain (validators, quorum, fee recipient,
+ *        viewing key, checkpoint interval)
  *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
  *   -    precompute domain spoke = CREATE(seed, 0), domainBridge = CREATE(seed, 1)
  *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx)   [nonce 0]
@@ -35,7 +36,7 @@ import { domainFeeCaps, sponsoredOuterGasLimit } from "./transaction-policy.js";
 export interface SetupConfig {
   /** L1 RPC endpoint. */
   l1RpcUrl: string;
-  /** Key that deploys the hub + L1Bridge on the L1; becomes the hub operator and L1Bridge owner. */
+  /** Key that deploys the hub + L1Bridge on the L1 and registers the domain; becomes the L1Bridge owner. */
   adminKey: Hex;
   /** Reuse this native-routing hub for another domain. Omit to deploy a new hub. */
   existingHub?: Address;
@@ -45,6 +46,10 @@ export interface SetupConfig {
   validators: Address[];
   /** Number of distinct validator signatures required to advance the state. */
   quorum: bigint;
+  /** Receives the `msg.value` of every `sequenceToDomain` call. Defaults to the admin. */
+  feeRecipient?: Address;
+  /** Attested L1 heights must be multiples of this many blocks. Default 10. */
+  checkpointInterval?: bigint;
   /**
    * Key of the domain account whose first two (sequenced) transactions create the spoke and bridge.
    * Defaults to `adminKey` — the same account works because L1 and domain nonces are independent, so
@@ -52,21 +57,18 @@ export interface SetupConfig {
    * no prior domain activity.
    */
   seedDeployerKey?: Hex;
-  /** `OPERATOR` recorded on the spoke (finalizes domain -> L1 batches). Defaults to the admin. */
-  spokeOperator?: Address;
   /** Optional L1 token to allowlist for deposits (e.g. the wrapped-MON ERC20). */
   allowedToken?: Address;
-  /** `msg.value` forwarded to the operator per `sequenceToDomain` call. Default 0. */
+  /** `msg.value` forwarded to the fee recipient per `sequenceToDomain` call. Default 0. */
   sequencingFee?: bigint;
   /** Gas limit for each seeded domain creation transaction. Default 5_000_000. */
   domainGas?: bigint;
-  /** Recorded at registration (not consumed on-chain). Default 0. */
-  stateVerificationMode?: number;
   /**
-   * Domain viewing public key (65-byte uncompressed P-256 point). When set, the two seeded
-   * creation transactions are passed to `sequenceToDomain` as HPKE ciphertext, which the
-   * domain execution client decrypts before executing. Required when the client was started
-   * with a receiver key for this domain (`--private-domain <id> <spoke> <key.pem>`).
+   * Domain viewing public key (65-byte uncompressed P-256 point). Published on the hub at
+   * registration so senders can read it, and used here to pass the two seeded creation
+   * transactions to `sequenceToDomain` as HPKE ciphertext, which the domain execution client
+   * decrypts before executing. Required when the client was started with a receiver key for
+   * this domain (`--private-domain <id> <spoke> <key.pem>`).
    */
   viewingKey?: Hex;
 }
@@ -91,7 +93,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     allowedToken,
     sequencingFee = 0n,
     domainGas = 5_000_000n,
-    stateVerificationMode = 0,
+    checkpointInterval = 5n,
     viewingKey,
   } = config;
 
@@ -99,10 +101,11 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   if (quorum === 0n || quorum > BigInt(validators.length)) {
     throw new Error("setup: quorum must be in [1, validators.length]");
   }
+  if (checkpointInterval <= 0n) throw new Error("setup: checkpointInterval must be positive");
 
   const admin = privateKeyToAccount(adminKey);
   const seed = privateKeyToAccount(config.seedDeployerKey ?? adminKey);
-  const spokeOperator = config.spokeOperator ?? admin.address;
+  const feeRecipient = config.feeRecipient ?? admin.address;
 
   // --- L1 clients ---
   const probe = createPublicClient({ transport: http(l1RpcUrl) });
@@ -132,14 +135,18 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const spokeArt = loadArtifact("DomainSpoke.sol", "DomainSpoke");
   const domainBridgeArt = loadArtifact("DomainBridge.sol", "DomainBridge");
 
-  // 1. Deploy/reuse the hub and register the domain (admin becomes operator).
+  // 1. Deploy/reuse the hub and register the domain: validator set + quorum, the fee
+  // recipient, the viewing public key senders read back from the hub, and the checkpoint
+  // interval attested heights must follow.
   const hub = config.existingHub ?? await deployedAddress(
     await wallet.deployContract({ abi: hubArt.abi, bytecode: hubArt.bytecode }),
   );
   if (config.existingHub) {
-    // Fail before sending setup transactions if the address is not a hub.
-    await publicClient.readContract({ address: hub, abi: hubArt.abi,
-      functionName: "domainConfigs", args: [domainChainId] });
+    // Fail before sending setup transactions if the address is not a hub or already serves
+    // this chain id.
+    const registered = (await publicClient.readContract({ address: hub, abi: hubArt.abi,
+      functionName: "isDomainRegistered", args: [domainChainId] })) as boolean;
+    if (registered) throw new Error(`setup: domain ${domainChainId} is already registered on ${hub}`);
   }
   console.log("DomainHub:", hub);
   await confirm(
@@ -147,10 +154,13 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
       address: hub,
       abi: hubArt.abi,
       functionName: "registerDomain",
-      args: [domainChainId, stateVerificationMode, validators, quorum],
+      args: [domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval],
     }),
   );
-  console.log(`  registered chain ${domainChainId} (quorum ${quorum} of ${validators.length})`);
+  console.log(
+    `  registered chain ${domainChainId} (quorum ${quorum} of ${validators.length}, fee recipient ${feeRecipient}, ` +
+      `checkpoint interval ${checkpointInterval}, viewing key ${viewingKey ? "published" : "none"})`,
+  );
 
   // 2. Deploy the L1 bridge (admin becomes owner).
   const l1Bridge = await deployedAddress(
@@ -177,7 +187,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const rawSpokeTx = await seed.signTransaction({
     ...domainTxDefaults,
     nonce: 0,
-    data: encodeDeployData({ abi: spokeArt.abi, bytecode: spokeArt.bytecode, args: [domainChainId, spokeOperator, BigInt(l1ChainId), hub] }),
+    data: encodeDeployData({ abi: spokeArt.abi, bytecode: spokeArt.bytecode, args: [domainChainId, BigInt(l1ChainId), hub] }),
   });
   const rawBridgeTx = await seed.signTransaction({
     ...domainTxDefaults,
