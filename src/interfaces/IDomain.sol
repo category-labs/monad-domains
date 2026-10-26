@@ -9,6 +9,12 @@ import {MessageLib} from "../libraries/MessageLib.sol";
 /// messages and stores merkle anchors of all domain-origin messages, which domain validators
 /// attest alongside a new state commitment.
 interface IDomainHub {
+    event DomainRegistered(uint64 indexed domainChainId, address indexed feeRecipient, uint64 checkpointInterval);
+
+    /// @notice The viewing public key senders encrypt domain transactions and messages to,
+    /// as a 65-byte uncompressed P-256 point; empty if the domain published none.
+    event ViewingKeyRegistered(uint64 indexed domainChainId, bytes viewingKey);
+
     event DomainMessageRouted(
         bytes32 indexed messageId,
         uint64 indexed sourceChainId,
@@ -46,26 +52,41 @@ interface IDomainHub {
 
     // --- Registration ---
 
-    /// @notice Registers an L1-sequenced `domainChainId` with the selected state
-    /// verification mode, its validator set and the quorum of validator signatures required to
-    /// advance the state, recording the caller as the domain operator. MUST reject the L1
-    /// chain id, an already registered chain id, an unknown `stateVerificationMode`, a zero
-    /// quorum, a quorum exceeding the validator count, and zero or duplicate validators.
+    /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
+    /// validator signatures required to advance the state, the recipient of sequencing fees,
+    /// the viewing public key senders encrypt to (65-byte uncompressed P-256 point, or empty)
+    /// and the checkpoint interval attested block numbers must be multiples of. MUST reject
+    /// the L1 chain id, an already registered chain id, a zero quorum, a quorum exceeding the
+    /// validator count, zero or duplicate validators, a zero fee recipient, a zero interval
+    /// and a viewing key that is neither empty nor a 65-byte `0x04`-prefixed point.
     function registerDomain(
         uint64 domainChainId,
-        uint8 stateVerificationMode,
         address[] calldata validators,
-        uint256 quorum
+        uint256 quorum,
+        address feeRecipient,
+        bytes calldata viewingKey,
+        uint64 checkpointInterval
     ) external;
+
+    function isDomainRegistered(uint64 domainChainId) external view returns (bool);
+    function getValidators(uint64 domainChainId) external view returns (address[] memory);
+    function isDomainValidator(uint64 domainChainId, address account) external view returns (bool);
+    function quorums(uint64 domainChainId) external view returns (uint256);
+    function feeRecipients(uint64 domainChainId) external view returns (address);
+    function checkpointIntervals(uint64 domainChainId) external view returns (uint64);
+    /// @notice The registered viewing public key, or empty bytes.
+    function viewingKeys(uint64 domainChainId) external view returns (bytes memory);
 
     // --- State commitments & domain -> L1 anchors ---
 
     /// @notice Returns the state commitment of the domain as of its latest posted update.
     function readCommitment(uint64 domainChainId) external view returns (bytes32 stateCommitment);
 
-    /// @notice The digest a domain validator signs to approve a state transition, bound to
-    /// this hub, the L1 chain, the domain, and the current `stateNonce`. Signing it attests
-    /// that `newStateRoot` is the domain's state root at block `domainBlockNumber`.
+    /// @notice The EIP-712 digest a domain validator signs to approve a state transition,
+    /// bound to this hub, the L1 chain, the domain, and the current `stateNonce`. Signing it
+    /// attests that `newStateRoot` is the domain's state root at block `domainBlockNumber`
+    /// and that `domainAnchor` is the root of the domain-origin messages recorded since the
+    /// previously attested block.
     function stateTransitionDigest(
         uint64 domainChainId,
         uint64 domainBlockNumber,
@@ -74,9 +95,11 @@ interface IDomainHub {
     ) external view returns (bytes32);
 
     /// @notice A validator submits its signature over a proposed state transition. Votes
-    /// accumulate on-chain; the state advances (new commitment written, `domainAnchor`
-    /// recorded) only once a distinct quorum of the domain's registered validators has signed
-    /// the same transition. Submission is permissionless - the recovered signer is the authority.
+    /// accumulate on-chain; the state advances (new commitment written, nonzero
+    /// `domainAnchor` recorded) only once a distinct quorum of the domain's registered
+    /// validators has signed the same transition. `domainBlockNumber` must be below the
+    /// current L1 block and a multiple of the domain's checkpoint interval. Submission is
+    /// permissionless - the recovered signer is the authority.
     function submitStateSignature(
         uint64 domainChainId,
         uint64 domainBlockNumber,
@@ -177,13 +200,18 @@ interface IDomainSpoke is IDomainAccessControl {
         external
         returns (bytes32 messageId);
 
-    /// @notice Operator-only. Merkleizes all pending outbound messages into an anchor and
-    /// clears them. The operator relays the returned anchor onto the hub via
-    /// `submitStateSignature`.
-    function finalizeDomainMessages() external returns (bytes32 anchor);
+    /// @notice Number of domain-origin messages recorded; the nonce the next one gets.
+    function domainMessageCount() external view returns (uint256);
 
-    /// @notice Pending outbound domain message ID at `index`.
-    function pendingDomainMessages(uint256 index) external view returns (bytes32);
+    /// @notice Recorded message ID by source nonce. Never cleared.
+    function domainMessageIds(uint256 sourceNonce) external view returns (bytes32);
+
+    /// @notice Merkle root over the message IDs with nonce in `[fromNonce, toNonce)`, in nonce
+    /// order; zero for an empty range. Batches are defined by consecutive attestations: the
+    /// anchor attested at L1 height `H` after previously attested height `P` is the root over
+    /// `[count(P), count(H))`, with `count(x)` the `domainMessageCount` in the domain state at
+    /// height `x`.
+    function domainMessagesRoot(uint256 fromNonce, uint256 toNonce) external view returns (bytes32);
 }
 
 /// @notice Shared hook for L1-origin and domain-origin messages. Authenticate msg.sender

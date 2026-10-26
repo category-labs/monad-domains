@@ -15,10 +15,12 @@ import {DomainSpoke} from "../src/DomainSpoke.sol";
 /// deposits to arrive. The full sequence (the pieces reference each other, so order matters):
 ///
 ///   1. On the L1:        DOMAIN_CHAIN_ID=<id> QUORUM=<n> VALIDATORS=<addr,addr,...> \
+///                        [FEE_RECIPIENT=<addr>] [VIEWING_KEY=0x04...] [CHECKPOINT_INTERVAL=<blocks>] \
 ///        forge script script/Deploy.s.sol:DeployHub --rpc-url $L1_RPC --broadcast
-///      Records the broadcaster as the domain operator, and the validator set + quorum that
-///      must sign to advance the domain state. Outputs the hub address.
-///   2. On the domain: DOMAIN_CHAIN_ID=<id> OPERATOR_ADDRESS=<operator from step 1> L1_CHAIN_ID=<L1 id> HUB_ADDRESS=<step 1> \
+///      Registers the validator set + quorum that must sign to advance the domain state, the
+///      fee recipient (default: the broadcaster), the viewing public key senders encrypt to
+///      (optional) and the checkpoint interval (default 5). Outputs the hub address.
+///   2. On the domain: DOMAIN_CHAIN_ID=<id> L1_CHAIN_ID=<L1 id> HUB_ADDRESS=<step 1> \
 ///        forge script script/Deploy.s.sol:DeploySpoke --rpc-url $DOMAIN_RPC --broadcast
 ///   3. On the L1:        DOMAIN_CHAIN_ID=<id> HUB_ADDRESS=<step 1> \
 ///        forge script script/Deploy.s.sol:DeployL1Bridge --rpc-url $L1_RPC --broadcast
@@ -36,34 +38,38 @@ contract DeployHub is Script {
         uint64 domainChainId = uint64(vm.envUint("DOMAIN_CHAIN_ID"));
         require(domainChainId != 0, "Deploy: DOMAIN_CHAIN_ID not set");
         require(domainChainId != block.chainid, "Deploy: domain chain id equals current chain");
-        uint8 stateVerificationMode = uint8(vm.envOr("STATE_VERIFICATION_MODE", uint256(0)));
         address[] memory validators = vm.envAddress("VALIDATORS", ",");
         uint256 quorum = vm.envUint("QUORUM");
+        address feeRecipient = vm.envOr("FEE_RECIPIENT", msg.sender);
+        bytes memory viewingKey = vm.envOr("VIEWING_KEY", bytes(""));
+        uint64 checkpointInterval = uint64(vm.envOr("CHECKPOINT_INTERVAL", uint256(5)));
 
         vm.startBroadcast();
         hub = new DomainHub();
-        hub.registerDomain(domainChainId, stateVerificationMode, validators, quorum);
+        hub.registerDomain(domainChainId, validators, quorum, feeRecipient, viewingKey, checkpointInterval);
         vm.stopBroadcast();
 
         console.log("DomainHub deployed:", address(hub));
         console.log("  domain chain id:", domainChainId);
         console.log("  validators:", validators.length);
         console.log("  quorum:", quorum);
+        console.log("  fee recipient:", feeRecipient);
+        console.log("  checkpoint interval:", checkpointInterval);
+        console.log("  viewing key bytes:", viewingKey.length);
     }
 }
 
 contract DeploySpoke is Script {
     function run() external returns (DomainSpoke spoke) {
         uint64 domainChainId = uint64(vm.envUint("DOMAIN_CHAIN_ID"));
-        address operator = vm.envAddress("OPERATOR_ADDRESS");
         require(domainChainId == block.chainid, "Deploy: wrong domain chain");
 
         vm.startBroadcast();
-        spoke = new DomainSpoke(domainChainId, operator, vm.envUint("L1_CHAIN_ID"), vm.envAddress("HUB_ADDRESS"));
+        spoke = new DomainSpoke(domainChainId, vm.envUint("L1_CHAIN_ID"), vm.envAddress("HUB_ADDRESS"));
         vm.stopBroadcast();
 
         console.log("DomainSpoke deployed:", address(spoke));
-        console.log("  operator:", spoke.OPERATOR());
+        console.log("  hub:", spoke.HUB());
     }
 }
 

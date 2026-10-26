@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {BridgedERC20} from "../../src/bridge/BridgedERC20.sol";
@@ -11,6 +10,7 @@ import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {TestERC20} from "../mocks/TestERC20.sol";
+import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 
 /// @notice Atomically completes a domain A -> L1 withdrawal and re-bridges the released
 /// tokens into domain B, collapsing the L1 leg into a single transaction. The withdrawal
@@ -47,9 +47,9 @@ contract CrossDomainRouter {
 ///   - one L1 transaction: a router finalizes the withdrawal and re-deposits in the same call.
 ///
 /// A single L1 hub serves both domains; each domain has its own spoke, L1Bridge
-/// (isolated collateral), and DomainBridge. The test contract operates both domains
-/// for the withdrawal direction (finalizing domain -> L1 batches).
-contract DomainToDomainTest is Test {
+/// (isolated collateral), and DomainBridge. One validator (quorum 1) serves both domains
+/// and attests the domain -> L1 batches on the checkpoint schedule.
+contract DomainToDomainTest is DomainTestBase {
     uint64 internal constant CHAIN_A = 7777;
     uint64 internal constant CHAIN_B = 8888;
     uint256 internal constant AMOUNT = 100 ether;
@@ -73,12 +73,12 @@ contract DomainToDomainTest is Test {
     uint256 internal _domainANonce;
 
     function setUp() public {
-        // Protocol: one L1 hub, one spoke per domain, both registered (test is operator).
+        // Protocol: one L1 hub, one spoke per domain, both registered with the same validator.
         hub = new DomainHub();
-        hub.registerDomain(CHAIN_A, 0, _validatorSet(), 1);
-        hub.registerDomain(CHAIN_B, 0, _validatorSet(), 1);
-        spokeA = new DomainSpoke(CHAIN_A, address(this), block.chainid, address(hub));
-        spokeB = new DomainSpoke(CHAIN_B, address(this), block.chainid, address(hub));
+        _registerDomain(hub, CHAIN_A, VALIDATOR_KEY);
+        _registerDomain(hub, CHAIN_B, VALIDATOR_KEY);
+        spokeA = new DomainSpoke(CHAIN_A, block.chainid, address(hub));
+        spokeB = new DomainSpoke(CHAIN_B, block.chainid, address(hub));
 
         // Application: an independent bridge pair per domain, sharing the L1 token.
         l1BridgeA = new L1Bridge(hub, CHAIN_A);
@@ -104,7 +104,7 @@ contract DomainToDomainTest is Test {
     /// @notice Two L1 transactions: alice withdraws domain-A tokens to her own L1 address,
     /// then separately deposits them into domain B.
     function test_domainAToB_twoL1Transactions() public {
-        // Domain A -> L1: burn on A, operator anchors, recipient is alice herself.
+        // Domain A -> L1: burn on A, validator anchors, recipient is alice herself.
         (MessageLib.DomainMessage memory wMsg, bytes32 wAnchor) = _initiateWithdrawFromA(alice, alice, AMOUNT);
 
         // L1 tx 1: finalize the withdrawal - alice receives the real L1 token.
@@ -153,11 +153,9 @@ contract DomainToDomainTest is Test {
     function test_router_revertsIfHubDeliveryFails() public {
         (MessageLib.DomainMessage memory message,) = _initiateWithdrawFromA(alice, address(router), AMOUNT);
         message.from = address(0xBAD);
+        // A forged single-leaf anchor, attested at the next checkpoint as if it were genuine.
         bytes32 anchor = _hash(message);
-        uint64 height = hub.domainBlockNumbers(CHAIN_A) + 1;
-        (uint8 v, bytes32 r, bytes32 s) =
-            vm.sign(VALIDATOR_KEY, hub.stateTransitionDigest(CHAIN_A, height, bytes32(0), anchor));
-        hub.submitStateSignature(CHAIN_A, height, bytes32(0), anchor, abi.encodePacked(r, s, v));
+        _attestNext(hub, CHAIN_A, bytes32(0), anchor, _keys(VALIDATOR_KEY));
         // Even prefunded tokens must not be used after a failed withdrawal callback.
         token.mint(address(router), AMOUNT);
         vm.expectRevert("Router: withdrawal delivery failed");
@@ -226,9 +224,9 @@ contract DomainToDomainTest is Test {
         );
     }
 
-    /// @dev Burns `amount` of the bridged token on domain A and posts the anchor (with the
-    /// new state root) onto the hub. Returns the withdrawal message + anchor the L1 leg
-    /// finalizes against.
+    /// @dev Burns `amount` of the bridged token on domain A and has the validator attest the
+    /// resulting batch (with the new state root) onto the hub. Returns the withdrawal message
+    /// + anchor the L1 leg finalizes against.
     function _initiateWithdrawFromA(address sender, address recipient, uint256 amount)
         internal
         returns (MessageLib.DomainMessage memory message, bytes32 anchor)
@@ -237,11 +235,7 @@ contract DomainToDomainTest is Test {
         domainBridgeA.bridgeToL1(recipient, address(token), amount);
 
         uint256 nonce = _domainANonce++;
-        anchor = spokeA.finalizeDomainMessages();
-        uint64 blockNumber = hub.domainBlockNumbers(CHAIN_A) + 1;
-        (uint8 v, bytes32 r, bytes32 s) =
-            vm.sign(VALIDATOR_KEY, hub.stateTransitionDigest(CHAIN_A, blockNumber, bytes32(0), anchor));
-        hub.submitStateSignature(CHAIN_A, blockNumber, bytes32(0), anchor, abi.encodePacked(r, s, v));
+        anchor = _attestBatch(hub, spokeA, VALIDATOR_KEY);
         message = MessageLib.DomainMessage({
             sourceChainId: CHAIN_A,
             destinationChainId: uint64(block.chainid),
@@ -266,12 +260,6 @@ contract DomainToDomainTest is Test {
 
     function _emptyProof() internal pure returns (bytes32[] memory) {
         return new bytes32[](0);
-    }
-
-    /// @dev Single validator (quorum 1) approving state transitions in this suite.
-    function _validatorSet() internal view returns (address[] memory vs) {
-        vs = new address[](1);
-        vs[0] = vm.addr(VALIDATOR_KEY);
     }
 
     function _hash(MessageLib.DomainMessage memory message) internal view returns (bytes32) {

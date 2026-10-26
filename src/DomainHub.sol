@@ -3,14 +3,19 @@ pragma solidity ^0.8.24;
 
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {IDomainHub, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 
-contract DomainHub is IDomainHub {
-    uint8 public constant MAX_STATE_VERIFICATION_MODE = 2;
+contract DomainHub is IDomainHub, EIP712 {
+    /// @notice EIP-712 type of the digest a validator signs to approve a state transition.
+    bytes32 public constant STATE_TRANSITION_TYPEHASH = keccak256(
+        "StateTransition(uint64 domainChainId,uint256 stateNonce,uint64 domainBlockNumber,bytes32 newStateRoot,bytes32 domainAnchor)"
+    );
+    /// @notice Length of an uncompressed SEC1 P-256 point: the only accepted viewing key encoding.
+    uint256 public constant VIEWING_KEY_LENGTH = 65;
 
-    event DomainRegistered(uint64 indexed domainChainId, address indexed operator, uint8 stateVerificationMode);
     /// @notice Emitted for every L1-sequenced domain transaction. Domain validators
     /// derive their blocks from these events. The transaction's sender is recovered from the
     /// signature inside `rlpTx`; the L1 submitter is the enclosing L1 transaction's own sender.
@@ -37,14 +42,18 @@ contract DomainHub is IDomainHub {
 
     struct DomainConfig {
         bool registered;
-        uint8 stateVerificationMode;
-        address operator;
+        /// @dev Attested block numbers must be multiples of this interval.
+        uint64 checkpointInterval;
+        /// @dev Receives the value attached to `sequenceToDomain`.
+        address feeRecipient;
         uint256 quorum;
         address[] validators;
+        /// @dev Uncompressed P-256 point senders encrypt domain transactions to, or empty.
+        bytes viewingKey;
         mapping(address => bool) isValidator;
     }
 
-    mapping(uint64 => DomainConfig) public domainConfigs;
+    mapping(uint64 => DomainConfig) internal _configs;
     mapping(uint64 => bytes32) internal _commitments;
     /// @notice Shared destination delivery nonce for plaintext, encrypted and routed messages.
     mapping(uint64 => uint256) public l1MessageCounts;
@@ -64,27 +73,37 @@ contract DomainHub is IDomainHub {
     /// @notice Whether a given validator has already voted for a proposal digest.
     mapping(bytes32 => mapping(address => bool)) public hasVotedFor;
 
+    constructor() EIP712("MonadDomainHub", "1") {}
+
     // ---------------------------------------------------------------------
     // Registration
     // ---------------------------------------------------------------------
 
     function registerDomain(
         uint64 domainChainId,
-        uint8 stateVerificationMode,
         address[] calldata validators,
-        uint256 quorum
+        uint256 quorum,
+        address feeRecipient,
+        bytes calldata viewingKey,
+        uint64 checkpointInterval
     ) external {
         require(domainChainId != block.chainid, "DomainHub: cannot register L1 chain id");
-        require(!domainConfigs[domainChainId].registered, "DomainHub: already registered");
-        require(stateVerificationMode <= MAX_STATE_VERIFICATION_MODE, "DomainHub: unknown verification mode");
+        DomainConfig storage config = _configs[domainChainId];
+        require(!config.registered, "DomainHub: already registered");
         require(quorum > 0, "DomainHub: zero quorum");
         require(quorum <= validators.length, "DomainHub: quorum exceeds validators");
+        require(feeRecipient != address(0), "DomainHub: zero fee recipient");
+        require(checkpointInterval > 0, "DomainHub: zero checkpoint interval");
+        require(
+            viewingKey.length == 0 || (viewingKey.length == VIEWING_KEY_LENGTH && viewingKey[0] == 0x04),
+            "DomainHub: invalid viewing key"
+        );
 
-        DomainConfig storage config = domainConfigs[domainChainId];
         config.registered = true;
-        config.stateVerificationMode = stateVerificationMode;
-        config.operator = msg.sender;
+        config.checkpointInterval = checkpointInterval;
+        config.feeRecipient = feeRecipient;
         config.quorum = quorum;
+        config.viewingKey = viewingKey;
         for (uint256 i = 0; i < validators.length; i++) {
             address validator = validators[i];
             require(validator != address(0), "DomainHub: zero validator");
@@ -93,15 +112,36 @@ contract DomainHub is IDomainHub {
             config.validators.push(validator);
         }
 
-        emit DomainRegistered(domainChainId, msg.sender, stateVerificationMode);
+        emit DomainRegistered(domainChainId, feeRecipient, checkpointInterval);
+        emit ViewingKeyRegistered(domainChainId, viewingKey);
+    }
+
+    function isDomainRegistered(uint64 domainChainId) external view returns (bool) {
+        return _configs[domainChainId].registered;
     }
 
     function getValidators(uint64 domainChainId) external view returns (address[] memory) {
-        return domainConfigs[domainChainId].validators;
+        return _configs[domainChainId].validators;
     }
 
     function isDomainValidator(uint64 domainChainId, address account) external view returns (bool) {
-        return domainConfigs[domainChainId].isValidator[account];
+        return _configs[domainChainId].isValidator[account];
+    }
+
+    function quorums(uint64 domainChainId) external view returns (uint256) {
+        return _configs[domainChainId].quorum;
+    }
+
+    function feeRecipients(uint64 domainChainId) external view returns (address) {
+        return _configs[domainChainId].feeRecipient;
+    }
+
+    function checkpointIntervals(uint64 domainChainId) external view returns (uint64) {
+        return _configs[domainChainId].checkpointInterval;
+    }
+
+    function viewingKeys(uint64 domainChainId) external view returns (bytes memory) {
+        return _configs[domainChainId].viewingKey;
     }
 
     // ---------------------------------------------------------------------
@@ -112,35 +152,26 @@ contract DomainHub is IDomainHub {
         return _commitments[domainChainId];
     }
 
-    /// @notice The digest a domain validator signs to approve a state transition. Bound to
-    /// this hub, the L1 chain, the domain, and the current `stateNonce` so a signature is
-    /// valid for exactly one transition on one deployment. `domainBlockNumber` is part of
-    /// the digest, so validators attest that `newStateRoot` is the state at that block.
     function stateTransitionDigest(
         uint64 domainChainId,
         uint64 domainBlockNumber,
         bytes32 newStateRoot,
         bytes32 domainAnchor
     ) public view returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                address(this),
-                block.chainid,
-                domainChainId,
-                stateNonces[domainChainId],
-                domainBlockNumber,
-                newStateRoot,
-                domainAnchor
+        return _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    STATE_TRANSITION_TYPEHASH,
+                    domainChainId,
+                    stateNonces[domainChainId],
+                    domainBlockNumber,
+                    newStateRoot,
+                    domainAnchor
+                )
             )
         );
     }
 
-    /// @notice A validator submits its signature over a proposed state transition. Votes
-    /// accumulate on-chain; the state does NOT advance until a distinct quorum of the
-    /// domain's registered validators has signed the same
-    /// `(domainBlockNumber, newStateRoot, domainAnchor)` for the current `stateNonce`.
-    /// The quorum-th signature writes the new commitment, records `domainAnchor`, stores
-    /// `domainBlockNumber`, and increments `stateNonce`.
     function submitStateSignature(
         uint64 domainChainId,
         uint64 domainBlockNumber,
@@ -148,9 +179,11 @@ contract DomainHub is IDomainHub {
         bytes32 domainAnchor,
         bytes calldata signature
     ) external {
-        DomainConfig storage config = domainConfigs[domainChainId];
+        DomainConfig storage config = _configs[domainChainId];
         require(config.registered, "DomainHub: domain not registered");
         require(domainBlockNumber > domainBlockNumbers[domainChainId], "DomainHub: stale block number");
+        require(uint256(domainBlockNumber) < block.number, "DomainHub: block number not in the past");
+        require(domainBlockNumber % config.checkpointInterval == 0, "DomainHub: block number off schedule");
 
         bytes32 digest = stateTransitionDigest(domainChainId, domainBlockNumber, newStateRoot, domainAnchor);
         address signer = ECDSA.recover(digest, signature);
@@ -166,7 +199,7 @@ contract DomainHub is IDomainHub {
         if (votes == config.quorum) {
             uint256 nonce = stateNonces[domainChainId]++;
             _commitments[domainChainId] = newStateRoot;
-            domainAnchors[domainChainId][domainAnchor] = true;
+            if (domainAnchor != bytes32(0)) domainAnchors[domainChainId][domainAnchor] = true;
             domainBlockNumbers[domainChainId] = domainBlockNumber;
             emit DomainStateUpdated(domainChainId, nonce, domainBlockNumber, newStateRoot, domainAnchor);
         }
@@ -183,7 +216,7 @@ contract DomainHub is IDomainHub {
         returns (bool success)
     {
         require(message.sourceChainId != message.destinationChainId, "DomainHub: same domain");
-        require(domainConfigs[message.sourceChainId].registered, "DomainHub: source not registered");
+        require(_configs[message.sourceChainId].registered, "DomainHub: source not registered");
         require(message.to != address(0), "DomainHub: zero target");
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         require(!relayedDomainMessages[message.sourceChainId][messageHash], "DomainHub: message already relayed");
@@ -192,7 +225,7 @@ contract DomainHub is IDomainHub {
         relayedDomainMessages[message.sourceChainId][messageHash] = true;
 
         if (message.destinationChainId != block.chainid) {
-            require(domainConfigs[message.destinationChainId].registered, "DomainHub: destination not registered");
+            require(_configs[message.destinationChainId].registered, "DomainHub: destination not registered");
             uint256 deliveryNonce = _sendL1Message(
                 message.destinationChainId, message.sourceChainId, message.from, message.to, message.data
             );
@@ -234,13 +267,13 @@ contract DomainHub is IDomainHub {
     // ---------------------------------------------------------------------
 
     /// @notice Sequences a domain transaction through the L1. Forwards `msg.value` to the
-    /// domain operator as a prepaid, non-refundable execution fee and emits the transaction
-    /// for domain validators to include.
+    /// domain's fee recipient as a prepaid, non-refundable execution fee and emits the
+    /// transaction for domain validators to include.
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable {
-        DomainConfig storage config = domainConfigs[domainChainId];
+        DomainConfig storage config = _configs[domainChainId];
         require(config.registered, "DomainHub: domain not registered");
 
-        (bool success,) = config.operator.call{value: msg.value}("");
+        (bool success,) = config.feeRecipient.call{value: msg.value}("");
         require(success, "DomainHub: fee transfer failed");
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
     }
@@ -252,7 +285,7 @@ contract DomainHub is IDomainHub {
     /// @notice Records a message to the target domain. The domain protocol derives this call's
     /// `L1MessageRecorded` event and delivers the message onto the spoke as a system transaction.
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external {
-        require(domainConfigs[domainChainId].registered, "DomainHub: domain not registered");
+        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
         _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data);
     }
 
@@ -269,7 +302,7 @@ contract DomainHub is IDomainHub {
     /// nonce sequence as `sendL1Message`. The client decrypts `abi.encodePacked(to, data)`
     /// out of `ciphertext` before deriving the system delivery transaction.
     function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external {
-        require(domainConfigs[domainChainId].registered, "DomainHub: domain not registered");
+        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
         uint256 nonce = l1MessageCounts[domainChainId]++;
         emit EncryptedL1MessageRecorded(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, ciphertext, nonce);
     }

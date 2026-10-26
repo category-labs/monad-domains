@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {IDomainAccessControl} from "../src/interfaces/IDomainAccessControl.sol";
 import {TestERC20} from "./mocks/TestERC20.sol";
+import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 contract DeploymentOwnershipExample {
     address public immutable owner;
@@ -17,12 +17,12 @@ contract DeploymentOwnershipExample {
     }
 }
 
-contract DomainAccessControlTest is Test {
+contract DomainAccessControlTest is DomainTestBase {
     DomainSpoke internal spoke;
     address internal token;
     address internal policyOwner = makeAddr("policyOwner");
     address internal deployer = makeAddr("deployer");
-    address internal operator = makeAddr("operator");
+    address internal outsider = makeAddr("outsider");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal reader = makeAddr("reader");
@@ -34,7 +34,7 @@ contract DomainAccessControlTest is Test {
     IDomainAccessControl.AccessMode internal constant READERS_ONLY = IDomainAccessControl.AccessMode.ReadersOnly;
 
     function setUp() public {
-        spoke = new DomainSpoke(7777, operator, block.chainid, address(0x1234));
+        spoke = new DomainSpoke(7777, block.chainid, address(0x1234));
         vm.prank(deployer);
         token = spoke.deployContract(type(TestERC20).creationCode, policyOwner);
     }
@@ -119,14 +119,14 @@ contract DomainAccessControlTest is Test {
         spoke.setAccessControl(token, BALANCE_OF, OPEN, 0);
     }
 
-    function test_deployerAndOperatorHaveNoImplicitConfigurationAuthority() public {
+    function test_deployerAndOutsiderHaveNoImplicitConfigurationAuthority() public {
         vm.startPrank(deployer);
         vm.expectRevert("DomainSpoke: not policy owner");
         spoke.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 0);
         vm.expectRevert("DomainSpoke: not policy owner");
         spoke.setReaderAllowed(token, BALANCE_OF, reader, true);
         vm.stopPrank();
-        vm.prank(operator);
+        vm.prank(outsider);
         vm.expectRevert("DomainSpoke: not policy owner");
         spoke.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 0);
     }
@@ -178,9 +178,9 @@ contract DomainAccessControlTest is Test {
         // Query sender cannot substitute for the explicit caller being evaluated.
         vm.prank(reader);
         assertFalse(spoke.canCall(bob, token, _balance(alice)));
-        // Neither the policyOwner nor the operator gets an implicit reader grant.
+        // Neither the policyOwner nor an unrelated account gets an implicit reader grant.
         assertFalse(spoke.canCall(policyOwner, token, _balance(alice)));
-        assertFalse(spoke.canCall(operator, token, _balance(alice)));
+        assertFalse(spoke.canCall(outsider, token, _balance(alice)));
     }
 
     function test_readersOnlyAllowsOnlyApprovedReaders() public {

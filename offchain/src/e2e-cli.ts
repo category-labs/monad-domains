@@ -6,27 +6,26 @@ import {
   getContractAddress,
   http,
   parseEventLogs,
-  serializeSignature,
   toFunctionSelector,
-  zeroHash,
   type Address,
   type Hex,
   type PublicClient,
 } from "viem";
-import { privateKeyToAccount, sign } from "viem/accounts";
+import { privateKeyToAccount } from "viem/accounts";
 import { loadArtifact } from "./artifacts.js";
 import { setupDomain } from "./setup.js";
 import { sequenceTransaction } from "./sequence.js";
+import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI } from "./checkpoint.js";
 import {
   fetchL1Messages,
-  fetchDomainMessages,
+  fetchDomainBatch,
+  findBatchForNonce,
   l1MessageDeliveryStatus,
   domainMessageDeliveryStatus,
   proveMessage,
   type L1DeliveryStatus,
-  type RecordedMessage,
 } from "./prover.js";
-import { type DomainMessage, type MessageContext } from "./message.js";
+import { type MessageContext } from "./message.js";
 
 /**
  * End-to-end exercise of the domain token bridge against a live L1-sequencing
@@ -38,8 +37,9 @@ import { type DomainMessage, type MessageContext } from "./message.js";
  *   2. deposit: lock TestERC20 on the L1 — delivery is protocol-driven (the node
  *      derives a system transaction per hub L1MessageRecorded event and injects it
  *      as spoke.relayL1Message), so the CLI only watches the spoke until the mint lands;
- *   3. withdrawal: burn on the domain, finalize the domain batch, validator
- *      attests the state transition on the hub, prove and release on the L1;
+ *   3. withdrawal: burn on the domain, validator attests the next scheduled checkpoint
+ *      (state root + root of the messages recorded since the previous one) on the hub,
+ *      rebuild the attested batch, prove and release on the L1;
  *   4. access control: deploy a token through `spoke.deployContract`, restrict
  *      `balanceOf` to its subject, and check that the execution client (which calls
  *      `spoke.canCall` before every domain CALL) denies both eth_call and sequenced
@@ -58,6 +58,8 @@ import { type DomainMessage, type MessageContext } from "./message.js";
 const L1_RPC_URL = process.env.L1_RPC_URL ?? "http://localhost:8080";
 const DOMAIN_CHAIN_ID = BigInt(process.env.DOMAIN_CHAIN_ID ?? String((1n << 16n) | 20143n));
 const DOMAIN_RPC_URL = process.env.DOMAIN_RPC_URL ?? `${L1_RPC_URL}/domain/${DOMAIN_CHAIN_ID}`;
+// Validators attest at L1 heights that are multiples of this (the protocol default).
+const CHECKPOINT_INTERVAL = BigInt(process.env.CHECKPOINT_INTERVAL ?? "5");
 // Domain viewing public key (65-byte uncompressed P-256 point). Unset => plaintext sequencing,
 // which a node running with a receiver key for the domain drops.
 const VIEWING_KEY = process.env.VIEWING_KEY as Hex | undefined;
@@ -67,7 +69,7 @@ const VIEWING_KEY = process.env.VIEWING_KEY as Hex | undefined;
 const EXPECTED_HUB = (process.env.EXPECTED_HUB ?? "0x5FbDB2315678afecb367f032d93F642f64180aa3") as Address;
 
 // Hardhat/Anvil dev keys, funded in the monad devnet genesis alloc.
-const ADMIN_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex; // acct 0: operator/seed
+const ADMIN_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex; // acct 0: admin/seed/fee recipient
 const VALIDATOR_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as Hex; // acct 1
 const ALICE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" as Hex; // acct 2: L1 depositor
 const BOB_KEY = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6" as Hex; // acct 3: domain recipient
@@ -101,37 +103,6 @@ async function retry<T>(label: string, fn: () => Promise<T>, predicate: (v: T) =
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
-}
-
-/**
- * Per-block domain log scan. The client's domain-scoped eth_getLogs fails with
- * "error traversing db" for a range spanning blocks in which the domain retained no
- * transactions (its per-block tables are simply absent), so query one block at a time and
- * treat errors as empty. A single-block query for such a quiet block does not fail either:
- * it serves the most recent domain block's logs stamped with the queried block number,
- * so the same message shows up once per quiet block after it. Keep the first sighting of
- * each message hash — that is its real block.
- */
-async function fetchDomainMessagesPerBlock(
-  domain: PublicClient,
-  range: { fromBlock: bigint; toBlock: bigint },
-  spoke: Address,
-  context: MessageContext,
-): Promise<RecordedMessage<DomainMessage>[]> {
-  const messages: RecordedMessage<DomainMessage>[] = [];
-  const seen = new Set<Hex>();
-  for (let b = range.fromBlock; b <= range.toBlock; b++) {
-    try {
-      for (const recorded of await fetchDomainMessages(domain, { fromBlock: b, toBlock: b }, spoke, context)) {
-        if (seen.has(recorded.messageHash)) continue;
-        seen.add(recorded.messageHash);
-        messages.push(recorded);
-      }
-    } catch {
-      // domain-empty block: tables absent, treat as no events
-    }
-  }
-  return messages;
 }
 
 /** Waits until the domain has executed the sequenced transaction, preferring the
@@ -202,7 +173,8 @@ async function main() {
     nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
     rpcUrls: { default: { http: [DOMAIN_RPC_URL] } },
   });
-  const domain = createPublicClient({ chain: domainChain, transport: http(DOMAIN_RPC_URL) });
+  // Batching sends each page of `domainMessageIds` reads as one JSON-RPC request.
+  const domain = createPublicClient({ chain: domainChain, transport: http(DOMAIN_RPC_URL, { batch: true }) });
   const adminWallet = createWalletClient({ account: admin, chain: l1Chain, transport: http(L1_RPC_URL) });
   const aliceWallet = createWalletClient({ account: alice, chain: l1Chain, transport: http(L1_RPC_URL) });
   const validatorWallet = createWalletClient({ account: validator, chain: l1Chain, transport: http(L1_RPC_URL) });
@@ -253,6 +225,7 @@ async function main() {
     domainChainId: DOMAIN_CHAIN_ID,
     validators: [validator.address],
     quorum: 1n,
+    checkpointInterval: CHECKPOINT_INTERVAL,
     viewingKey: VIEWING_KEY,
   });
   const { hub, l1Bridge, spoke, domainBridge } = setup;
@@ -369,65 +342,52 @@ async function main() {
     viewingKey: VIEWING_KEY,
   });
   console.log("  sequenced domainBridge.bridgeToL1:", bridgeToL1.domainTxHash);
-  await waitForDomainTx(domain, bridgeToL1.domainTxHash, "domainBridge.bridgeToL1");
+  const burnReceipt = await waitForDomainTx(domain, bridgeToL1.domainTxHash, "domainBridge.bridgeToL1");
+  const context: MessageContext = { l1ChainId: BigInt(l1ChainId), hub };
 
-  // Off-chain listener: index the recorded domain -> L1 messages from spoke events.
-  const withdrawalBatch = await retry(
-    "DomainMessageRecorded event",
-    async () => fetchDomainMessagesPerBlock(domain, { fromBlock: hubDeployBlock, toBlock: await domain.getBlockNumber() }, spoke, { l1ChainId: BigInt(await l1.getChainId()), hub }),
-    (batch) => batch.length === 1,
+  // The validator attests the first scheduled checkpoint at or above the burn's block: the
+  // domain state root there plus the root of every message recorded since the previous
+  // checkpoint. Finality on the devnet trails the head by a few blocks, so wait for the slot
+  // to finalize before reading the domain state there.
+  const interval = BigInt(
+    await l1.readContract({ address: hub, abi: HUB_CHECKPOINT_ABI, functionName: "checkpointIntervals", args: [DOMAIN_CHAIN_ID] }),
   );
-  console.log(`  listener indexed ${withdrawalBatch.length} DomainMessageRecorded event(s)`);
-  const withdrawalProof = proveMessage(withdrawalBatch, withdrawalBatch[0]!.messageHash);
-  console.log("  computed anchor:", withdrawalProof.anchor);
-
-  // Operator finalizes the domain batch on the spoke (sequenced tx).
-  const finalizeDomain = await sequenceTransaction({
-    l1RpcUrl: L1_RPC_URL,
-    hub,
-    domainChainId: DOMAIN_CHAIN_ID,
-    senderKey: ADMIN_KEY,
-    to: spoke,
-    data: encodeFunctionData({ abi: spokeArt.abi, functionName: "finalizeDomainMessages", args: [] }),
-    gas: 300_000n,
-    domainRpcUrl: DOMAIN_RPC_URL,
-    viewingKey: VIEWING_KEY,
+  const checkpointHeight = ((burnReceipt.blockNumber + interval - 1n) / interval) * interval;
+  await retry(
+    `L1 block ${checkpointHeight} finalized`,
+    () => l1.getBlock({ blockTag: "finalized" }).then((b) => b.number),
+    (finalized) => finalized >= checkpointHeight,
+    120_000,
+  );
+  const checkpoint = await buildCheckpoint({ l1, domain, hub, spoke, domainChainId: DOMAIN_CHAIN_ID, height: checkpointHeight });
+  if (checkpoint.toNonce !== checkpoint.fromNonce + 1n) {
+    throw new Error(`expected exactly one recorded message in the batch, got [${checkpoint.fromNonce}, ${checkpoint.toNonce})`);
+  }
+  console.log(`  checkpoint ${checkpointHeight}: state root ${checkpoint.stateRoot}, anchor ${checkpoint.anchor}`);
+  const attestation = await attestCheckpoint({
+    l1, submitter: validatorWallet, chain: l1Chain, hub, checkpoint, validatorKeys: [VALIDATOR_KEY],
   });
-  console.log("  sequenced spoke.finalizeDomainMessages:", finalizeDomain.domainTxHash);
-  await waitForDomainTx(domain, finalizeDomain.domainTxHash, "spoke.finalizeDomainMessages");
-  const pendingAfter = (await domain.readContract({
-    address: spoke,
-    abi: spokeArt.abi,
-    functionName: "getPendingDomainMessages",
-    args: [],
-  })) as Hex[];
-  if (pendingAfter.length !== 0) throw new Error("spoke still has pending domain messages after finalize");
+  if (!attestation.advanced) throw new Error("hub did not advance after the single validator signed (quorum 1)");
+  console.log(`  hub.submitStateSignature ok (${attestation.submitted[0]}); hub attested block ${checkpointHeight}`);
 
-  // Validator attests the state transition carrying the anchor onto the hub.
-  const committedBn = (await l1.readContract({
-    address: hub,
-    abi: hubArt.abi,
-    functionName: "domainBlockNumbers",
-    args: [DOMAIN_CHAIN_ID],
-  })) as bigint;
-  const nextBn = committedBn + 1n;
-  const newStateRoot = zeroHash; // demo value; bridging only consumes the anchor
-  const digest = (await l1.readContract({
-    address: hub,
-    abi: hubArt.abi,
-    functionName: "stateTransitionDigest",
-    args: [DOMAIN_CHAIN_ID, nextBn, newStateRoot, withdrawalProof.anchor],
-  })) as Hex;
-  const signature = serializeSignature(await sign({ hash: digest, privateKey: VALIDATOR_KEY }));
-  await confirm(
-    await validatorWallet.writeContract({
-      address: hub,
-      abi: hubArt.abi,
-      functionName: "submitStateSignature",
-      args: [DOMAIN_CHAIN_ID, nextBn, newStateRoot, withdrawalProof.anchor, signature],
-    }),
-    "hub.submitStateSignature (quorum 1 -> state advances)",
+  // Anyone rebuilds the attested batch from the hub's event, the spoke's events and state. The
+  // node serves a block's logs a little after its receipt, so poll for the attestation event.
+  const batch = await retry(
+    "attested batch covering the withdrawal",
+    async () =>
+      findBatchForNonce(
+        l1, domain, hub, spoke, DOMAIN_CHAIN_ID, checkpoint.fromNonce, { fromBlock: hubDeployBlock, toBlock: await l1.getBlockNumber() },
+      ),
+    (found) => found !== null,
+    60_000,
   );
+  if (!batch) throw new Error("no attested batch covers the withdrawal message");
+  const withdrawalBatch = await fetchDomainBatch(domain, spoke, batch, context, { scanFromBlock: hubDeployBlock });
+  console.log(`  rebuilt batch [${batch.fromNonce}, ${batch.toNonce}) from blocks (${batch.fromBlock}, ${batch.toBlock}]`);
+  const withdrawalProof = proveMessage(withdrawalBatch, withdrawalBatch[0]!.messageHash);
+  if (withdrawalProof.anchor !== checkpoint.anchor) {
+    throw new Error(`rebuilt anchor ${withdrawalProof.anchor} differs from the attested ${checkpoint.anchor}`);
+  }
   const anchorOnHub = await l1.readContract({
     address: hub,
     abi: hubArt.abi,

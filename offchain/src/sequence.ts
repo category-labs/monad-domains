@@ -18,7 +18,7 @@ import { domainFeeCaps, sponsoredOuterGasLimit } from "./transaction-policy.js";
  *
  * In a fully L1-sequenced domain there is no domain mempool: a transaction is a normal signed domain
  * transaction whose raw bytes are handed to `DomainHub.sequenceToDomain` on the L1. The hub
- * forwards the fee to the operator and emits the transaction; the domain's execution client
+ * forwards the fee to the fee recipient and emits the transaction; the domain's execution client
  * picks it up (ordered by L1 block + log index), decodes it, and executes it. Its execution is
  * sponsored by the enclosing L1 transaction while the signed transaction remains EIP-1559-valid.
  */
@@ -43,13 +43,14 @@ export interface SequenceConfig {
   nonce?: number;
   /** If set, the sender's current domain nonce is read from this domain RPC. */
   domainRpcUrl?: string;
-  /** `msg.value` forwarded to the operator on the L1 (the prepaid fee). Default 0. */
+  /** `msg.value` forwarded to the fee recipient on the L1 (the prepaid fee). Default 0. */
   sequencingFee?: bigint;
   /**
    * Domain viewing public key (65-byte uncompressed P-256 point, as printed by
    * `generateViewingKeyPair`). When set, `sequenceToDomain` is passed the HPKE ciphertext
    * of the signed domain transaction instead of the transaction itself; the domain execution
-   * client decrypts it before executing as normal.
+   * client decrypts it before executing as normal. When omitted, the key the domain
+   * published on the hub at registration is used; plaintext only if the hub holds none.
    */
   viewingKey?: Hex;
 }
@@ -121,12 +122,33 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
   const domainTxHash = keccak256(rawTransaction);
 
   // The hub forwards `rlpTx` as opaque bytes: when the domain has a viewing key, what it
-  // records is the HPKE ciphertext of the signed transaction.
-  const rlpTx = viewingKey ? await encryptTransaction(viewingKey, rawTransaction) : rawTransaction;
+  // records is the HPKE ciphertext of the signed transaction. Without an explicit key, use
+  // the one the domain published on the hub.
+  const hubArt = loadArtifact("DomainHub.sol", "DomainHub");
+  let encryptionKey = viewingKey;
+  if (!encryptionKey) {
+    let published: Hex;
+    try {
+      published = (await publicClient.readContract({
+        address: hub,
+        abi: hubArt.abi,
+        functionName: "viewingKeys",
+        args: [domainChainId],
+      })) as Hex;
+    } catch (error) {
+      // Never downgrade to plaintext silently: if the hub cannot be read, the caller must
+      // say explicitly what key (if any) to use.
+      throw new Error(
+        `sequence: could not read the domain's viewing key from hub ${hub}; pass viewingKey explicitly ` +
+          `(${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
+      );
+    }
+    if (published && published !== "0x") encryptionKey = published;
+  }
+  const rlpTx = encryptionKey ? await encryptTransaction(encryptionKey, rawTransaction) : rawTransaction;
 
   // Submit it through the hub on the L1. The outer gas limit is also the
   // consensus-verifiable sponsorship envelope for the embedded transaction.
-  const hubArt = loadArtifact("DomainHub.sol", "DomainHub");
   const request = {
     address: hub,
     abi: hubArt.abi,

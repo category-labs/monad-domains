@@ -14,7 +14,7 @@ import { sequenceTransaction, type SequenceConfig } from "./sequence.js";
  *   [GAS=1000000]           \  # domain gas limit (default 1_000_000)
  *   [TX_NONCE=0]            \  # domain nonce; required unless DOMAIN_RPC_URL is set
  *   [DOMAIN_RPC_URL=...] \  # if set, the domain nonce is fetched from it
- *   [SEQUENCING_FEE=0]      \  # wei forwarded to the operator on the L1
+ *   [SEQUENCING_FEE=0]      \  # wei forwarded to the fee recipient on the L1
  *   [VIEWING_KEY=0x...]     \  # domain viewing public key; encrypts the domain tx if set
  *     npm run sequence
  */

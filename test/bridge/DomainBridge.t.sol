@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
 import {BridgedERC20} from "../../src/bridge/BridgedERC20.sol";
 import {DomainBridge} from "../../src/bridge/DomainBridge.sol";
 import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
+import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 
-contract DomainBridgeTest is Test {
+contract DomainBridgeTest is DomainTestBase {
     address internal constant L1_BRIDGE = address(0x11B41D6E);
     address internal constant L1_TOKEN = address(0x70CE2);
     uint64 internal constant CHAIN_ID = 7777;
@@ -18,7 +18,7 @@ contract DomainBridgeTest is Test {
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        spoke = new DomainSpoke(CHAIN_ID, address(this), block.chainid, address(0x1234));
+        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(0x1234));
         bridge = new DomainBridge(spoke, L1_BRIDGE);
     }
 
@@ -121,7 +121,8 @@ contract DomainBridgeTest is Test {
             block.chainid,
             spoke.HUB()
         );
-        assertEq(spoke.pendingDomainMessages(0), expectedHash);
+        assertEq(spoke.domainMessageIds(0), expectedHash);
+        assertEq(spoke.domainMessageCount(), 1);
     }
 
     function test_bridgeToL1_rejectsUnknownToken() public {

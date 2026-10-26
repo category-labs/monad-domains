@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
-import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {IDomainMessageReceiver, IDomainHub, IDomainSpoke} from "../src/interfaces/IDomain.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
+import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
-/// @notice Exercises the messaging layer directly: the hub (L1) and spoke (domain). The
-/// test contract is the domain operator, and CHAIN_ID has a 3-validator set with quorum 2
-/// that must sign to advance the domain state.
-contract DomainMessagingTest is Test {
+/// @notice Exercises the messaging layer directly: the hub (L1) and spoke (domain). The test
+/// contract is the fee recipient. Checkpoint attestation is covered by DomainCheckpoint.t.sol.
+contract DomainMessagingTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
 
-    // Validator private keys (K1..K3 are the registered set; STRANGER_KEY is not).
+    // Validator private keys of the registered set.
     uint256 internal constant K1 = 0xA11CE;
     uint256 internal constant K2 = 0xB0B;
     uint256 internal constant K3 = 0xC0DE;
-    uint256 internal constant STRANGER_KEY = 0xBEEF;
+
+    bytes internal constant VIEWING_KEY =
+        hex"04d31f49ed035afc6c7045c4dd33b6485466fcf6021eb3e01a54a95cbc0b3e5399de67354267cc3cf62b8e933b932af6dfc19ce8e6be68d707c59873e6fb184a50";
 
     DomainHub internal hub;
     DomainSpoke internal spoke;
@@ -27,34 +27,20 @@ contract DomainMessagingTest is Test {
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal stranger = makeAddr("stranger");
-    address internal operator = makeAddr("operator");
+    address internal feeRecipient = makeAddr("feeRecipient");
 
     function setUp() public {
         hub = new DomainHub();
-        hub.registerDomain(CHAIN_ID, 0, _validators(), 2); // test contract is the operator
-        spoke = new DomainSpoke(CHAIN_ID, address(this), block.chainid, address(hub));
+        _registerDomain(hub, CHAIN_ID, _keys(K1, K2, K3), 2);
+        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
     }
 
-    // ---------------------------------------------------------------------
-    // Validator signing helpers
-    // ---------------------------------------------------------------------
-
-    function _validators() internal view returns (address[] memory vs) {
-        vs = new address[](3);
-        vs[0] = vm.addr(K1);
-        vs[1] = vm.addr(K2);
-        vs[2] = vm.addr(K3);
+    function _validators() internal pure returns (address[] memory) {
+        return _addresses(_keys(K1, K2, K3));
     }
 
-    /// @dev One validator's signature over the `(blockNumber, root, anchor)` transition at the
-    /// current nonce.
-    function _sig(uint64 chainId, uint64 blockNumber, bytes32 root, bytes32 anchor, uint256 key)
-        internal
-        view
-        returns (bytes memory)
-    {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, hub.stateTransitionDigest(chainId, blockNumber, root, anchor));
-        return abi.encodePacked(r, s, v);
+    function _register(uint64 chainId, address recipient, bytes memory viewingKey, uint64 interval) internal {
+        hub.registerDomain(chainId, _validators(), 2, recipient, viewingKey, interval);
     }
 
     // ---------------------------------------------------------------------
@@ -63,34 +49,29 @@ contract DomainMessagingTest is Test {
 
     function test_register_rejectsL1ChainId() public {
         vm.expectRevert("DomainHub: cannot register L1 chain id");
-        hub.registerDomain(uint64(block.chainid), 0, _validators(), 2);
+        _register(uint64(block.chainid), feeRecipient, "", 1);
     }
 
     function test_register_rejectsDuplicate() public {
         vm.expectRevert("DomainHub: already registered");
-        hub.registerDomain(CHAIN_ID, 1, _validators(), 2);
-    }
-
-    function test_register_rejectsUnknownVerificationMode() public {
-        vm.expectRevert("DomainHub: unknown verification mode");
-        hub.registerDomain(8888, 3, _validators(), 2);
+        _register(CHAIN_ID, feeRecipient, "", 1);
     }
 
     function test_register_rejectsZeroQuorum() public {
         vm.expectRevert("DomainHub: zero quorum");
-        hub.registerDomain(4444, 0, _validators(), 0);
+        hub.registerDomain(4444, _validators(), 0, feeRecipient, "", 1);
     }
 
     function test_register_rejectsQuorumAboveValidatorCount() public {
         vm.expectRevert("DomainHub: quorum exceeds validators");
-        hub.registerDomain(4444, 0, _validators(), 4);
+        hub.registerDomain(4444, _validators(), 4, feeRecipient, "", 1);
     }
 
     function test_register_rejectsZeroValidator() public {
         address[] memory validators = new address[](1);
         validators[0] = address(0);
         vm.expectRevert("DomainHub: zero validator");
-        hub.registerDomain(4444, 0, validators, 1);
+        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1);
     }
 
     function test_register_rejectsDuplicateValidator() public {
@@ -98,25 +79,59 @@ contract DomainMessagingTest is Test {
         validators[0] = vm.addr(K1);
         validators[1] = vm.addr(K1);
         vm.expectRevert("DomainHub: duplicate validator");
-        hub.registerDomain(4444, 0, validators, 1);
+        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1);
     }
 
-    function test_register_storesOperatorValidatorsAndQuorum() public {
-        vm.expectEmit(true, true, false, true, address(hub));
-        emit DomainHub.DomainRegistered(4444, operator, 1);
-        vm.prank(operator);
-        hub.registerDomain(4444, 1, _validators(), 2);
+    function test_register_rejectsZeroFeeRecipient() public {
+        vm.expectRevert("DomainHub: zero fee recipient");
+        _register(4444, address(0), "", 1);
+    }
 
-        (bool registered, uint8 stateVerificationMode, address configuredOperator, uint256 quorum) =
-            hub.domainConfigs(4444);
-        assertTrue(registered);
-        assertEq(stateVerificationMode, 1);
-        assertEq(configuredOperator, operator);
-        assertEq(quorum, 2);
+    function test_register_rejectsZeroCheckpointInterval() public {
+        vm.expectRevert("DomainHub: zero checkpoint interval");
+        _register(4444, feeRecipient, "", 0);
+    }
+
+    function test_register_rejectsMalformedViewingKey() public {
+        // Wrong length.
+        vm.expectRevert("DomainHub: invalid viewing key");
+        _register(4444, feeRecipient, hex"04c0ffee", 1);
+
+        // Right length, not an uncompressed-point prefix.
+        bytes memory compressedPrefix = VIEWING_KEY;
+        compressedPrefix[0] = 0x02;
+        vm.expectRevert("DomainHub: invalid viewing key");
+        _register(4444, feeRecipient, compressedPrefix, 1);
+    }
+
+    function test_register_storesConfig() public {
+        vm.expectEmit(true, true, false, true, address(hub));
+        emit IDomainHub.DomainRegistered(4444, feeRecipient, 25);
+        vm.expectEmit(true, false, false, true, address(hub));
+        emit IDomainHub.ViewingKeyRegistered(4444, "");
+        vm.prank(stranger); // registration is permissionless; the caller gets no role
+        _register(4444, feeRecipient, "", 25);
+
+        assertTrue(hub.isDomainRegistered(4444));
+        assertFalse(hub.isDomainRegistered(5555));
+        assertEq(hub.feeRecipients(4444), feeRecipient);
+        assertEq(hub.checkpointIntervals(4444), 25);
+        assertEq(hub.quorums(4444), 2);
+        assertEq(hub.viewingKeys(4444), "");
         assertEq(hub.getValidators(4444).length, 3);
         assertTrue(hub.isDomainValidator(4444, vm.addr(K1)));
         assertTrue(hub.isDomainValidator(4444, vm.addr(K3)));
         assertFalse(hub.isDomainValidator(4444, stranger));
+    }
+
+    function test_register_publishesViewingKey() public {
+        vm.expectEmit(true, false, false, true, address(hub));
+        emit IDomainHub.ViewingKeyRegistered(4444, VIEWING_KEY);
+        _register(4444, feeRecipient, VIEWING_KEY, 1);
+
+        // Senders read the key from the hub to encrypt domain transactions to it.
+        assertEq(hub.viewingKeys(4444), VIEWING_KEY);
+        assertEq(hub.viewingKeys(4444).length, hub.VIEWING_KEY_LENGTH());
     }
 
     // ---------------------------------------------------------------------
@@ -143,7 +158,7 @@ contract DomainMessagingTest is Test {
     }
 
     function test_sendL1Message_noncesArePerDomain() public {
-        hub.registerDomain(4444, 0, _validators(), 2);
+        _register(4444, feeRecipient, "", 1);
 
         // Each domain assigns its own gapless nonce sequence, checked via the emitted
         // preimages.
@@ -367,7 +382,7 @@ contract DomainMessagingTest is Test {
     // Domain -> L1
     // ---------------------------------------------------------------------
 
-    function test_sendDomainMessage_recordsHashAndEmitsPreimage() public {
+    function test_sendDomainMessage_recordsIdByNonceAndEmitsPreimage() public {
         MessageLib.DomainMessage memory message =
             MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, 0, hex"cafe");
         bytes32 expectedHash = MessageLib.hashDomainMessage(message, block.chainid, address(hub));
@@ -375,116 +390,44 @@ contract DomainMessagingTest is Test {
         vm.expectEmit(address(spoke));
         emit IDomainSpoke.DomainMessageRecorded(expectedHash, abi.encode(message));
         vm.prank(alice);
-        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"cafe");
+        bytes32 messageId = spoke.sendDomainMessage(uint64(block.chainid), bob, hex"cafe");
 
-        assertEq(spoke.pendingDomainMessages(0), expectedHash);
+        assertEq(messageId, expectedHash);
+        assertEq(spoke.domainMessageCount(), 1);
+        assertEq(spoke.domainMessageIds(0), expectedHash);
     }
 
-    function test_finalizeDomainMessages_onlyOperator() public {
-        vm.prank(stranger);
-        vm.expectRevert("DomainSpoke: not operator");
-        spoke.finalizeDomainMessages();
-    }
-
-    // ---------------------------------------------------------------------
-    // Multisig state verification (on-chain vote accumulation)
-    // ---------------------------------------------------------------------
-
-    function test_submitStateSignature_advancesOnlyAtQuorum() public {
-        bytes32 newRoot = keccak256("state root");
-        bytes32 anchor = keccak256("domain anchor");
-        bytes32 digest = hub.stateTransitionDigest(CHAIN_ID, 100, newRoot, anchor);
-
-        // First validator votes: quorum (2) not met, so the state MUST NOT advance.
-        hub.submitStateSignature(CHAIN_ID, 100, newRoot, anchor, _sig(CHAIN_ID, 100, newRoot, anchor, K1));
-        assertEq(hub.stateVotes(digest), 1);
-        assertEq(hub.readCommitment(CHAIN_ID), bytes32(0));
-        assertFalse(hub.domainAnchors(CHAIN_ID, anchor));
-        assertEq(hub.stateNonces(CHAIN_ID), 0);
-        assertEq(hub.domainBlockNumbers(CHAIN_ID), 0);
-
-        // Second, distinct validator votes: quorum reached, state advances.
-        hub.submitStateSignature(CHAIN_ID, 100, newRoot, anchor, _sig(CHAIN_ID, 100, newRoot, anchor, K2));
-        assertEq(hub.readCommitment(CHAIN_ID), newRoot);
-        assertTrue(hub.domainAnchors(CHAIN_ID, anchor));
-        assertEq(hub.stateNonces(CHAIN_ID), 1);
-        assertEq(hub.domainBlockNumbers(CHAIN_ID), 100);
-    }
-
-    function test_submitStateSignature_rejectsUnregisteredDomain() public {
-        bytes memory sig = _sig(9999, 1, bytes32(0), keccak256("anchor"), K1);
-        vm.expectRevert("DomainHub: domain not registered");
-        hub.submitStateSignature(9999, 1, bytes32(0), keccak256("anchor"), sig);
-    }
-
-    function test_submitStateSignature_rejectsNonValidator() public {
-        bytes32 anchor = keccak256("anchor");
-        bytes memory sig = _sig(CHAIN_ID, 1, bytes32(0), anchor, STRANGER_KEY);
-        vm.expectRevert("DomainHub: not a validator");
-        hub.submitStateSignature(CHAIN_ID, 1, bytes32(0), anchor, sig);
-    }
-
-    function test_submitStateSignature_rejectsDoubleVote() public {
-        bytes32 anchor = keccak256("anchor");
-        hub.submitStateSignature(CHAIN_ID, 1, bytes32(0), anchor, _sig(CHAIN_ID, 1, bytes32(0), anchor, K1));
-
-        bytes memory sig = _sig(CHAIN_ID, 1, bytes32(0), anchor, K1);
-        vm.expectRevert("DomainHub: already voted");
-        hub.submitStateSignature(CHAIN_ID, 1, bytes32(0), anchor, sig);
-    }
-
-    function test_submitStateSignature_rejectsStaleBlockNumber() public {
-        bytes32 anchor = keccak256("anchor");
-        // Commit block 5.
-        hub.submitStateSignature(CHAIN_ID, 5, bytes32(0), anchor, _sig(CHAIN_ID, 5, bytes32(0), anchor, K1));
-        hub.submitStateSignature(CHAIN_ID, 5, bytes32(0), anchor, _sig(CHAIN_ID, 5, bytes32(0), anchor, K2));
-        assertEq(hub.domainBlockNumbers(CHAIN_ID), 5);
-
-        // A proposal at or below the committed block number is rejected outright.
-        bytes memory sig = _sig(CHAIN_ID, 5, bytes32(0), anchor, K1);
-        vm.expectRevert("DomainHub: stale block number");
-        hub.submitStateSignature(CHAIN_ID, 5, bytes32(0), anchor, sig);
-    }
-
-    function test_submitStateSignature_signaturesDoNotReplayAcrossTransitions() public {
-        bytes32 anchor = keccak256("anchor");
-        // Capture K1's signature over the round-0 digest before the round advances.
-        bytes memory staleSig = _sig(CHAIN_ID, 1, bytes32(0), anchor, K1);
-
-        // Advance the transition to quorum (bumps stateNonce to 1).
-        hub.submitStateSignature(CHAIN_ID, 1, bytes32(0), anchor, staleSig);
-        hub.submitStateSignature(CHAIN_ID, 1, bytes32(0), anchor, _sig(CHAIN_ID, 1, bytes32(0), anchor, K2));
-        assertEq(hub.stateNonces(CHAIN_ID), 1);
-
-        // Resubmitted for block 2, the round-0 signature recovers to a non-validator against
-        // the round-1 digest.
-        vm.expectRevert("DomainHub: not a validator");
-        hub.submitStateSignature(CHAIN_ID, 2, bytes32(0), anchor, staleSig);
-    }
-
-    function test_consumeDomainMessage_endToEnd() public {
+    function test_domainMessageIds_storedByNonceAndRootMatchesMerkleTree() public {
         for (uint256 i = 0; i < 5; i++) {
             vm.prank(alice);
             spoke.sendDomainMessage(uint64(block.chainid), bob, abi.encodePacked(i));
         }
-        bytes32[] memory leaves = spoke.getPendingDomainMessages();
-        bytes32 anchor = spoke.finalizeDomainMessages();
-        assertEq(anchor, MerkleTreeLib.root(leaves));
-        assertEq(spoke.getPendingDomainMessages().length, 0);
+        assertEq(spoke.domainMessageCount(), 5);
 
-        // A quorum of validators votes the anchor (with the new state root) onto the hub.
-        bytes32 root = keccak256("root");
-        hub.submitStateSignature(CHAIN_ID, 1, root, anchor, _sig(CHAIN_ID, 1, root, anchor, K1));
-        hub.submitStateSignature(CHAIN_ID, 1, root, anchor, _sig(CHAIN_ID, 1, root, anchor, K2));
-        assertTrue(hub.domainAnchors(CHAIN_ID, anchor));
-
-        // Anchors are keyed by chain id: a different domain must not accept it.
-        assertFalse(hub.domainAnchors(8888, anchor));
-
-        for (uint256 i = 0; i < leaves.length; i++) {
-            bytes32[] memory proof = MerkleTreeLib.getProof(leaves, i);
-            assertTrue(MerkleProof.verify(proof, anchor, leaves[i]));
+        // Each id is the hash of its envelope, keyed by nonce; an unrecorded nonce reads zero.
+        bytes32[] memory all = _batchLeaves(spoke, 0, 5);
+        for (uint256 i = 0; i < 5; i++) {
+            MessageLib.DomainMessage memory message =
+                MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, i, abi.encodePacked(i));
+            assertEq(all[i], MessageLib.hashDomainMessage(message, block.chainid, address(hub)));
         }
+        assertEq(spoke.domainMessageIds(5), bytes32(0));
+
+        // The on-chain root matches the library over any range; one leaf is its own root.
+        assertEq(spoke.domainMessagesRoot(0, 5), MerkleTreeLib.root(all));
+        assertEq(spoke.domainMessagesRoot(2, 4), MerkleTreeLib.root(_batchLeaves(spoke, 2, 4)));
+        assertEq(spoke.domainMessagesRoot(4, 5), all[4]);
+        assertEq(spoke.domainMessagesRoot(3, 3), bytes32(0));
+    }
+
+    function test_domainMessagesRoot_rejectsInvalidRanges() public {
+        vm.prank(alice);
+        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"01");
+
+        vm.expectRevert("DomainSpoke: invalid range");
+        spoke.domainMessagesRoot(1, 0);
+        vm.expectRevert("DomainSpoke: range beyond recorded messages");
+        spoke.domainMessagesRoot(0, 2);
     }
 
     // ---------------------------------------------------------------------
@@ -492,8 +435,7 @@ contract DomainMessagingTest is Test {
     // ---------------------------------------------------------------------
 
     function test_sequenceToDomain_forwardsFeeAndEmits() public {
-        vm.prank(operator);
-        hub.registerDomain(4444, 0, _validators(), 2);
+        _register(4444, feeRecipient, "", 1);
         vm.deal(alice, 1 ether);
 
         vm.expectEmit(address(hub));
@@ -501,7 +443,7 @@ contract DomainMessagingTest is Test {
         vm.prank(alice);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
 
-        assertEq(operator.balance, 0.1 ether);
+        assertEq(feeRecipient.balance, 0.1 ether);
         assertEq(address(hub).balance, 0);
     }
 
@@ -510,10 +452,9 @@ contract DomainMessagingTest is Test {
         hub.sequenceToDomain(9999, hex"01");
     }
 
-    function test_sequenceToDomain_revertsIfOperatorRejectsFee() public {
-        address rejecting = address(new RejectingOperator());
-        vm.prank(rejecting);
-        hub.registerDomain(4444, 0, _validators(), 2);
+    function test_sequenceToDomain_revertsIfFeeRecipientRejectsFee() public {
+        address rejecting = address(new RejectingFeeRecipient());
+        _register(4444, rejecting, "", 1);
         vm.deal(alice, 1 ether);
 
         vm.prank(alice);
@@ -522,8 +463,8 @@ contract DomainMessagingTest is Test {
     }
 }
 
-/// @dev Operator without a payable fallback: any fee forwarded to it reverts.
-contract RejectingOperator {}
+/// @dev Fee recipient without a payable fallback: any fee forwarded to it reverts.
+contract RejectingFeeRecipient {}
 
 /// @dev Receiver that records what the spoke delivers, with a toggleable rejection mode to
 /// exercise the failed-delivery path.

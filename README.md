@@ -8,12 +8,13 @@ their deployment transactions as the seed deployer's first two domain transactio
 
 The setup tool (`offchain/src/setup.ts`, run via `npm run setup`) performs, in order:
 
-1. deploy `DomainHub` on the L1 and `registerDomain(...)` - the admin becomes the operator
-   and registers the validator set + quorum;
+1. deploy `DomainHub` on the L1 and `registerDomain(...)` with the validator set + quorum, the
+   fee recipient, the viewing public key (published for senders) and the
+   checkpoint interval;
 2. deploy `L1Bridge(hub, chainId)` (admin becomes owner);
 3. precompute the domain `DomainSpoke` = `CREATE(seed, 0)` and `DomainBridge` = `CREATE(seed, 1)`;
 4. sign the two domain creation transactions (gasless) and `sequenceToDomain` them through the hub;
-   the spoke constructor binds `(domainChainId, operator, l1ChainId, hub)`;
+   the spoke constructor binds `(domainChainId, l1ChainId, hub)`;
 5. `L1Bridge.registerDomainBridge(domainBridge)` (one-shot) against the precomputed address;
 6. optionally `setTokenAllowed(token)` — e.g. the wrapped-MON ERC20 used for deposits.
 

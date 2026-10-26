@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "setup": "tsx src/setup-cli.ts",
     "sequence": "tsx src/sequence-cli.ts",
+    "checkpoint": "tsx src/checkpoint-cli.ts",
     "viewing-key": "tsx src/viewing-key-cli.ts"
   },
   "dependencies": {

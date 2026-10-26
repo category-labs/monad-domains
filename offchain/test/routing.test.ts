@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Address, type Hex, type PublicClient } from "viem";
+import { zeroHash, type Address, type Hex, type PublicClient } from "viem";
 import {
   decodeDomainMessage, encodeDomainMessage, hashMessage, hashDomainMessage,
   domainDeliveryEnvelope, type DomainMessage,
 } from "../src/message.js";
-import { fetchDomainMessages, proveMessage } from "../src/prover.js";
+import { fetchDomainBatch, fetchDomainMessages, findBatchForNonce, proveMessage } from "../src/prover.js";
 import { routedMessageDeliveryStatus } from "../src/routing.js";
 import { verify, root } from "../src/merkle.js";
 
@@ -95,4 +95,117 @@ test("routing status does not turn RPC errors into delivery success", async () =
     getLogs: async () => { throw new Error("RPC unavailable"); },
   } as unknown as PublicClient;
   await assert.rejects(routedMessageDeliveryStatus(client, routed, spoke, 3n), /RPC unavailable/);
+});
+
+// ---------------------------------------------------------------------------
+// Attested batches: nonce ranges between consecutive checkpoints
+// ---------------------------------------------------------------------------
+
+const batchContext = { l1ChainId: 1n, hub: addr(1) };
+const batch = { fromNonce: 8n, toNonce: 10n, fromBlock: 9n, toBlock: 10n };
+
+function batchClient(stateIds: Hex[] = [legacyId, routeId]): PublicClient {
+  const calls: Record<string, unknown>[] = [];
+  const client = {
+    calls,
+    getLogs: async (request: { event: { name: string }; fromBlock: bigint; toBlock: bigint }) => {
+      calls.push(request);
+      // Both messages were recorded in block 10; only the chunk covering it returns them.
+      const coversBlock10 = request.fromBlock <= 10n && request.toBlock >= 10n;
+      return request.event.name === "DomainMessageRecorded" && coversBlock10 ? [logs.routed, logs.legacy] : [];
+    },
+    readContract: async (request: { functionName: string; args: [bigint] }) => {
+      calls.push(request);
+      if (request.functionName !== "domainMessageIds") throw new Error(`unexpected read ${request.functionName}`);
+      return stateIds[Number(request.args[0] - batch.fromNonce)] ?? zeroHash;
+    },
+  };
+  return client as unknown as PublicClient;
+}
+
+test("fetchDomainBatch returns the attested nonce range in order and cross-checks the spoke's ids", async () => {
+  const client = batchClient();
+  const messages = await fetchDomainBatch(client, spoke, batch, batchContext);
+  assert.deepEqual(messages.map((m) => m.message.sourceNonce), [8n, 9n]);
+  const { anchor, proof } = proveMessage(messages, routeId);
+  assert.equal(anchor, root([legacyId, routeId]));
+  assert.ok(verify(proof, anchor, routeId));
+
+  const calls = (client as unknown as { calls: Record<string, unknown>[] }).calls;
+  const logQuery = calls.find((c) => "event" in c)!;
+  assert.equal(logQuery.fromBlock, 10n, "events are scanned after the previous checkpoint");
+  assert.equal(logQuery.toBlock, 10n);
+  const idReads = calls.filter((c) => c.functionName === "domainMessageIds");
+  assert.deepEqual(idReads.map((c) => c.args), [[8n], [9n]]);
+  for (const read of idReads) assert.equal(read.blockNumber, 10n, "the spoke's ids are read at the attested height");
+});
+
+test("fetchDomainBatch scans wide ranges in chunks and honours a scan floor", async () => {
+  const client = batchClient();
+  await fetchDomainBatch(client, spoke, { ...batch, fromBlock: 0n, toBlock: 10n }, batchContext, { maxLogRange: 4n });
+  const ranges = (client as unknown as { calls: Record<string, unknown>[] }).calls
+    .filter((c) => "event" in c)
+    .map((c) => [c.fromBlock, c.toBlock]);
+  assert.deepEqual(ranges, [[1n, 4n], [5n, 8n], [9n, 10n]]);
+
+  const floored = batchClient();
+  await fetchDomainBatch(floored, spoke, { ...batch, fromBlock: 0n, toBlock: 10n }, batchContext, { scanFromBlock: 7n });
+  const flooredRanges = (floored as unknown as { calls: Record<string, unknown>[] }).calls
+    .filter((c) => "event" in c)
+    .map((c) => [c.fromBlock, c.toBlock]);
+  assert.deepEqual(flooredRanges, [[7n, 10n]]);
+});
+
+test("fetchDomainBatch rejects a batch the spoke's state does not confirm", async () => {
+  await assert.rejects(fetchDomainBatch(batchClient([routeId, legacyId]), spoke, batch, batchContext), /differs from the spoke's stored id/);
+  await assert.rejects(
+    fetchDomainBatch(batchClient(), spoke, { ...batch, anchor: root([routeId]) }, batchContext),
+    /differs from the attested anchor/,
+  );
+});
+
+test("fetchDomainBatch rejects incomplete nonce ranges", async () => {
+  await assert.rejects(fetchDomainBatch(batchClient(), spoke, { ...batch, toNonce: 11n }, batchContext), /expected 3/);
+  await assert.rejects(
+    fetchDomainBatch(batchClient(), spoke, { ...batch, fromNonce: 7n, toNonce: 9n }, batchContext),
+    /expected 2|missing nonce 7/,
+  );
+  assert.deepEqual(await fetchDomainBatch(batchClient(), spoke, { ...batch, toNonce: 8n }, batchContext), []);
+});
+
+test("findBatchForNonce pairs consecutive attestations with the spoke's counts at their heights", async () => {
+  const anchorA = root([legacyId]);
+  const anchorB = root([routeId]);
+  const l1 = {
+    getLogs: async () => [
+      { args: { domainChainId: 7777n, stateNonce: 1n, domainBlockNumber: 20n, newStateRoot: "0x" as Hex, domainAnchor: anchorB }, blockNumber: 21n, logIndex: 0 },
+      { args: { domainChainId: 7777n, stateNonce: 0n, domainBlockNumber: 10n, newStateRoot: "0x" as Hex, domainAnchor: anchorA }, blockNumber: 11n, logIndex: 0 },
+    ],
+  } as unknown as PublicClient;
+  const countsByHeight: Record<string, bigint> = { "10": 9n, "20": 10n };
+  const domain = {
+    readContract: async ({ blockNumber }: { blockNumber: bigint }) => countsByHeight[String(blockNumber)] ?? 0n,
+  } as unknown as PublicClient;
+  const range = { fromBlock: 0n, toBlock: 30n };
+
+  assert.deepEqual(await findBatchForNonce(l1, domain, addr(1), spoke, 7777n, 8n, range), {
+    fromNonce: 0n, toNonce: 9n, fromBlock: 0n, toBlock: 10n, anchor: anchorA,
+  });
+  assert.deepEqual(await findBatchForNonce(l1, domain, addr(1), spoke, 7777n, 9n, range), {
+    fromNonce: 9n, toNonce: 10n, fromBlock: 10n, toBlock: 20n, anchor: anchorB,
+  });
+  assert.equal(await findBatchForNonce(l1, domain, addr(1), spoke, 7777n, 10n, range), null, "not attested yet");
+});
+
+test("findBatchForNonce rejects a scan range that starts after the first attestation", async () => {
+  const l1 = {
+    getLogs: async () => [
+      { args: { domainChainId: 7777n, stateNonce: 2n, domainBlockNumber: 30n, newStateRoot: "0x" as Hex, domainAnchor: root([routeId]) }, blockNumber: 31n, logIndex: 0 },
+    ],
+  } as unknown as PublicClient;
+  const domain = { readContract: async () => 10n } as unknown as PublicClient;
+  await assert.rejects(
+    findBatchForNonce(l1, domain, addr(1), spoke, 7777n, 9n, { fromBlock: 25n, toBlock: 40n }),
+    /starts after the domain's first attestation/,
+  );
 });
