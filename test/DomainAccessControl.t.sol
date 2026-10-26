@@ -39,9 +39,10 @@ contract DomainAccessControlTest is DomainTestBase {
         token = spoke.deployContract(type(TestERC20).creationCode, policyOwner);
     }
 
-    function _rule(address target, bytes4 selector, IDomainAccessControl.AccessMode mode, uint16 index) internal {
+    /// @dev `subjects` is the SubjectMatch bit mask: bit i admits the address in argument word i.
+    function _rule(address target, bytes4 selector, IDomainAccessControl.AccessMode mode, uint16 subjects) internal {
         vm.prank(policyOwner);
-        spoke.setAccessControl(target, selector, mode, index);
+        spoke.setAccessControl(target, selector, mode, subjects);
     }
 
     function _reader(address target, bytes4 selector, address account, bool allowed) internal {
@@ -53,10 +54,10 @@ contract DomainAccessControlTest is DomainTestBase {
         return abi.encodeCall(IERC20.balanceOf, (subject));
     }
 
-    function _assertRule(bytes4 selector, IDomainAccessControl.AccessMode mode, uint16 index) internal view {
-        (IDomainAccessControl.AccessMode storedMode, uint16 storedIndex) = spoke.accessControl(token, selector);
+    function _assertRule(bytes4 selector, IDomainAccessControl.AccessMode mode, uint16 subjects) internal view {
+        (IDomainAccessControl.AccessMode storedMode, uint16 storedSubjects) = spoke.accessControl(token, selector);
         assertEq(uint8(storedMode), uint8(mode));
-        assertEq(storedIndex, index);
+        assertEq(storedSubjects, subjects);
     }
 
     function test_deploymentAssignsExplicitPolicyOwnerAndInstallsCode() public view {
@@ -83,7 +84,7 @@ contract DomainAccessControlTest is DomainTestBase {
         assertEq(DeploymentOwnershipExample(deployed).constructorSender(), address(spoke));
         vm.expectRevert("DomainSpoke: not policy owner");
         vm.prank(alice);
-        spoke.setAccessControl(deployed, BALANCE_OF, SUBJECT_MATCH, 0);
+        spoke.setAccessControl(deployed, BALANCE_OF, SUBJECT_MATCH, 1);
     }
 
     function test_deploymentRejectsZeroPolicyOwnerBeforeCreatingContract() public {
@@ -113,7 +114,7 @@ contract DomainAccessControlTest is DomainTestBase {
         assertEq(spoke.policyOwners(token), policyOwner);
         assertEq(spoke.policyOwners(other), bob);
         vm.prank(bob);
-        spoke.setAccessControl(other, BALANCE_OF, SUBJECT_MATCH, 0);
+        spoke.setAccessControl(other, BALANCE_OF, SUBJECT_MATCH, 1);
         vm.expectRevert("DomainSpoke: not policy owner");
         vm.prank(bob);
         spoke.setAccessControl(token, BALANCE_OF, OPEN, 0);
@@ -122,22 +123,22 @@ contract DomainAccessControlTest is DomainTestBase {
     function test_deployerAndOutsiderHaveNoImplicitConfigurationAuthority() public {
         vm.startPrank(deployer);
         vm.expectRevert("DomainSpoke: not policy owner");
-        spoke.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 0);
+        spoke.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 1);
         vm.expectRevert("DomainSpoke: not policy owner");
         spoke.setReaderAllowed(token, BALANCE_OF, reader, true);
         vm.stopPrank();
         vm.prank(outsider);
         vm.expectRevert("DomainSpoke: not policy owner");
-        spoke.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 0);
+        spoke.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 1);
     }
 
     function testFuzz_onlyPolicyOwnerCanConfigureRulesAndReaders(address stranger) public {
         vm.assume(stranger != policyOwner);
-        _rule(token, BALANCE_OF, SUBJECT_MATCH, 0);
+        _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
         _reader(token, BALANCE_OF, reader, true);
         vm.startPrank(stranger);
         vm.expectRevert("DomainSpoke: not policy owner");
-        spoke.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 1);
+        spoke.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 2);
         vm.expectRevert("DomainSpoke: not policy owner");
         spoke.setAccessControl(token, BALANCE_OF, OPEN, 0);
         vm.expectRevert("DomainSpoke: not policy owner");
@@ -153,7 +154,7 @@ contract DomainAccessControlTest is DomainTestBase {
         assertEq(spoke.policyOwners(independent), address(0));
         vm.startPrank(policyOwner);
         vm.expectRevert("DomainSpoke: not policy owner");
-        spoke.setAccessControl(independent, BALANCE_OF, SUBJECT_MATCH, 0);
+        spoke.setAccessControl(independent, BALANCE_OF, SUBJECT_MATCH, 1);
         vm.expectRevert("DomainSpoke: not policy owner");
         spoke.setReaderAllowed(independent, BALANCE_OF, reader, true);
         vm.stopPrank();
@@ -165,9 +166,9 @@ contract DomainAccessControlTest is DomainTestBase {
     }
 
     function test_subjectMatchAllowsSubjectAndApprovedReaders() public {
-        _rule(token, BALANCE_OF, SUBJECT_MATCH, 0);
+        _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
         _reader(token, BALANCE_OF, reader, true);
-        _assertRule(BALANCE_OF, SUBJECT_MATCH, 0);
+        _assertRule(BALANCE_OF, SUBJECT_MATCH, 1);
         assertTrue(spoke.approvedReaders(token, BALANCE_OF, reader));
         assertTrue(spoke.canCall(alice, token, _balance(alice)));
         assertTrue(spoke.canCall(bob, token, _balance(bob)));
@@ -199,9 +200,9 @@ contract DomainAccessControlTest is DomainTestBase {
 
     function test_rulesAndGrantsAreScopedToTargetAndSelector() public {
         address other = spoke.deployContract(type(TestERC20).creationCode, policyOwner);
-        _rule(token, BALANCE_OF, SUBJECT_MATCH, 0);
-        _rule(other, BALANCE_OF, SUBJECT_MATCH, 0);
-        _rule(token, ALLOWANCE, SUBJECT_MATCH, 0);
+        _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
+        _rule(other, BALANCE_OF, SUBJECT_MATCH, 1);
+        _rule(token, ALLOWANCE, SUBJECT_MATCH, 1);
         _reader(token, BALANCE_OF, reader, true);
         assertTrue(spoke.canCall(reader, token, _balance(alice)));
         assertFalse(spoke.canCall(reader, other, _balance(alice)));
@@ -210,7 +211,7 @@ contract DomainAccessControlTest is DomainTestBase {
     }
 
     function test_policyOwnerCanRevokeReaderWithoutBlockingSubject() public {
-        _rule(token, BALANCE_OF, SUBJECT_MATCH, 0);
+        _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
         _reader(token, BALANCE_OF, reader, true);
         assertTrue(spoke.canCall(reader, token, _balance(alice)));
         _reader(token, BALANCE_OF, reader, false);
@@ -221,11 +222,11 @@ contract DomainAccessControlTest is DomainTestBase {
 
     function test_policyOwnerCanChangeArgumentAndDisableRestriction() public {
         bytes memory data = abi.encodeCall(IERC20.allowance, (alice, bob));
-        _rule(token, ALLOWANCE, SUBJECT_MATCH, 1);
-        _assertRule(ALLOWANCE, SUBJECT_MATCH, 1);
+        _rule(token, ALLOWANCE, SUBJECT_MATCH, 2);
+        _assertRule(ALLOWANCE, SUBJECT_MATCH, 2);
         assertTrue(spoke.canCall(bob, token, data));
         assertFalse(spoke.canCall(alice, token, data));
-        _rule(token, ALLOWANCE, SUBJECT_MATCH, 0);
+        _rule(token, ALLOWANCE, SUBJECT_MATCH, 1);
         assertTrue(spoke.canCall(alice, token, data));
         assertFalse(spoke.canCall(bob, token, data));
         _rule(token, ALLOWANCE, OPEN, 42);
@@ -233,8 +234,64 @@ contract DomainAccessControlTest is DomainTestBase {
         assertTrue(spoke.canCall(reader, token, data));
     }
 
+    function test_subjectMatchAdmitsAnyListedArgument() public {
+        // allowance(owner, spender): readable by the owner (word 0) or the spender (word 1).
+        bytes memory data = abi.encodeCall(IERC20.allowance, (alice, bob));
+        vm.expectEmit(true, true, false, true, address(spoke));
+        emit IDomainAccessControl.AccessControlSet(token, ALLOWANCE, SUBJECT_MATCH, 3);
+        _rule(token, ALLOWANCE, SUBJECT_MATCH, 3);
+        _assertRule(ALLOWANCE, SUBJECT_MATCH, 3);
+        assertTrue(spoke.canCall(alice, token, data));
+        assertTrue(spoke.canCall(bob, token, data));
+        assertFalse(spoke.canCall(outsider, token, data));
+        assertFalse(spoke.canCall(policyOwner, token, data));
+        _reader(token, ALLOWANCE, reader, true);
+        assertTrue(spoke.canCall(reader, token, data));
+
+        // A listed word the calldata does not reach cannot match; the others still can.
+        bytes memory ownerOnly = abi.encodePacked(ALLOWANCE, abi.encode(alice));
+        assertTrue(spoke.canCall(alice, token, ownerOnly));
+        assertFalse(spoke.canCall(bob, token, ownerOnly));
+
+        // A malformed listed word denies even when another listed word matches the caller,
+        // whichever of the two comes first.
+        bytes memory malformedSpender = abi.encodePacked(ALLOWANCE, abi.encode(alice), uint256(1) << 160 | uint160(bob));
+        assertFalse(spoke.canCall(alice, token, malformedSpender));
+        assertTrue(spoke.canCall(reader, token, malformedSpender));
+        bytes memory malformedOwner = abi.encodePacked(ALLOWANCE, uint256(1) << 160 | uint160(alice), abi.encode(bob));
+        assertFalse(spoke.canCall(bob, token, malformedOwner));
+    }
+
+    function test_malformedWordOutsideTheMaskIsIgnored() public {
+        _rule(token, ALLOWANCE, SUBJECT_MATCH, 1);
+        bytes memory malformedSpender = abi.encodePacked(ALLOWANCE, abi.encode(alice), uint256(1) << 160 | uint160(bob));
+        assertTrue(spoke.canCall(alice, token, malformedSpender));
+        assertFalse(spoke.canCall(bob, token, malformedSpender));
+    }
+
+    function test_subjectMatchRequiresASubjectArgument() public {
+        _rule(token, ALLOWANCE, SUBJECT_MATCH, 3);
+        vm.prank(policyOwner);
+        vm.expectRevert("DomainSpoke: no subject arguments");
+        spoke.setAccessControl(token, ALLOWANCE, SUBJECT_MATCH, 0);
+        _assertRule(ALLOWANCE, SUBJECT_MATCH, 3);
+    }
+
+    function test_canCallFitsTheClientStipend() public {
+        // The client gives canCall 30,000 gas: the widest rule, a cold rule and a reader miss,
+        // with the caller only in the last listed word, must still answer.
+        _rule(token, ALLOWANCE, SUBJECT_MATCH, type(uint16).max);
+        bytes memory data = abi.encodePacked(ALLOWANCE);
+        for (uint256 i = 0; i < 15; i++) {
+            data = abi.encodePacked(data, abi.encode(bob));
+        }
+        data = abi.encodePacked(data, abi.encode(alice));
+        assertTrue(spoke.canCall{gas: 30_000}(alice, token, data));
+        assertFalse(spoke.canCall{gas: 30_000}(outsider, token, data));
+    }
+
     function test_readerGrantsPersistAcrossModeChanges() public {
-        _rule(token, BALANCE_OF, SUBJECT_MATCH, 0);
+        _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
         _reader(token, BALANCE_OF, reader, true);
         _rule(token, BALANCE_OF, OPEN, 0);
         assertTrue(spoke.canCall(bob, token, _balance(alice)));
@@ -246,8 +303,8 @@ contract DomainAccessControlTest is DomainTestBase {
     function test_delegateCallChecksOnlyContextWhileDirectCallChecksImplementation() public {
         address implementation = spoke.deployContract(type(TestERC20).creationCode, policyOwner);
         bytes memory data = abi.encodeCall(IERC20.allowance, (alice, bob));
-        _rule(token, ALLOWANCE, SUBJECT_MATCH, 0);
-        _rule(implementation, ALLOWANCE, SUBJECT_MATCH, 1);
+        _rule(token, ALLOWANCE, SUBJECT_MATCH, 1);
+        _rule(implementation, ALLOWANCE, SUBJECT_MATCH, 2);
 
         // Delegated code uses the token's storage and its first-argument rule.
         assertTrue(spoke.canCall(alice, token, data));
@@ -270,7 +327,7 @@ contract DomainAccessControlTest is DomainTestBase {
     }
 
     function test_zeroSelectorRestrictionDeniesShortCalldata() public {
-        _rule(token, bytes4(0), SUBJECT_MATCH, 0);
+        _rule(token, bytes4(0), SUBJECT_MATCH, 1);
         assertFalse(spoke.canCall(alice, token, hex""));
         assertFalse(spoke.canCall(alice, token, hex"12"));
         assertFalse(spoke.canCall(alice, token, hex"1234"));
@@ -281,7 +338,7 @@ contract DomainAccessControlTest is DomainTestBase {
     }
 
     function testFuzz_malformedSubjectDeniesWithoutReverting(address subject, uint96 highBits, uint8 length) public {
-        _rule(token, BALANCE_OF, SUBJECT_MATCH, 0);
+        _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
         assertTrue(spoke.canCall(subject, token, _balance(subject)));
         uint256 word = (uint256(highBits) << 160) | uint160(subject);
         bytes memory encoded = abi.encodePacked(BALANCE_OF, word);
@@ -290,9 +347,12 @@ contract DomainAccessControlTest is DomainTestBase {
         assertFalse(spoke.canCall(subject, token, truncated));
     }
 
-    function test_maximumArgumentIndexDeniesShortInputWithoutOverflow() public {
-        _rule(token, BALANCE_OF, SUBJECT_MATCH, type(uint16).max);
+    function test_subjectBitsBeyondCalldataCannotMatch() public {
+        _rule(token, BALANCE_OF, SUBJECT_MATCH, uint16(1) << 15);
         assertFalse(spoke.canCall(alice, token, _balance(alice)));
+        _rule(token, BALANCE_OF, SUBJECT_MATCH, type(uint16).max);
+        assertTrue(spoke.canCall(alice, token, _balance(alice)));
+        assertFalse(spoke.canCall(bob, token, _balance(alice)));
     }
 
     function test_unknownAccessModeReverts() public {
