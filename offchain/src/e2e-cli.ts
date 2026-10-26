@@ -480,20 +480,20 @@ async function main() {
   if (openRead !== PRIVATE_SUPPLY) throw new Error(`unrestricted read returned ${openRead}, expected ${PRIVATE_SUPPLY}`);
   console.log(`  before any rule, bob reads alice's balance: ${openRead}`);
 
-  // The policy owner restricts balanceOf to its subject (argument 0); approved readers bypass the rule.
+  // The policy owner restricts balanceOf to its subject (word 0, mask 0b1); approved readers bypass the rule.
   const restrict = await sequence(
     ADMIN_KEY,
     spoke,
-    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessControl", args: [privateToken, BALANCE_OF, SUBJECT_MATCH, 0] }),
+    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessControl", args: [privateToken, BALANCE_OF, SUBJECT_MATCH, 0b1] }),
   );
-  await waitForDomainTx(domain, restrict.domainTxHash, "spoke.setAccessControl(privateToken, balanceOf, SubjectMatch, arg 0)");
-  const [ruleMode, ruleIndex] = (await domain.readContract({
+  await waitForDomainTx(domain, restrict.domainTxHash, "spoke.setAccessControl(privateToken, balanceOf, SubjectMatch, word 0)");
+  const [ruleMode, ruleSubjects] = (await domain.readContract({
     address: spoke,
     abi: spokeArt.abi,
     functionName: "accessControl",
     args: [privateToken, BALANCE_OF],
   })) as [number, number];
-  if (ruleMode !== SUBJECT_MATCH || ruleIndex !== 0) throw new Error(`rule not stored: (${ruleMode}, ${ruleIndex})`);
+  if (ruleMode !== SUBJECT_MATCH || ruleSubjects !== 0b1) throw new Error(`rule not stored: (${ruleMode}, ${ruleSubjects})`);
 
   // The spoke's own verdicts, read directly.
   const verdict = (caller: Address, subject: Address) =>
@@ -514,6 +514,23 @@ async function main() {
   const supply = (await domain.readContract({ address: privateToken, abi: tokenArt.abi, functionName: "totalSupply", account: bob.address })) as bigint;
   if (supply !== PRIVATE_SUPPLY) throw new Error(`totalSupply (unrestricted selector) returned ${supply}`);
   console.log(`  eth_call bob -> totalSupply() (unrestricted selector): ${supply}`);
+
+  // A two-party view: allowance(owner, spender) is readable by either party (argument words 0
+  // and 1) and by nobody else, the policy owner included.
+  const ALLOWANCE = toFunctionSelector("allowance(address,address)");
+  const bothParties = await sequence(
+    ADMIN_KEY,
+    spoke,
+    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessControl", args: [privateToken, ALLOWANCE, SUBJECT_MATCH, 0b11] }),
+  );
+  await waitForDomainTx(domain, bothParties.domainTxHash, "spoke.setAccessControl(privateToken, allowance, SubjectMatch, words 0|1)");
+  const readAllowance = (from: Address) =>
+    domain.readContract({ address: privateToken, abi: tokenArt.abi, functionName: "allowance", args: [alice.address, bob.address], account: from }) as Promise<bigint>;
+  const ownerRead = await readAllowance(alice.address);
+  const spenderRead = await readAllowance(bob.address);
+  if (ownerRead !== 0n || spenderRead !== 0n) throw new Error(`allowance reads returned ${ownerRead} / ${spenderRead}, expected 0 (nothing approved)`);
+  console.log("  eth_call allowance(alice, bob): readable by alice (owner) and by bob (spender)");
+  await expectCallDenied("eth_call admin (policy owner and RPC operator, neither party) -> allowance(alice, bob)", () => readAllowance(admin.address));
 
   // Sequenced transactions: a denied frame reverts the whole transaction.
   const bobDirect = await sequence(BOB_KEY, privateToken, balanceOfData(alice.address));

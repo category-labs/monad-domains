@@ -75,13 +75,14 @@ contract DomainSpoke is IDomainSpoke {
         emit ContractDeployed(deployed, msg.sender, policyOwner);
     }
 
-    function setAccessControl(address target, bytes4 selector, AccessMode mode, uint16 subjectArgumentIndex)
+    function setAccessControl(address target, bytes4 selector, AccessMode mode, uint16 subjectArguments)
         external
         onlyPolicyOwner(target)
     {
-        uint16 index = mode == AccessMode.SubjectMatch ? subjectArgumentIndex : 0;
-        accessControl[target][selector] = AccessRule(mode, index);
-        emit AccessControlSet(target, selector, mode, index);
+        require(mode != AccessMode.SubjectMatch || subjectArguments != 0, "DomainSpoke: no subject arguments");
+        uint16 subjects = mode == AccessMode.SubjectMatch ? subjectArguments : 0;
+        accessControl[target][selector] = AccessRule(mode, subjects);
+        emit AccessControlSet(target, selector, mode, subjects);
     }
 
     function setReaderAllowed(address target, bytes4 selector, address reader, bool allowed)
@@ -110,17 +111,24 @@ contract DomainSpoke is IDomainSpoke {
         if (approvedReaders[target][selector][caller]) return true;
         if (rule.mode == AccessMode.ReadersOnly) return false;
 
-        uint256 offset = 4 + uint256(rule.subjectArgumentIndex) * 32;
-        if (data.length < offset + 32) return false;
-        uint256 word;
-        assembly ("memory-safe") {
-            word := calldataload(add(data.offset, offset))
+        // The caller must be the address in one of the rule's listed argument words. Listed
+        // words are visited by increasing offset, so the first one the calldata does not reach
+        // in full ends the scan. Every reached listed word must be a canonical ABI address,
+        // rejected rather than truncated, even when another listed word already matched.
+        bool matched;
+        uint256 subjects = rule.subjectArguments;
+        for (uint256 offset = 4; subjects != 0; (offset, subjects) = (offset + 32, subjects >> 1)) {
+            if ((subjects & 1) == 0) continue;
+            if (data.length < offset + 32) break;
+            uint256 word;
+            assembly ("memory-safe") {
+                word := calldataload(add(data.offset, offset))
+            }
+            if (word > type(uint160).max) return false;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            if (address(uint160(word)) == caller) matched = true;
         }
-        // Reject non-canonical ABI addresses rather than truncating their high bits.
-        if (word > type(uint160).max) return false;
-        // forge-lint: disable-next-line(unsafe-typecast)
-        address subject = address(uint160(word));
-        return caller == subject;
+        return matched;
     }
 
     // ---------------------------------------------------------------------
