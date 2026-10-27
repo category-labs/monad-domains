@@ -3,10 +3,12 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {IDomainHub, IDomainSpoke} from "../src/interfaces/IDomain.sol";
+import {IDomainAccessControl} from "../src/interfaces/IDomainAccessControl.sol";
 import {L1Bridge} from "../src/bridge/L1Bridge.sol";
 import {DomainBridge} from "../src/bridge/DomainBridge.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
+import {DomainAccessRules} from "../src/access/DomainAccessRules.sol";
 
 /// Production deployment spans two chains; the hub and spoke must be deployed too (the spoke
 /// is intended to become a protocol predeploy — until then, deploy it like any contract).
@@ -28,6 +30,9 @@ import {DomainSpoke} from "../src/DomainSpoke.sol";
 ///        forge script script/Deploy.s.sol:DeployDomainBridge --rpc-url $DOMAIN_RPC --broadcast
 ///   5. On the L1:        L1_BRIDGE_ADDRESS=<step 3> DOMAIN_BRIDGE_ADDRESS=<step 4> \
 ///        forge script script/Deploy.s.sol:RegisterCounterpart --rpc-url $L1_RPC --broadcast
+///   Optional, on the domain: SPOKE_ADDRESS=<step 2> \
+///        forge script script/Deploy.s.sol:DeployAccessRules --rpc-url $DOMAIN_RPC --broadcast
+///      Deploys the stock rule table; contracts adopt it with `spoke.setAccessPolicy`.
 ///
 /// Step 5 is one-shot and permanent. Before running it, independently verify that the
 /// DomainBridge at DOMAIN_BRIDGE_ADDRESS has `L1_BRIDGE()` equal to your L1Bridge (it is
@@ -70,6 +75,19 @@ contract DeploySpoke is Script {
 
         console.log("DomainSpoke deployed:", address(spoke));
         console.log("  hub:", spoke.HUB());
+    }
+}
+
+contract DeployAccessRules is Script {
+    function run() external returns (DomainAccessRules rules) {
+        IDomainAccessControl spoke = IDomainAccessControl(vm.envAddress("SPOKE_ADDRESS"));
+
+        vm.startBroadcast();
+        rules = new DomainAccessRules(spoke);
+        vm.stopBroadcast();
+
+        console.log("DomainAccessRules deployed:", address(rules));
+        console.log("  SPOKE():", address(rules.SPOKE()));
     }
 }
 
