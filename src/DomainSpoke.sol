@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IDomainSpoke, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
+import {IDomainAccessPolicy} from "./interfaces/IDomainAccessControl.sol";
 import {MerkleTreeLib} from "./libraries/MerkleTreeLib.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 
@@ -29,9 +30,10 @@ contract DomainSpoke is IDomainSpoke {
     /// cleared: an attested batch stays rebuildable from state alone.
     mapping(uint256 => bytes32) public domainMessageIds;
 
+    /// @notice Who may name each deployed contract's access policy.
     mapping(address => address) public policyOwners;
-    mapping(address => mapping(bytes4 => AccessRule)) public accessControl;
-    mapping(address => mapping(bytes4 => mapping(address => bool))) public approvedReaders;
+    /// @notice Policy deciding calls into each contract; zero admits every caller.
+    mapping(address => address) public accessPolicies;
 
     /// @notice Minimum nonce the next delivered L1 -> domain message may carry.
     uint256 public nextL1Nonce;
@@ -75,60 +77,28 @@ contract DomainSpoke is IDomainSpoke {
         emit ContractDeployed(deployed, msg.sender, policyOwner);
     }
 
-    function setAccessControl(address target, bytes4 selector, AccessMode mode, uint16 subjectArguments)
-        external
-        onlyPolicyOwner(target)
-    {
-        require(mode != AccessMode.SubjectMatch || subjectArguments != 0, "DomainSpoke: no subject arguments");
-        uint16 subjects = mode == AccessMode.SubjectMatch ? subjectArguments : 0;
-        accessControl[target][selector] = AccessRule(mode, subjects);
-        emit AccessControlSet(target, selector, mode, subjects);
+    function setAccessPolicy(address target, address policy) external onlyPolicyOwner(target) {
+        require(policy == address(0) || policy.code.length != 0, "DomainSpoke: policy has no code");
+        require(policy != address(this), "DomainSpoke: spoke cannot be its own policy");
+        accessPolicies[target] = policy;
+        emit AccessPolicySet(target, policy);
     }
 
-    function setReaderAllowed(address target, bytes4 selector, address reader, bool allowed)
-        external
-        onlyPolicyOwner(target)
-    {
-        approvedReaders[target][selector][reader] = allowed;
-        emit ReaderAllowedSet(target, selector, reader, allowed);
-    }
-
-    /// @notice Evaluate stored rules without executing the proposed call.
-    /// @dev Check only the account whose storage is used, including during delegated
-    /// execution. No restriction means allow.
+    /// @notice Ask the policy named for `context`; no policy means allow.
+    /// @dev Anything but a canonical ABI `true` denies, so a policy that reverts, runs out of
+    /// gas or returns something else fails closed. Only one word of the answer is copied back.
     function canCall(address caller, address context, bytes calldata data) external view returns (bool) {
-        bytes4 selector = data.length < 4 ? bytes4(0) : bytes4(data[:4]);
-        return _checkAccess(caller, context, selector, data);
-    }
-
-    function _checkAccess(address caller, address target, bytes4 selector, bytes calldata data)
-        internal
-        view
-        returns (bool)
-    {
-        AccessRule memory rule = accessControl[target][selector];
-        if (rule.mode == AccessMode.Open) return true;
-        if (approvedReaders[target][selector][caller]) return true;
-        if (rule.mode == AccessMode.ReadersOnly) return false;
-
-        // The caller must be the address in one of the rule's listed argument words. Listed
-        // words are visited by increasing offset, so the first one the calldata does not reach
-        // in full ends the scan. Every reached listed word must be a canonical ABI address,
-        // rejected rather than truncated, even when another listed word already matched.
-        bool matched;
-        uint256 subjects = rule.subjectArguments;
-        for (uint256 offset = 4; subjects != 0; (offset, subjects) = (offset + 32, subjects >> 1)) {
-            if ((subjects & 1) == 0) continue;
-            if (data.length < offset + 32) break;
-            uint256 word;
-            assembly ("memory-safe") {
-                word := calldataload(add(data.offset, offset))
-            }
-            if (word > type(uint160).max) return false;
-            // forge-lint: disable-next-line(unsafe-typecast)
-            if (address(uint160(word)) == caller) matched = true;
+        address policy = accessPolicies[context];
+        if (policy == address(0)) return true;
+        bytes memory query = abi.encodeCall(IDomainAccessPolicy.canCall, (caller, context, data));
+        bool ok;
+        uint256 verdict;
+        assembly ("memory-safe") {
+            ok := staticcall(gas(), policy, add(query, 32), mload(query), 0, 32)
+            ok := and(ok, eq(returndatasize(), 32))
+            verdict := mload(0)
         }
-        return matched;
+        return ok && verdict == 1;
     }
 
     // ---------------------------------------------------------------------

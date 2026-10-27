@@ -2,6 +2,7 @@ import {
   createPublicClient,
   createWalletClient,
   defineChain,
+  encodeDeployData,
   encodeFunctionData,
   getContractAddress,
   http,
@@ -10,6 +11,7 @@ import {
   type Address,
   type Hex,
   type PublicClient,
+  zeroAddress,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadArtifact } from "./artifacts.js";
@@ -40,11 +42,11 @@ import { type MessageContext } from "./message.js";
  *   3. withdrawal: burn on the domain, validator attests the next scheduled checkpoint
  *      (state root + root of the messages recorded since the previous one) on the hub,
  *      rebuild the attested batch, prove and release on the L1;
- *   4. access control: deploy a token through `spoke.deployContract`, restrict
- *      `balanceOf` to its subject, and check that the execution client (which calls
- *      `spoke.canCall` before every domain CALL) denies both eth_call and sequenced
- *      transactions — including nested calls whose failure the caller catches — until the
- *      policy owner grants a reader.
+ *   4. access control: deploy a token through `spoke.deployContract`, name the stock
+ *      `DomainAccessRules` policy for it, restrict `balanceOf` to its subject, and check
+ *      that the execution client (which calls `spoke.canCall` before every domain call frame)
+ *      denies both eth_call and sequenced transactions — including nested calls whose
+ *      failure the caller catches — until the policy owner grants a reader.
  *
  * Configuration via env: L1_RPC_URL (default http://localhost:8080),
  * DOMAIN_CHAIN_ID (default (1 << 16) | 20143 = 85679), and VIEWING_KEY — the
@@ -417,13 +419,14 @@ async function main() {
   }
 
   // -------------------------------------------------------------------------
-  step("5. access control: the client calls spoke.canCall before every domain CALL");
+  step("5. access control: the client calls spoke.canCall before every domain call frame");
   // -------------------------------------------------------------------------
   const readerArt = loadArtifact("BalanceReader.sol", "BalanceReader");
+  const rulesArt = loadArtifact("DomainAccessRules.sol", "DomainAccessRules");
   const BALANCE_OF = toFunctionSelector("balanceOf(address)");
-  const SUBJECT_MATCH = 1;
+  const SUBJECT_MATCH = 1; // DomainAccessRules.AccessMode.SubjectMatch
   const PRIVATE_SUPPLY = 1000n * 10n ** 18n;
-  const sequence = (senderKey: Hex, to: Address, data: Hex, gas = 300_000n) =>
+  const sequence = (senderKey: Hex, to: Address | undefined, data: Hex, gas = 300_000n) =>
     sequenceTransaction({
       l1RpcUrl: L1_RPC_URL,
       hub,
@@ -464,6 +467,19 @@ async function main() {
   const privateToken = await deployViaSpoke(tokenArt.bytecode, "TestERC20");
   const reader = await deployViaSpoke(readerArt.bytecode, "BalanceReader");
 
+  // The stock rule table is deployed once per domain with a plain create.
+  const rulesDeploy = await sequence(
+    ADMIN_KEY,
+    undefined,
+    encodeDeployData({ abi: rulesArt.abi, bytecode: rulesArt.bytecode, args: [spoke] }),
+    3_000_000n,
+  );
+  const rulesReceipt = await waitForDomainTx(domain, rulesDeploy.domainTxHash, "new DomainAccessRules(spoke)");
+  const rules = rulesReceipt.contractAddress;
+  if (!rules) throw new Error("DomainAccessRules deployment receipt carries no contractAddress");
+  await retry("DomainAccessRules code", () => domain.getCode({ address: rules }), (c) => !!c && c !== "0x", 30_000);
+  console.log(`  DomainAccessRules deployed at ${rules}`);
+
   const mint = await sequence(
     ADMIN_KEY,
     privateToken,
@@ -475,21 +491,34 @@ async function main() {
   const readBalance = (from: Address, subject: Address) =>
     domain.readContract({ address: privateToken, abi: tokenArt.abi, functionName: "balanceOf", args: [subject], account: from }) as Promise<bigint>;
 
-  // No rule yet: canCall returns true for everyone, so bob can read alice's balance.
+  // No policy yet: canCall returns true for everyone, so bob can read alice's balance.
   const openRead = await readBalance(bob.address, alice.address);
   if (openRead !== PRIVATE_SUPPLY) throw new Error(`unrestricted read returned ${openRead}, expected ${PRIVATE_SUPPLY}`);
-  console.log(`  before any rule, bob reads alice's balance: ${openRead}`);
+  console.log(`  before any policy, bob reads alice's balance: ${openRead}`);
+
+  // Naming the rule table changes nothing until a rule is stored for the selector.
+  const namePolicy = await sequence(
+    ADMIN_KEY,
+    spoke,
+    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessPolicy", args: [privateToken, rules] }),
+  );
+  await waitForDomainTx(domain, namePolicy.domainTxHash, "spoke.setAccessPolicy(privateToken, rules)");
+  const namedPolicy = (await domain.readContract({ address: spoke, abi: spokeArt.abi, functionName: "accessPolicies", args: [privateToken] })) as Address;
+  if (namedPolicy.toLowerCase() !== rules.toLowerCase()) throw new Error(`accessPolicies(privateToken) is ${namedPolicy}, expected ${rules}`);
+  const openUnderPolicy = await readBalance(bob.address, alice.address);
+  if (openUnderPolicy !== PRIVATE_SUPPLY) throw new Error(`read under a policy without rules returned ${openUnderPolicy}`);
+  console.log("  policy named, no rule yet: bob still reads alice's balance");
 
   // The policy owner restricts balanceOf to its subject (word 0, mask 0b1); approved readers bypass the rule.
   const restrict = await sequence(
     ADMIN_KEY,
-    spoke,
-    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessControl", args: [privateToken, BALANCE_OF, SUBJECT_MATCH, 0b1] }),
+    rules,
+    encodeFunctionData({ abi: rulesArt.abi, functionName: "setAccessControl", args: [privateToken, BALANCE_OF, SUBJECT_MATCH, 0b1] }),
   );
-  await waitForDomainTx(domain, restrict.domainTxHash, "spoke.setAccessControl(privateToken, balanceOf, SubjectMatch, word 0)");
+  await waitForDomainTx(domain, restrict.domainTxHash, "rules.setAccessControl(privateToken, balanceOf, SubjectMatch, word 0)");
   const [ruleMode, ruleSubjects] = (await domain.readContract({
-    address: spoke,
-    abi: spokeArt.abi,
+    address: rules,
+    abi: rulesArt.abi,
     functionName: "accessControl",
     args: [privateToken, BALANCE_OF],
   })) as [number, number];
@@ -520,10 +549,10 @@ async function main() {
   const ALLOWANCE = toFunctionSelector("allowance(address,address)");
   const bothParties = await sequence(
     ADMIN_KEY,
-    spoke,
-    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessControl", args: [privateToken, ALLOWANCE, SUBJECT_MATCH, 0b11] }),
+    rules,
+    encodeFunctionData({ abi: rulesArt.abi, functionName: "setAccessControl", args: [privateToken, ALLOWANCE, SUBJECT_MATCH, 0b11] }),
   );
-  await waitForDomainTx(domain, bothParties.domainTxHash, "spoke.setAccessControl(privateToken, allowance, SubjectMatch, words 0|1)");
+  await waitForDomainTx(domain, bothParties.domainTxHash, "rules.setAccessControl(privateToken, allowance, SubjectMatch, words 0|1)");
   const readAllowance = (from: Address) =>
     domain.readContract({ address: privateToken, abi: tokenArt.abi, functionName: "allowance", args: [alice.address, bob.address], account: from }) as Promise<bigint>;
   const ownerRead = await readAllowance(alice.address);
@@ -551,10 +580,10 @@ async function main() {
   // The policy owner approves the reader contract; nested reads of any subject now work.
   const grant = await sequence(
     ADMIN_KEY,
-    spoke,
-    encodeFunctionData({ abi: spokeArt.abi, functionName: "setReaderAllowed", args: [privateToken, BALANCE_OF, reader, true] }),
+    rules,
+    encodeFunctionData({ abi: rulesArt.abi, functionName: "setReaderAllowed", args: [privateToken, BALANCE_OF, reader, true] }),
   );
-  await waitForDomainTx(domain, grant.domainTxHash, "spoke.setReaderAllowed(privateToken, balanceOf, reader)");
+  await waitForDomainTx(domain, grant.domainTxHash, "rules.setReaderAllowed(privateToken, balanceOf, reader)");
   const bobViaApprovedReader = await sequence(
     BOB_KEY,
     reader,
@@ -570,6 +599,26 @@ async function main() {
     encodeFunctionData({ abi: readerArt.abi, functionName: "tryRead", args: [privateToken, bob.address] }),
   );
   await waitForDomainTx(domain, bobOwnViaReader.domainTxHash, "bob -> reader.tryRead(privateToken, bob) [reader approved for every subject]");
+
+  // A policy without canCall fails closed: every call into the token is denied.
+  const unanswerable = await sequence(
+    ADMIN_KEY,
+    spoke,
+    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessPolicy", args: [privateToken, reader] }),
+  );
+  await waitForDomainTx(domain, unanswerable.domainTxHash, "spoke.setAccessPolicy(privateToken, reader) [no canCall: fails closed]");
+  await expectCallDenied("eth_call alice -> balanceOf(alice) under a policy that cannot answer", () => readBalance(alice.address, alice.address));
+
+  // Clearing the policy reopens the token.
+  const cleared = await sequence(
+    ADMIN_KEY,
+    spoke,
+    encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessPolicy", args: [privateToken, zeroAddress] }),
+  );
+  await waitForDomainTx(domain, cleared.domainTxHash, "spoke.setAccessPolicy(privateToken, 0)");
+  const reopened = await readBalance(bob.address, alice.address);
+  if (reopened !== PRIVATE_SUPPLY) throw new Error(`read after clearing the policy returned ${reopened}`);
+  console.log("  policy cleared: bob reads alice's balance again");
 
   // eth_estimateGas on the domain route accounts for the canCall frames.
   const estimate = await domain.estimateContractGas({
