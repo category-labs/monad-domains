@@ -9,6 +9,7 @@ import {
   type DomainMessage,
   type Message,
   type MessageContext,
+  type MessagePlaintext,
 } from "./message.js";
 import { getProof, root } from "./merkle.js";
 
@@ -122,6 +123,9 @@ export interface UndecryptableMessage {
 /**
  * Fetches all encrypted L1 -> domain messages recorded for `domainChainId` in the
  * block range and decrypts them with the domain viewing secret key, in recording order.
+ * The event's `sourceChainId`/`from` are the authenticated origin: the L1 caller of
+ * `sendEncryptedL1Message`, or the source domain and sender of a forwarded
+ * `sendEncryptedDomainMessage`; the decrypted envelope carries them through.
  * A decrypted message is returned in the exact shape the plaintext stream yields — its
  * `messageHash` is the plaintext hash the spoke derives at delivery — so
  * `l1MessageDeliveryStatus` works on it unchanged.
@@ -406,15 +410,17 @@ export async function l1MessageDeliveryStatus(
 
 /**
  * Execution status of a forwarded domain message on its destination spoke, which the caller
- * configures locally. Read `deliveryNonce` from the hub's `DomainMessageRouted` event.
+ * configures locally. Read `deliveryNonce` from the hub's `DomainMessageRouted` event. An
+ * encrypted envelope is tracked by the plaintext it seals, which its sender supplies.
  */
 export async function routedMessageDeliveryStatus(
   client: PublicClient,
   message: DomainMessage,
   destinationSpoke: Address,
   deliveryNonce: bigint,
+  plaintext?: MessagePlaintext,
 ): Promise<L1DeliveryStatus> {
-  const messageHash = hashMessage(domainDeliveryEnvelope(message, deliveryNonce));
+  const messageHash = hashMessage(domainDeliveryEnvelope(message, deliveryNonce, plaintext));
   return l1MessageDeliveryStatus(client, { messageHash }, destinationSpoke);
 }
 
