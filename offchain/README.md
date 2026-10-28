@@ -6,6 +6,19 @@
 hub + L1Bridge, registering the validator set, and seeding the spoke + bridge by sequencing their
 creation transactions.
 
+## Fees
+
+Every sequencing or message call on the hub carries a fee in L1 native tokens for the domain's fee
+recipient. `hub.DOMAIN_GAS_PRICE()` (50 gwei) prices one unit of domain gas: `npm run sequence` and
+`npm run setup` attach `gas * DOMAIN_GAS_PRICE` so the client executes the transaction, and a
+`sendL1Message` / `bridgeToDomain` / domain-bound `relayDomainMessage` call must attach the fee of the
+gas its delivery needs, since the delivery runs with exactly that much (`domainGasFee`,
+`readDomainGasPrice`). The hub rejects anything below `minDeliveryFee(payload length)`
+(`readMinDeliveryFee`), the gas that lets the spoke deliver or record a retryable failure, so a
+recorded message can be delayed by a stingy relayer but never lost. It also sells at most
+`DOMAIN_BLOCK_GAS_LIMIT` gas per domain per L1 block; a call that does not fit reverts and is
+retried in a later block.
+
 ## Transaction encryption
 
 Every domain transaction handed to `sequenceToDomain` can be HPKE-encrypted to the

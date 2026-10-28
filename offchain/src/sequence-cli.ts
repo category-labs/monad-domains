@@ -11,10 +11,9 @@ import { sequenceTransaction, type SequenceConfig } from "./sequence.js";
  *   TO=0x...                \  # domain target (omit for a contract creation)
  *   [DATA=0x...]            \  # domain calldata (default 0x)
  *   [VALUE=0]               \  # domain native value in wei (default 0)
- *   [GAS=1000000]           \  # domain gas limit (default 1_000_000)
+ *   [GAS=1000000]           \  # domain gas limit (default 1_000_000); the L1 fee is GAS * DOMAIN_GAS_PRICE
  *   [TX_NONCE=0]            \  # domain nonce; required unless DOMAIN_RPC_URL is set
  *   [DOMAIN_RPC_URL=...] \  # if set, the domain nonce is fetched from it
- *   [SEQUENCING_FEE=0]      \  # wei forwarded to the fee recipient on the L1
  *   [VIEWING_KEY=0x...]     \  # domain viewing public key; encrypts the domain tx if set
  *     npm run sequence
  */
@@ -37,7 +36,6 @@ function main() {
   if (process.env.GAS) config.gas = BigInt(process.env.GAS);
   if (process.env.TX_NONCE) config.nonce = Number(process.env.TX_NONCE);
   if (process.env.DOMAIN_RPC_URL) config.domainRpcUrl = process.env.DOMAIN_RPC_URL;
-  if (process.env.SEQUENCING_FEE) config.sequencingFee = BigInt(process.env.SEQUENCING_FEE);
   if (process.env.VIEWING_KEY) config.viewingKey = process.env.VIEWING_KEY as Hex;
 
   return sequenceTransaction(config);
@@ -48,6 +46,7 @@ main()
     console.log("Sequenced domain transaction:");
     console.log("  L1 tx:        ", result.l1TxHash);
     console.log("  domain tx: ", result.domainTxHash);
+    console.log("  fee (wei):    ", result.fee.toString());
     if (result.event) {
       console.log("  event DomainTransactionSequenced fired:");
       console.log("    domainChainId:", result.event.domainChainId.toString());

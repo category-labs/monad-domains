@@ -27,12 +27,16 @@ interface IDomainAccessControl is IDomainAccessPolicy {
     /// @param initCode Creation bytecode including ABI-encoded constructor arguments.
     /// @param policyOwner Account authorized to name the contract's access policy.
     function deployContract(bytes calldata initCode, address policyOwner) external returns (address deployed);
+
+    /// @notice Who may name each deployed contract's access policy.
     function policyOwners(address target) external view returns (address);
 
     /// @notice Policy-owner-only. Name the contract that decides calls into `target`, or the
     /// zero address to admit every caller. A nonzero policy must have code. Verify a policy
     /// before naming it: it decides the target's access.
     function setAccessPolicy(address target, address policy) external;
+
+    /// @notice Policy deciding calls into each contract; zero admits every caller.
     function accessPolicies(address target) external view returns (address);
 
     /// @notice Policy-owner-only. Grant or revoke `reader`'s read access, enforced by the

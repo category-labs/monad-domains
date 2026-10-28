@@ -30,6 +30,7 @@ import {
   type L1DeliveryStatus,
 } from "./prover.js";
 import { type MessageContext } from "./message.js";
+import { domainGasFee, readDomainGasPrice } from "./transaction-policy.js";
 
 /**
  * End-to-end exercise of the domain token bridge against a live L1-sequencing
@@ -87,6 +88,8 @@ const DOMAIN_ACCESS_KEY = (process.env.DOMAIN_ACCESS_KEY ?? ADMIN_KEY) as Hex;
 
 const DEPOSIT = 100n * 10n ** 18n;
 const WITHDRAWAL = 40n * 10n ** 18n;
+// Gas the deposit's protocol delivery (bridged token deployment + mint) is paid for.
+const DELIVERY_GAS = 2_500_000n;
 
 const admin = privateKeyToAccount(ADMIN_KEY);
 const validator = privateKeyToAccount(VALIDATOR_KEY);
@@ -318,12 +321,14 @@ async function main() {
   // -------------------------------------------------------------------------
   step("3. deposit: alice locks 100 TEST on the L1 for bob on the domain");
   // -------------------------------------------------------------------------
+  const deliveryFee = domainGasFee(DELIVERY_GAS, await readDomainGasPrice(l1, hub));
   await confirm(
     await aliceWallet.writeContract({
       address: l1Bridge,
       abi: l1BridgeArt.abi,
       functionName: "bridgeToDomain",
       args: [bob.address, token, DEPOSIT],
+      value: deliveryFee,
     }),
     "bridgeToDomain(bob, TEST, 100)",
   );

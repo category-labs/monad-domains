@@ -18,6 +18,12 @@ abstract contract DomainTestBase is Test {
     /// next batch. Mirrors what a validator reads from the state at the previous checkpoint.
     mapping(uint64 => uint256) internal attestedMessageCounts;
 
+    /// @dev Fee attached to test deliveries: above the hub's minimum for any test payload.
+    uint256 internal constant DELIVERY_FEE = 0.1 ether;
+
+    /// @dev Registered as every test domain's fee recipient.
+    receive() external payable {}
+
     // ---------------------------------------------------------------------
     // Keys
     // ---------------------------------------------------------------------

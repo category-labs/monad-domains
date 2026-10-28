@@ -11,7 +11,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { loadArtifact } from "./artifacts.js";
 import { encryptTransaction } from "./encryption.js";
-import { domainFeeCaps, sponsoredOuterGasLimit } from "./transaction-policy.js";
+import { domainFeeCaps, domainGasFee, readDomainGasPrice } from "./transaction-policy.js";
 
 /**
  * End-to-end setup for a fully L1-sequenced domain.
@@ -46,7 +46,7 @@ export interface SetupConfig {
   validators: Address[];
   /** Number of distinct validator signatures required to advance the state. */
   quorum: bigint;
-  /** Receives the `msg.value` of every `sequenceToDomain` call. Defaults to the admin. */
+  /** Receives the fee of every sequencing and message call. Defaults to the admin. */
   feeRecipient?: Address;
   /** Attested L1 heights must be multiples of this many blocks. Default 10. */
   checkpointInterval?: bigint;
@@ -59,9 +59,7 @@ export interface SetupConfig {
   seedDeployerKey?: Hex;
   /** Optional L1 token to allowlist for deposits (e.g. the wrapped-MON ERC20). */
   allowedToken?: Address;
-  /** `msg.value` forwarded to the fee recipient per `sequenceToDomain` call. Default 0. */
-  sequencingFee?: bigint;
-  /** Gas limit for each seeded domain creation transaction. Default 5_000_000. */
+  /** Gas limit for each seeded domain creation transaction, paid for on the L1. Default 5_000_000. */
   domainGas?: bigint;
   /**
    * Domain viewing public key (65-byte uncompressed P-256 point). Published on the hub at
@@ -91,7 +89,6 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     validators,
     quorum,
     allowedToken,
-    sequencingFee = 0n,
     domainGas = 5_000_000n,
     checkpointInterval = 5n,
     viewingKey,
@@ -174,8 +171,8 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   console.log("DomainSpoke (seeded):", spoke);
   console.log("DomainBridge (seeded):", domainBridge);
 
-  // 4. Build + sign standard domain creation transactions whose execution is
-  // sponsored by their enclosing L1 transactions.
+  // 4. Build + sign standard domain creation transactions; their gas is paid for
+  // by the fee attached to the L1 call that sequences them.
   const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
   const feeCaps = domainFeeCaps(latestBlock.baseFeePerGas ?? (await publicClient.getGasPrice()));
   const domainTxDefaults = {
@@ -197,19 +194,15 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
 
   // 5. Sequence them through the hub (order matters: spoke before bridge). With a viewing key
   // the hub records the HPKE ciphertext of each creation; the execution client decrypts it.
+  const sequencingFee = domainGasFee(domainGas, await readDomainGasPrice(publicClient, hub));
   const sequenceSeedTransaction = async (rawTransaction: Hex): Promise<Hex> => {
     const rlpTx = viewingKey ? await encryptTransaction(viewingKey, rawTransaction) : rawTransaction;
-    const request = {
+    return wallet.writeContract({
       address: hub,
       abi: hubArt.abi,
       functionName: "sequenceToDomain",
       args: [domainChainId, rlpTx],
       value: sequencingFee,
-    } as const;
-    const estimatedOuterGas = await publicClient.estimateContractGas({ ...request, account: admin.address });
-    return wallet.writeContract({
-      ...request,
-      gas: sponsoredOuterGasLimit(estimatedOuterGas, domainGas),
     });
   };
   await confirm(await sequenceSeedTransaction(rawSpokeTx));

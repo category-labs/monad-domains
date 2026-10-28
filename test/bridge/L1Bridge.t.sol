@@ -33,6 +33,7 @@ contract L1BridgeTest is DomainTestBase {
         token.mint(alice, 1000 ether);
         vm.prank(alice);
         token.approve(address(bridge), type(uint256).max);
+        vm.deal(alice, 100 ether);
     }
 
     // ---------------------------------------------------------------------
@@ -71,16 +72,45 @@ contract L1BridgeTest is DomainTestBase {
         );
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
-            CHAIN_ID, uint64(block.chainid), address(bridge), DOMAIN_BRIDGE, data, 0, expectedHash
+            CHAIN_ID, uint64(block.chainid), address(bridge), DOMAIN_BRIDGE, data, 0, DELIVERY_FEE, expectedHash
         );
         vm.expectEmit(address(bridge));
         emit L1Bridge.BridgeInitiated(alice, bob, address(token), 100 ether);
         vm.prank(alice);
-        bridge.bridgeToDomain(bob, address(token), 100 ether);
+        bridge.bridgeToDomain{value: DELIVERY_FEE}(bob, address(token), 100 ether);
 
         assertEq(token.balanceOf(address(bridge)), 100 ether);
         assertEq(token.balanceOf(alice), 900 ether);
         assertEq(hub.l1MessageCounts(CHAIN_ID), 1);
+    }
+
+    function test_bridge_forwardsTheDeliveryFee() public {
+        bytes memory data = MessageLib.encodeTransfer(bob, address(token), 100 ether);
+        bytes32 expectedHash = MessageLib.hashMessage(
+            MessageLib.Message({
+                sourceChainId: uint64(block.chainid), from: address(bridge), to: DOMAIN_BRIDGE, data: data, nonce: 0
+            })
+        );
+        uint256 before = address(this).balance;
+
+        vm.expectEmit(address(hub));
+        emit IDomainHub.L1MessageRecorded(
+            CHAIN_ID, uint64(block.chainid), address(bridge), DOMAIN_BRIDGE, data, 0, 0.02 ether, expectedHash
+        );
+        vm.prank(alice);
+        bridge.bridgeToDomain{value: 0.02 ether}(bob, address(token), 100 ether);
+
+        assertEq(address(this).balance - before, 0.02 ether, "fee recipient is paid");
+        assertEq(address(bridge).balance, 0);
+        assertEq(address(hub).balance, 0);
+    }
+
+    function test_bridge_rejectsUnderpaidDeliveryBeforeLockingTokens() public {
+        vm.prank(alice);
+        vm.expectRevert("DomainHub: delivery fee too low");
+        bridge.bridgeToDomain(bob, address(token), 100 ether);
+        assertEq(token.balanceOf(address(bridge)), 0);
+        assertEq(token.balanceOf(alice), 1000 ether);
     }
 
     function test_bridge_rejectsUnregisteredCounterpart() public {
@@ -144,7 +174,7 @@ contract L1BridgeTest is DomainTestBase {
     function test_disallow_stopsNewDepositsOnly() public {
         // Lock collateral while the token is allowed.
         vm.prank(alice);
-        bridge.bridgeToDomain(bob, address(token), 100 ether);
+        bridge.bridgeToDomain{value: DELIVERY_FEE}(bob, address(token), 100 ether);
 
         // Owner disallows the token: new deposits revert...
         bridge.setTokenAllowed(address(token), false);

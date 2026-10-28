@@ -6,17 +6,13 @@ import {IDomainAccessPolicy} from "./interfaces/IDomainAccessControl.sol";
 import {MerkleTreeLib} from "./libraries/MerkleTreeLib.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 
-/// @notice Domain-side spoke of the messaging layer, deployed on a domain (intended
-/// as a protocol predeploy at a fixed address). Mirror image of the hub: it records outbound
-/// domain messages, and receives the L1 -> domain envelopes that the domain
-/// protocol delivers as system transactions.
 contract DomainSpoke is IDomainSpoke {
     /// @notice Reserved sender of protocol-injected system transactions.
     address public constant SYSTEM_RELAYER = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
 
-    /// @notice Gas forwarded to the target of a delivered message. Fixed so that delivery
-    /// success is deterministic across every node executing the same system transaction.
-    uint256 public constant DELIVERY_GAS_STIPEND = 2_000_000;
+    /// @notice Gas kept back from a delivery's target call so the spoke can still record a
+    /// failed delivery for retry after the target exhausts everything it was given.
+    uint256 public constant DELIVERY_GAS_RESERVE = 60_000;
 
     /// @notice Chain id of the domain this spoke serves.
     uint64 public immutable DOMAIN_CHAIN_ID;
@@ -24,22 +20,14 @@ contract DomainSpoke is IDomainSpoke {
     uint64 public immutable L1_CHAIN_ID;
     address public immutable HUB;
 
-    /// @notice Number of domain-origin messages recorded so far; the nonce the next one gets.
     uint256 public domainMessageCount;
-    /// @notice Message ID of every recorded domain-origin message, by source nonce. Never
-    /// cleared: an attested batch stays rebuildable from state alone.
     mapping(uint256 => bytes32) public domainMessageIds;
 
-    /// @notice Who may name each deployed contract's access policy.
     mapping(address => address) public policyOwners;
-    /// @notice Policy deciding calls into each contract; zero admits every caller.
     mapping(address => address) public accessPolicies;
 
-    /// @notice Minimum nonce the next delivered L1 -> domain message may carry.
     uint256 public nextL1Nonce;
 
-    /// @notice Message hashes that were delivered but whose target call failed; retryable
-    /// permissionlessly via `retryL1Message`.
     mapping(bytes32 => bool) public failedL1Messages;
 
     mapping(address => mapping(address => bool)) public logReaders;
@@ -100,6 +88,7 @@ contract DomainSpoke is IDomainSpoke {
         bytes memory query = abi.encodeCall(IDomainAccessPolicy.canCall, (caller, context, data));
         bool ok;
         uint256 verdict;
+        // Only one word of the answer is copied back; anything but a canonical `true` denies.
         assembly ("memory-safe") {
             ok := staticcall(gas(), policy, add(query, 32), mload(query), 0, 32)
             ok := and(ok, eq(returndatasize(), 32))
@@ -112,10 +101,6 @@ contract DomainSpoke is IDomainSpoke {
     // Delivery of L1 messages (protocol system transactions)
     // ---------------------------------------------------------------------
 
-    /// @notice Delivers one L1 -> domain message. Only callable from the protocol's system
-    /// transactions; nonces must arrive strictly increasing, so every nonce is deliverable at
-    /// most once. A gap is how the client skips an encrypted message whose ciphertext does not
-    /// decrypt. A failing target marks the message failed instead of reverting.
     function relayL1Message(uint64 sourceChainId, address from, address to, bytes calldata data, uint256 nonce)
         external
         onlySystem
@@ -125,24 +110,30 @@ contract DomainSpoke is IDomainSpoke {
         nextL1Nonce = nonce + 1;
         MessageLib.Message memory message = MessageLib.Message(sourceChainId, from, to, data, nonce);
         bytes32 messageHash = MessageLib.hashMessage(message);
-        bool success = to.code.length != 0 && _callReceiver(message, DELIVERY_GAS_STIPEND);
+        bool success = to.code.length != 0 && _callReceiver(message, DELIVERY_GAS_RESERVE);
         if (!success) failedL1Messages[messageHash] = true;
         emit L1MessageRelayed(messageHash, sourceChainId, from, to, nonce, success);
     }
 
-    /// @notice Retries the exact authenticated delivery with the caller's gas.
     function retryL1Message(MessageLib.Message calldata message) external {
         bytes32 messageHash = MessageLib.hashMessage(message);
         require(failedL1Messages[messageHash], "DomainSpoke: not a failed message");
         delete failedL1Messages[messageHash];
-        require(message.to.code.length != 0 && _callReceiver(message, gasleft()), "DomainSpoke: retry failed");
+        require(message.to.code.length != 0 && _callReceiver(message, 0), "DomainSpoke: retry failed");
         emit L1MessageRelayed(messageHash, message.sourceChainId, message.from, message.to, message.nonce, true);
     }
 
-    function _callReceiver(MessageLib.Message memory message, uint256 gasLimit) internal returns (bool success) {
-        (success,) = message.to.call{gas: gasLimit}(
-            abi.encodeCall(IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data))
-        );
+    /// @dev Calls the target with every unit of gas but `gasReserve`, measured once the call
+    /// data is built, and copies no return data, so nothing the target does can eat the reserve.
+    function _callReceiver(MessageLib.Message memory message, uint256 gasReserve) internal returns (bool success) {
+        bytes memory input =
+            abi.encodeCall(IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data));
+        address target = message.to;
+        assembly ("memory-safe") {
+            let budget := gas()
+            if lt(budget, gasReserve) { revert(0, 0) }
+            success := call(sub(budget, gasReserve), target, 0, add(input, 32), mload(input), 0, 0)
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -169,12 +160,6 @@ contract DomainSpoke is IDomainSpoke {
         emit DomainMessageRecorded(messageId, abi.encode(message));
     }
 
-    /// @notice Merkle root over the recorded message IDs with nonce in `[fromNonce, toNonce)`,
-    /// in nonce order; zero for an empty range. A validator attesting L1 height `H` after the
-    /// previously attested height `P` anchors the root over `[count(P), count(H))`, where
-    /// `count(x)` is `domainMessageCount` in the domain state at `x`. Convenience view for
-    /// small ranges: hashing happens in memory, so a large batch exceeds an `eth_call` gas cap;
-    /// read `domainMessageIds` nonce by nonce and hash off-chain in that case.
     function domainMessagesRoot(uint256 fromNonce, uint256 toNonce) external view returns (bytes32) {
         require(fromNonce <= toNonce, "DomainSpoke: invalid range");
         require(toNonce <= domainMessageCount, "DomainSpoke: range beyond recorded messages");

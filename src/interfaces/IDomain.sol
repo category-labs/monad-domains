@@ -35,6 +35,7 @@ interface IDomainHub {
     /// protocol's derivation source for system delivery transactions; it carries the full
     /// preimage so the client needs no extra state reads. sourceChainId/from identify the
     /// proven source domain sender, or the L1 caller for ordinary sends; to is the application.
+    /// `fee` is the wei paid for the delivery: it buys `fee / DOMAIN_GAS_PRICE` gas.
     event L1MessageRecorded(
         uint64 indexed domainChainId,
         uint64 sourceChainId,
@@ -42,15 +43,36 @@ interface IDomainHub {
         address indexed to,
         bytes data,
         uint256 nonce,
+        uint256 fee,
         bytes32 messageHash
     );
 
     /// @notice Emitted for every recorded encrypted L1 -> domain message.
     event EncryptedL1MessageRecorded(
-        uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, bytes ciphertext, uint256 nonce
+        uint64 indexed domainChainId,
+        uint64 sourceChainId,
+        address indexed from,
+        bytes ciphertext,
+        uint256 nonce,
+        uint256 fee
     );
 
     // --- Registration ---
+
+    /// @notice Price of one unit of domain gas in wei. The value attached to a sequencing or
+    /// message call is a non-refundable fee paid to the domain's fee recipient; it buys
+    /// `value / DOMAIN_GAS_PRICE` gas of domain execution. The execution client mirrors it.
+    function DOMAIN_GAS_PRICE() external view returns (uint256);
+
+    /// @notice Smallest fee a message with `dataLength` payload bytes is recorded with: enough
+    /// gas for the spoke to deliver it or to mark it failed and retryable. A send or a
+    /// domain-bound relay attaching less MUST revert.
+    function minDeliveryFee(uint256 dataLength) external pure returns (uint256);
+
+    /// @notice Most gas a domain's sequenced transactions and deliveries may buy per L1 block
+    /// in total; a call that would sell more MUST revert, so the work a domain block carries
+    /// is bounded whatever its senders pay.
+    function DOMAIN_BLOCK_GAS_LIMIT() external view returns (uint256);
 
     /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
     /// validator signatures required to advance the state, the recipient of sequencing fees,
@@ -108,7 +130,8 @@ interface IDomainHub {
         bytes calldata signature
     ) external;
 
-    /// @notice The domain block number of the latest committed state root.
+    /// @notice The domain block number of the latest committed state root; transitions must
+    /// commit strictly increasing block numbers.
     function domainBlockNumbers(uint64 domainChainId) external view returns (uint64);
 
     /// @notice True if `anchor` is a recorded merkle root of outbound messages sent from
@@ -118,11 +141,14 @@ interface IDomainHub {
     // --- Delivery of domain messages ---
 
     /// @notice Proves any domain-origin message against its source anchor. If its destination
-    /// is L1, invokes onDomainMessage and returns callback success (failure is retryable here).
-    /// Otherwise atomically queues it through the same path as sendL1Message and returns true;
-    /// destination execution/retry happens on that domain. Messages can arrive in any order.
+    /// is L1, invokes onDomainMessage and returns callback success (failure is retryable here);
+    /// no value may be attached. Otherwise atomically queues it through the same path as
+    /// sendL1Message, with `msg.value` as the destination delivery fee (at least the minimum
+    /// for the envelope's data), and returns true; destination execution/retry happens on that
+    /// domain. Messages can arrive in any order.
     function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
         external
+        payable
         returns (bool success);
 
     /// @notice Permissionlessly retries an authenticated failed L1 callback with the caller's
@@ -140,21 +166,22 @@ interface IDomainHub {
 
     /// @notice Records a message to the target domain. Nonces are per-domain and gapless
     /// (`nonce == l1MessageCounts[domainChainId]` at recording time), so the spoke can
-    /// enforce exactly-once, in-order delivery.
-    function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external;
+    /// enforce exactly-once, in-order delivery. `msg.value` is forwarded to the domain's fee
+    /// recipient and sets the gas limit of the delivery (see `DOMAIN_GAS_PRICE`); it must be at
+    /// least `minDeliveryFee(data.length)`.
+    function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable;
 
-    /// @notice Records an encrypted message to the target domain. A ciphertext the client
-    /// cannot decrypt still consumes its nonce.
-    function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external;
+    /// @notice Records an encrypted message to the target domain, drawing from the same nonce
+    /// sequence as `sendL1Message`. The client decrypts `abi.encodePacked(to, data)` out of
+    /// `ciphertext` before deriving the delivery; a ciphertext it cannot decrypt still consumes
+    /// its nonce. `msg.value` is the delivery fee, at least `minDeliveryFee(ciphertext.length)`.
+    function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable;
 
     /// @notice Number of L1 -> domain messages recorded for `domainChainId`; equals the
     /// nonce the next message will be assigned.
     function l1MessageCounts(uint64 domainChainId) external view returns (uint256);
 }
 
-/// @notice Domain-side spoke interface, deployed on a domain. Mirror image of the
-/// hub: records outbound domain messages, and receives the L1 -> domain envelopes
-/// that the domain protocol delivers as system transactions.
 interface IDomainSpoke is IDomainAccessControl {
     function L1_CHAIN_ID() external view returns (uint64);
     /// @notice Full domain-origin envelope, whether addressed to L1 or another domain.
@@ -175,11 +202,13 @@ interface IDomainSpoke is IDomainAccessControl {
 
     /// @notice Delivers one L1 -> domain message. Callable ONLY from the protocol's system
     /// transactions, which the client derives from the hub's `L1MessageRecorded` and
-    /// `EncryptedL1MessageRecorded` events. Nonces must arrive strictly increasing; a gap is
-    /// an undecryptable encrypted message the client never delivers, consumed for good by the
-    /// delivery that jumps it. The client must derive sourceChainId/from from authenticated
-    /// hub events. The spoke calls to.onDomainMessage(sourceChainId, from, data); targets
-    /// without code are marked failed and can be retried after deployment.
+    /// `EncryptedL1MessageRecorded` events with the gas limit the recorded fee bought. Nonces
+    /// must arrive strictly increasing; a gap is a message the client never delivers (an
+    /// undecryptable ciphertext or an unpaid delivery), consumed for good by the delivery that
+    /// jumps it. The client must derive sourceChainId/from from authenticated hub events. The
+    /// spoke calls to.onDomainMessage(sourceChainId, from, data) with all gas but
+    /// `DELIVERY_GAS_RESERVE`, copying no return data; targets without code are marked failed
+    /// and can be retried after deployment.
     function relayL1Message(uint64 sourceChainId, address from, address to, bytes calldata data, uint256 nonce) external;
 
     /// @notice Permissionlessly re-executes a failed delivery with the caller's gas.
@@ -203,14 +232,17 @@ interface IDomainSpoke is IDomainAccessControl {
     /// @notice Number of domain-origin messages recorded; the nonce the next one gets.
     function domainMessageCount() external view returns (uint256);
 
-    /// @notice Recorded message ID by source nonce. Never cleared.
+    /// @notice Recorded message ID by source nonce. Never cleared, so an attested batch stays
+    /// rebuildable from state alone.
     function domainMessageIds(uint256 sourceNonce) external view returns (bytes32);
 
     /// @notice Merkle root over the message IDs with nonce in `[fromNonce, toNonce)`, in nonce
     /// order; zero for an empty range. Batches are defined by consecutive attestations: the
     /// anchor attested at L1 height `H` after previously attested height `P` is the root over
     /// `[count(P), count(H))`, with `count(x)` the `domainMessageCount` in the domain state at
-    /// height `x`.
+    /// height `x`. Convenience view for small ranges: hashing happens in memory, so a large
+    /// batch exceeds an `eth_call` gas cap; read `domainMessageIds` nonce by nonce and hash
+    /// off-chain in that case.
     function domainMessagesRoot(uint256 fromNonce, uint256 toNonce) external view returns (bytes32);
 }
 
