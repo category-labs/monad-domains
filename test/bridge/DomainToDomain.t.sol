@@ -25,7 +25,7 @@ contract CrossDomainRouter {
         bytes32 anchor,
         bytes32[] calldata proof,
         address recipientOnB
-    ) external {
+    ) external payable {
         require(message.to == address(fromBridge), "Router: wrong source bridge");
         // A successful hub relay can mean queued on another domain. This operation
         // requires an actual L1 withdrawal before spending any router-held collateral.
@@ -34,7 +34,7 @@ contract CrossDomainRouter {
         require(fromBridge.HUB().relayDomainMessage(message, anchor, proof), "Router: withdrawal delivery failed");
         (, address token, uint256 amount) = MessageLib.decodeTransfer(message.data);
         IERC20(token).forceApprove(address(toBridge), amount);
-        toBridge.bridgeToDomain(recipientOnB, token, amount);
+        toBridge.bridgeToDomain{value: msg.value}(recipientOnB, token, amount);
     }
 }
 
@@ -97,6 +97,7 @@ contract DomainToDomainTest is DomainTestBase {
         // Give alice a domain-A balance to bridge: deposit AMOUNT L1 -> domain A.
         // This locks AMOUNT in l1BridgeA, the collateral that later travels to B.
         token.mint(alice, AMOUNT);
+        vm.deal(alice, 100 ether);
         _depositToDomainA(alice, alice, AMOUNT);
         assertEq(domainBridgeA.bridgedTokens(address(token)).balanceOf(alice), AMOUNT);
     }
@@ -125,7 +126,7 @@ contract DomainToDomainTest is DomainTestBase {
         (MessageLib.DomainMessage memory wMsg, bytes32 wAnchor) = _initiateWithdrawFromA(alice, address(router), AMOUNT);
 
         // Single L1 tx: finalize withdrawal on A and re-deposit into B in one call.
-        router.relay(l1BridgeA, l1BridgeB, wMsg, wAnchor, _emptyProof(), bobOnB);
+        router.relay{value: DELIVERY_FEE}(l1BridgeA, l1BridgeB, wMsg, wAnchor, _emptyProof(), bobOnB);
         assertEq(token.balanceOf(address(l1BridgeA)), 0);
         assertEq(token.balanceOf(address(router)), 0); // router forwarded everything
 
@@ -140,12 +141,12 @@ contract DomainToDomainTest is DomainTestBase {
             _initiateWithdrawFromA(alice, address(router), AMOUNT);
         l1BridgeB.setTokenAllowed(address(token), false);
         vm.expectRevert("L1Bridge: token not allowed");
-        router.relay(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
+        router.relay{value: DELIVERY_FEE}(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
         assertFalse(hub.relayedDomainMessages(CHAIN_A, _hash(message)));
         assertEq(token.balanceOf(address(l1BridgeA)), AMOUNT);
         assertEq(token.balanceOf(address(router)), 0);
         l1BridgeB.setTokenAllowed(address(token), true);
-        router.relay(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
+        router.relay{value: DELIVERY_FEE}(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
         _deliverDeposit(spokeB, l1BridgeB, domainBridgeB, bobOnB, AMOUNT);
         _assertLandedOnB(bobOnB, AMOUNT);
     }
@@ -159,7 +160,7 @@ contract DomainToDomainTest is DomainTestBase {
         // Even prefunded tokens must not be used after a failed withdrawal callback.
         token.mint(address(router), AMOUNT);
         vm.expectRevert("Router: withdrawal delivery failed");
-        router.relay(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
+        router.relay{value: DELIVERY_FEE}(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
         assertFalse(hub.relayedDomainMessages(CHAIN_A, anchor));
         assertFalse(hub.failedDomainMessages(CHAIN_A, anchor));
         assertEq(token.balanceOf(address(router)), AMOUNT);
@@ -172,7 +173,7 @@ contract DomainToDomainTest is DomainTestBase {
         token.mint(address(router), AMOUNT);
         message.destinationChainId = CHAIN_B;
         vm.expectRevert("Router: withdrawal must target L1");
-        router.relay(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
+        router.relay{value: DELIVERY_FEE}(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
         assertEq(token.balanceOf(address(router)), AMOUNT);
         assertEq(token.balanceOf(address(l1BridgeA)), AMOUNT);
         assertEq(token.balanceOf(address(l1BridgeB)), 0);
@@ -186,7 +187,7 @@ contract DomainToDomainTest is DomainTestBase {
     function _depositToDomainA(address depositor, address recipient, uint256 amount) internal {
         vm.startPrank(depositor);
         token.approve(address(l1BridgeA), amount);
-        l1BridgeA.bridgeToDomain(recipient, address(token), amount);
+        l1BridgeA.bridgeToDomain{value: DELIVERY_FEE}(recipient, address(token), amount);
         vm.stopPrank();
 
         _deliverDeposit(spokeA, l1BridgeA, domainBridgeA, recipient, amount);
@@ -196,7 +197,7 @@ contract DomainToDomainTest is DomainTestBase {
     function _depositToDomainB(address depositor, address recipient, uint256 amount) internal {
         vm.startPrank(depositor);
         token.approve(address(l1BridgeB), amount);
-        l1BridgeB.bridgeToDomain(recipient, address(token), amount);
+        l1BridgeB.bridgeToDomain{value: DELIVERY_FEE}(recipient, address(token), amount);
         vm.stopPrank();
 
         _deliverDeposit(spokeB, l1BridgeB, domainBridgeB, recipient, amount);

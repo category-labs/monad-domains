@@ -33,6 +33,7 @@ contract DomainMessagingTest is DomainTestBase {
         hub = new DomainHub();
         _registerDomain(hub, CHAIN_ID, _keys(K1, K2, K3), 2);
         spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
+        vm.deal(alice, 100 ether);
     }
 
     function _validators() internal pure returns (address[] memory) {
@@ -150,9 +151,11 @@ contract DomainMessagingTest is DomainTestBase {
         );
 
         vm.expectEmit(address(hub));
-        emit IDomainHub.L1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, bob, data, 0, expectedHash);
+        emit IDomainHub.L1MessageRecorded(
+            CHAIN_ID, uint64(block.chainid), alice, bob, data, 0, DELIVERY_FEE, expectedHash
+        );
         vm.prank(alice);
-        hub.sendL1Message(CHAIN_ID, bob, data);
+        hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, data);
 
         assertEq(hub.l1MessageCounts(CHAIN_ID), 1);
     }
@@ -170,10 +173,11 @@ contract DomainMessagingTest is DomainTestBase {
             bob,
             hex"01",
             0,
+            DELIVERY_FEE,
             MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
         );
         vm.prank(alice);
-        hub.sendL1Message(CHAIN_ID, bob, hex"01");
+        hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"01");
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
@@ -183,10 +187,11 @@ contract DomainMessagingTest is DomainTestBase {
             bob,
             hex"01",
             0,
+            DELIVERY_FEE,
             MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
         );
         vm.prank(alice);
-        hub.sendL1Message(4444, bob, hex"01");
+        hub.sendL1Message{value: DELIVERY_FEE}(4444, bob, hex"01");
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
@@ -196,13 +201,81 @@ contract DomainMessagingTest is DomainTestBase {
             bob,
             hex"01",
             1,
+            DELIVERY_FEE,
             MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 1))
         );
         vm.prank(alice);
-        hub.sendL1Message(CHAIN_ID, bob, hex"01");
+        hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"01");
 
         assertEq(hub.l1MessageCounts(CHAIN_ID), 2);
         assertEq(hub.l1MessageCounts(4444), 1);
+    }
+
+    function test_sendL1Message_forwardsFeeAndRecordsIt() public {
+        _register(4444, feeRecipient, "", 1);
+        vm.deal(alice, 1 ether);
+
+        vm.expectEmit(address(hub));
+        emit IDomainHub.L1MessageRecorded(
+            4444,
+            uint64(block.chainid),
+            alice,
+            bob,
+            hex"01",
+            0,
+            0.05 ether,
+            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
+        );
+        vm.prank(alice);
+        hub.sendL1Message{value: 0.05 ether}(4444, bob, hex"01");
+
+        assertEq(feeRecipient.balance, 0.05 ether);
+        assertEq(address(hub).balance, 0);
+    }
+
+    function test_sendEncryptedL1Message_forwardsFeeAndRecordsIt() public {
+        _register(4444, feeRecipient, "", 1);
+        vm.deal(alice, 1 ether);
+
+        vm.expectEmit(address(hub));
+        emit IDomainHub.EncryptedL1MessageRecorded(4444, uint64(block.chainid), alice, hex"c0ffee", 0, 0.02 ether);
+        vm.prank(alice);
+        hub.sendEncryptedL1Message{value: 0.02 ether}(4444, hex"c0ffee");
+
+        assertEq(feeRecipient.balance, 0.02 ether);
+    }
+
+    function test_sendL1Message_revertsIfFeeRecipientRejectsFee() public {
+        _register(4444, address(new RejectingFeeRecipient()), "", 1);
+        vm.deal(alice, 1 ether);
+
+        vm.prank(alice);
+        vm.expectRevert("DomainHub: fee transfer failed");
+        hub.sendL1Message{value: DELIVERY_FEE}(4444, bob, hex"01");
+    }
+
+    function test_sendL1Message_rejectsFeeBelowMinimum() public {
+        bytes memory data = new bytes(300);
+        uint256 minimum = hub.minDeliveryFee(data.length);
+        assertEq(minimum, (200_000 + 48 * 300) * hub.DOMAIN_GAS_PRICE());
+
+        vm.prank(alice);
+        vm.expectRevert("DomainHub: delivery fee too low");
+        hub.sendL1Message{value: minimum - 1}(CHAIN_ID, bob, data);
+        vm.prank(alice);
+        vm.expectRevert("DomainHub: delivery fee too low");
+        hub.sendEncryptedL1Message{value: minimum - 1}(CHAIN_ID, data);
+        assertEq(hub.l1MessageCounts(CHAIN_ID), 0);
+
+        vm.prank(alice);
+        hub.sendL1Message{value: minimum}(CHAIN_ID, bob, data);
+        vm.prank(alice);
+        hub.sendEncryptedL1Message{value: minimum}(CHAIN_ID, data);
+        assertEq(hub.l1MessageCounts(CHAIN_ID), 2);
+    }
+
+    function test_domainGasPrice_isTheClientConstant() public view {
+        assertEq(hub.DOMAIN_GAS_PRICE(), 50 gwei);
     }
 
     function test_sendEncryptedL1Message_rejectsUnregisteredDomain() public {
@@ -215,9 +288,9 @@ contract DomainMessagingTest is DomainTestBase {
         bytes memory ciphertext = hex"c0ffee";
 
         vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, ciphertext, 0);
+        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, ciphertext, 0, DELIVERY_FEE);
         vm.prank(alice);
-        hub.sendEncryptedL1Message(CHAIN_ID, ciphertext);
+        hub.sendEncryptedL1Message{value: DELIVERY_FEE}(CHAIN_ID, ciphertext);
 
         assertEq(hub.l1MessageCounts(CHAIN_ID), 1);
     }
@@ -226,12 +299,12 @@ contract DomainMessagingTest is DomainTestBase {
         // Plaintext and encrypted messages interleave in one gapless per-domain ordering,
         // matching the spoke's in-order delivery requirement.
         vm.prank(alice);
-        hub.sendL1Message(CHAIN_ID, bob, hex"01"); // nonce 0
+        hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"01"); // nonce 0
 
         vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, hex"02", 1);
+        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, hex"02", 1, DELIVERY_FEE);
         vm.prank(alice);
-        hub.sendEncryptedL1Message(CHAIN_ID, hex"02"); // nonce 1
+        hub.sendEncryptedL1Message{value: DELIVERY_FEE}(CHAIN_ID, hex"02"); // nonce 1
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
@@ -241,10 +314,11 @@ contract DomainMessagingTest is DomainTestBase {
             bob,
             hex"03",
             2,
+            DELIVERY_FEE,
             MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"03", 2))
         );
         vm.prank(alice);
-        hub.sendL1Message(CHAIN_ID, bob, hex"03"); // nonce 2
+        hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"03"); // nonce 2
 
         assertEq(hub.l1MessageCounts(CHAIN_ID), 3);
     }
@@ -355,6 +429,62 @@ contract DomainMessagingTest is DomainTestBase {
         spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), hex"03", 1);
     }
 
+    function test_relayL1Message_forwardsAllButTheReserve() public {
+        GasMeteringReceiver receiver = new GasMeteringReceiver();
+        uint256 reserve = spoke.DELIVERY_GAS_RESERVE();
+
+        // The target gets everything the system transaction's gas limit holds beyond the
+        // spoke's own work and the reserve, whatever the limit is.
+        for (uint256 i = 0; i < 2; i++) {
+            uint256 limit = (i + 1) * 1_000_000;
+            vm.prank(spoke.SYSTEM_RELAYER());
+            spoke.relayL1Message{gas: limit}(uint64(block.chainid), alice, address(receiver), hex"01", i);
+            assertGt(receiver.lastGas(), limit - reserve - 100_000);
+            assertLt(receiver.lastGas(), limit - reserve);
+        }
+    }
+
+    function test_relayL1Message_reserveRecordsGasExhaustingTarget() public {
+        GasExhaustingReceiver receiver = new GasExhaustingReceiver();
+        MessageLib.Message memory message =
+            MessageLib.Message(uint64(block.chainid), alice, address(receiver), hex"01", 0);
+        bytes32 messageHash = MessageLib.hashMessage(message);
+
+        vm.expectEmit(address(spoke));
+        emit IDomainSpoke.L1MessageRelayed(messageHash, uint64(block.chainid), alice, address(receiver), 0, false);
+        vm.prank(spoke.SYSTEM_RELAYER());
+        spoke.relayL1Message{gas: 200_000}(uint64(block.chainid), alice, address(receiver), hex"01", 0);
+
+        assertTrue(spoke.failedL1Messages(messageHash));
+        assertEq(spoke.nextL1Nonce(), 1);
+    }
+
+    function test_relayL1Message_reserveSurvivesLargePayloadAndReturnBomb() public {
+        bytes memory data = new bytes(32_768);
+        uint256 gas = hub.DELIVERY_BASE_GAS() + hub.DELIVERY_GAS_PER_BYTE() * data.length;
+        address[2] memory targets = [address(new GasExhaustingReceiver()), address(new ReturnBombReceiver())];
+
+        for (uint256 i = 0; i < targets.length; i++) {
+            bytes32 messageHash =
+                MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, targets[i], data, i));
+            vm.expectEmit(address(spoke));
+            emit IDomainSpoke.L1MessageRelayed(messageHash, uint64(block.chainid), alice, targets[i], i, false);
+            vm.prank(spoke.SYSTEM_RELAYER());
+            spoke.relayL1Message{gas: gas}(uint64(block.chainid), alice, targets[i], data, i);
+            assertTrue(spoke.failedL1Messages(messageHash));
+        }
+        assertEq(spoke.nextL1Nonce(), 2);
+    }
+
+    function test_relayL1Message_revertsWhenTheFeeDoesNotCoverTheReserve() public {
+        RecordingReceiver receiver = new RecordingReceiver();
+
+        vm.prank(spoke.SYSTEM_RELAYER());
+        vm.expectRevert();
+        spoke.relayL1Message{gas: 70_000}(uint64(block.chainid), alice, address(receiver), hex"01", 0);
+        assertEq(spoke.nextL1Nonce(), 0);
+    }
+
     function test_retryL1Message_rejectsUnknownMessage() public {
         vm.expectRevert("DomainSpoke: not a failed message");
         spoke.retryL1Message(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0));
@@ -366,7 +496,7 @@ contract DomainMessagingTest is DomainTestBase {
         for (uint256 i = 0; i < 3; i++) {
             bytes memory data = abi.encodePacked(i);
             vm.prank(alice);
-            hub.sendL1Message(CHAIN_ID, address(receiver), data);
+            hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, address(receiver), data);
 
             vm.prank(spoke.SYSTEM_RELAYER());
             spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), data, i);
@@ -447,6 +577,37 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(address(hub).balance, 0);
     }
 
+    function test_domainBlockGasLimit_boundsEveryDomainPerL1Block() public {
+        _register(4444, feeRecipient, "", 1);
+        uint256 price = hub.DOMAIN_GAS_PRICE();
+        uint256 cap = hub.DOMAIN_BLOCK_GAS_LIMIT();
+        vm.deal(alice, 1_000 ether);
+
+        // Sequencing and messages draw from one budget per domain and L1 block.
+        vm.prank(alice);
+        hub.sequenceToDomain{value: (cap - 300_000) * price}(CHAIN_ID, hex"c0ffee");
+        vm.prank(alice);
+        hub.sendL1Message{value: 300_000 * price}(CHAIN_ID, bob, hex"01");
+        (uint64 blockNumber, uint192 gasSold) = hub.blockGas(CHAIN_ID);
+        assertEq(blockNumber, block.number);
+        assertEq(gasSold, cap);
+        vm.prank(alice);
+        vm.expectRevert("DomainHub: domain block gas limit exceeded");
+        hub.sequenceToDomain{value: price}(CHAIN_ID, hex"c0ffee");
+        vm.prank(alice);
+        vm.expectRevert("DomainHub: domain block gas limit exceeded");
+        hub.sendL1Message{value: 300_000 * price}(CHAIN_ID, bob, hex"01");
+
+        // Other domains and later blocks have their own budgets.
+        vm.prank(alice);
+        hub.sendL1Message{value: 300_000 * price}(4444, bob, hex"01");
+        vm.roll(block.number + 1);
+        vm.prank(alice);
+        hub.sequenceToDomain{value: cap * price}(CHAIN_ID, hex"c0ffee");
+        (, gasSold) = hub.blockGas(CHAIN_ID);
+        assertEq(gasSold, cap);
+    }
+
     function test_sequenceToDomain_rejectsUnregisteredDomain() public {
         vm.expectRevert("DomainHub: domain not registered");
         hub.sequenceToDomain(9999, hex"01");
@@ -465,6 +626,33 @@ contract DomainMessagingTest is DomainTestBase {
 
 /// @dev Fee recipient without a payable fallback: any fee forwarded to it reverts.
 contract RejectingFeeRecipient {}
+
+/// @dev Records the gas it was called with.
+contract GasMeteringReceiver is IDomainMessageReceiver {
+    uint256 public lastGas;
+
+    function onDomainMessage(uint64, address, bytes calldata) external {
+        lastGas = gasleft();
+    }
+}
+
+/// @dev Burns every unit of gas it is given.
+contract GasExhaustingReceiver is IDomainMessageReceiver {
+    function onDomainMessage(uint64, address, bytes calldata) external pure {
+        assembly {
+            invalid()
+        }
+    }
+}
+
+/// @dev Reverts with far more return data than the caller could afford to copy.
+contract ReturnBombReceiver is IDomainMessageReceiver {
+    function onDomainMessage(uint64, address, bytes calldata) external pure {
+        assembly {
+            revert(0, 0x40000)
+        }
+    }
+}
 
 /// @dev Receiver that records what the spoke delivers, with a toggleable rejection mode to
 /// exercise the failed-delivery path.

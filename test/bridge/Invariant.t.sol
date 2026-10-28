@@ -85,9 +85,10 @@ contract BridgeHandler is DomainTestBase {
         amount = bound(amount, 1, 1e24);
 
         TOKEN.mint(actor, amount);
+        vm.deal(actor, DELIVERY_FEE);
         vm.startPrank(actor);
         TOKEN.approve(address(L1_BRIDGE), amount);
-        L1_BRIDGE.bridgeToDomain(recipient, address(TOKEN), amount);
+        L1_BRIDGE.bridgeToDomain{value: DELIVERY_FEE}(recipient, address(TOKEN), amount);
         vm.stopPrank();
 
         // Reconstruct the recorded message (the handler mirrors the hub's per-domain

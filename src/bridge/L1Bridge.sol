@@ -58,8 +58,9 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
     }
 
     /// @notice Locks `amount` of `token` and sends a transfer message to the counterpart
-    /// bridge, which mints the bridged token to `recipient` on the domain.
-    function bridgeToDomain(address recipient, address token, uint256 amount) external {
+    /// bridge, which mints the bridged token to `recipient` on the domain. `msg.value` is the
+    /// delivery fee forwarded to the hub; it must buy enough gas for the mint.
+    function bridgeToDomain(address recipient, address token, uint256 amount) external payable {
         address counterpart = domainBridge;
         require(counterpart != address(0), "L1Bridge: counterpart not registered");
         require(allowedTokens[token], "L1Bridge: token not allowed");
@@ -75,7 +76,9 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
             "L1Bridge: fee-on-transfer token not supported"
         );
 
-        HUB.sendL1Message(DOMAIN_CHAIN_ID, counterpart, MessageLib.encodeTransfer(recipient, token, amount));
+        HUB.sendL1Message{value: msg.value}(
+            DOMAIN_CHAIN_ID, counterpart, MessageLib.encodeTransfer(recipient, token, amount)
+        );
         emit BridgeInitiated(msg.sender, recipient, token, amount);
     }
 

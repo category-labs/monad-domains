@@ -11,11 +11,10 @@ import { setupDomain, type SetupConfig } from "./setup.js";
  *   QUORUM=2                \
  *   [EXISTING_HUB_ADDRESS=0x..] \ # reuse the hub when adding another domain
  *   [SEED_DEPLOYER_KEY=0x.] \  # domain seed account; defaults to ADMIN_KEY
- *   [FEE_RECIPIENT=0x..]    \  # receives sequencing fees; defaults to admin
+ *   [FEE_RECIPIENT=0x..]    \  # receives sequencing and delivery fees; defaults to admin
  *   [CHECKPOINT_INTERVAL=5] \  # attested heights are multiples of this
  *   [ALLOWED_TOKEN=0x..]    \  # e.g. wrapped MON
- *   [SEQUENCING_FEE=0]      \  # wei forwarded per sequenceToDomain
- *   [DOMAIN_GAS=5000000]        \
+ *   [DOMAIN_GAS=5000000]    \  # gas limit of each seeded creation, paid at DOMAIN_GAS_PRICE
  *   [VIEWING_KEY=0x04...]   \  # viewing public key: published on the hub, encrypts the seeded txs
  *     npm run setup
  */
@@ -41,7 +40,6 @@ function main() {
   if (process.env.FEE_RECIPIENT) config.feeRecipient = process.env.FEE_RECIPIENT as Address;
   if (process.env.CHECKPOINT_INTERVAL) config.checkpointInterval = BigInt(process.env.CHECKPOINT_INTERVAL);
   if (process.env.ALLOWED_TOKEN) config.allowedToken = process.env.ALLOWED_TOKEN as Address;
-  if (process.env.SEQUENCING_FEE) config.sequencingFee = BigInt(process.env.SEQUENCING_FEE);
   if (process.env.DOMAIN_GAS) config.domainGas = BigInt(process.env.DOMAIN_GAS);
   if (process.env.VIEWING_KEY) config.viewingKey = process.env.VIEWING_KEY as Hex;
 

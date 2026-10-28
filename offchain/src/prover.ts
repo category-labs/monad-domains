@@ -5,11 +5,11 @@ import { hashMessage, hashDomainMessage, decodeDomainMessage, type DomainMessage
 import { getProof, root } from "./merkle.js";
 
 export const L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
-  "event L1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, address indexed to, bytes data, uint256 nonce, bytes32 messageHash)",
+  "event L1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, address indexed to, bytes data, uint256 nonce, uint256 fee, bytes32 messageHash)",
 );
 
 export const ENCRYPTED_L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
-  "event EncryptedL1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, bytes ciphertext, uint256 nonce)",
+  "event EncryptedL1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, bytes ciphertext, uint256 nonce, uint256 fee)",
 );
 
 export const DOMAIN_MESSAGE_RECORDED_EVENT = parseAbiItem(
