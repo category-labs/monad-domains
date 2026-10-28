@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { keccak256, toHex, type Address, type Hex } from "viem";
-import { encodeTransfer, hashDomainMessage, hashMessage, type Message } from "../src/message.js";
+import { encodeTransfer, hashDomainMessage, hashMessage, MessageKind, type DomainMessage, type Message } from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
 import { proveMessage, type RecordedMessage } from "../src/prover.js";
 import { stateTransitionDigest } from "../src/checkpoint.js";
@@ -134,19 +134,29 @@ test("stateTransitionDigest matches DomainHub.stateTransitionDigest", () => {
   assert.equal(digest, "0x0d0b8d03916739143e31e096b5c5be7aa303cbbd90e4ef6a17f6c7e1f4bbff22");
 });
 
-/** Domain message ID vector: the anchor leaf of a withdrawal-shaped message to the L1. */
+/**
+ * Domain message ID vectors: the anchor leaves of a withdrawal-shaped plain message to the L1 and
+ * of an encrypted envelope to another domain.
+ */
 test("hashDomainMessage matches MessageLib.hashDomainMessage", () => {
-  const id = hashDomainMessage(
-    {
-      sourceChainId: 7777n,
-      destinationChainId: 31337n,
-      from: toHex(0x1000, { size: 20 }) as Address,
-      to: toHex(0x2000, { size: 20 }) as Address,
-      sourceNonce: 3n,
-      salt: toHex(1, { size: 32 }),
-      data: encodeTransfer(toHex(0x3000, { size: 20 }) as Address, toHex(0x4000, { size: 20 }) as Address, 10n ** 18n),
-    },
-    VECTOR_CONTEXT,
-  );
-  assert.equal(id, "0x90210795f990e157687f266f97a85242a7b3212af4662c69150c9719ff3c1071");
+  const plain: DomainMessage = {
+    kind: MessageKind.Plain,
+    sourceChainId: 7777n,
+    destinationChainId: 31337n,
+    from: toHex(0x1000, { size: 20 }) as Address,
+    to: toHex(0x2000, { size: 20 }) as Address,
+    sourceNonce: 3n,
+    salt: toHex(1, { size: 32 }),
+    data: encodeTransfer(toHex(0x3000, { size: 20 }) as Address, toHex(0x4000, { size: 20 }) as Address, 10n ** 18n),
+  };
+  assert.equal(hashDomainMessage(plain, VECTOR_CONTEXT), "0xea37ae163db35e3a8be7e9b55592f402e55809f5b155a4ce1388f37d1ebf1de4");
+  const encrypted: DomainMessage = {
+    ...plain,
+    kind: MessageKind.Encrypted,
+    destinationChainId: 8888n,
+    to: toHex(0, { size: 20 }) as Address,
+    salt: toHex(0, { size: 32 }),
+    data: "0x04c0ffee",
+  };
+  assert.equal(hashDomainMessage(encrypted, VECTOR_CONTEXT), "0x6e7ce29d3db30ea54207c472ce955dc9d98943a6ad508ff5b704e939ad55e963");
 });

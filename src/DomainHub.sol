@@ -29,6 +29,8 @@ contract DomainHub is IDomainHub, EIP712 {
     error SameDomain();
     error SourceNotRegistered();
     error ZeroTarget();
+    error EncryptedMessageWithTarget();
+    error EncryptedL1Callback();
     error MessageAlreadyRelayed();
     error UnknownAnchor();
     error InvalidProof();
@@ -281,7 +283,13 @@ contract DomainHub is IDomainHub, EIP712 {
     {
         if (message.sourceChainId == message.destinationChainId) revert SameDomain();
         if (_queueConfig(message.sourceChainId) == 0) revert SourceNotRegistered();
-        if (message.to == address(0)) revert ZeroTarget();
+        bool encrypted = message.kind == MessageLib.MessageKind.Encrypted;
+        if (encrypted) {
+            if (message.to != address(0)) revert EncryptedMessageWithTarget();
+            if (message.destinationChainId == block.chainid) revert EncryptedL1Callback();
+        } else {
+            if (message.to == address(0)) revert ZeroTarget();
+        }
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         if (relayedDomainMessages[message.sourceChainId][messageHash]) revert MessageAlreadyRelayed();
         if (!domainAnchors[message.sourceChainId][anchor]) revert UnknownAnchor();
@@ -290,9 +298,13 @@ contract DomainHub is IDomainHub, EIP712 {
 
         if (message.destinationChainId != block.chainid) {
             if (_queueConfig(message.destinationChainId) == 0) revert DestinationNotRegistered();
-            (uint256 deliveryNonce, uint256 config) = _sendL1Message(
-                message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
-            );
+            (uint256 deliveryNonce, uint256 config) = encrypted
+                ? _sendEncryptedL1Message(
+                    message.destinationChainId, message.sourceChainId, message.from, message.data, msg.value
+                )
+                : _sendL1Message(
+                    message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
+                );
             emit DomainMessageRouted(messageHash, message.sourceChainId, message.destinationChainId, deliveryNonce);
             _payFee(config, msg.value);
             return true; // Queued atomically; destination execution happens asynchronously.
@@ -388,22 +400,34 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable {
+        (, uint256 config) =
+            _sendEncryptedL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, ciphertext, msg.value);
+        _payFee(config, msg.value);
+    }
+
+    /// @dev `_sendL1Message` for a ciphertext the destination client opens into the target and
+    /// payload; draws from the same delivery nonces.
+    function _sendEncryptedL1Message(
+        uint64 domainChainId,
+        uint64 sourceChainId,
+        address from,
+        bytes memory ciphertext,
+        uint256 fee
+    ) internal returns (uint256 nonce, uint256 config) {
         uint256 queue = InputQueue.base(domainChainId);
-        uint256 config = _registeredConfig(queue);
-        if (msg.value < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow();
-        uint64 sourceChainId = SafeCast.toUint64(block.chainid);
+        config = _registeredConfig(queue);
+        if (fee < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow();
         InputQueue.State memory state = InputQueue.loadState(queue);
-        uint64 nonce = state.messageCount++;
+        nonce = state.messageCount++;
         _recordInput(
             queue,
             config,
             state,
             InputQueue.ENCRYPTED_MESSAGE,
-            msg.value,
-            abi.encodePacked(sourceChainId, msg.sender, nonce, ciphertext)
+            fee,
+            abi.encodePacked(sourceChainId, from, uint64(nonce), ciphertext)
         );
-        emit EncryptedL1MessageRecorded(domainChainId, sourceChainId, msg.sender, ciphertext, nonce, msg.value);
-        _payFee(config, msg.value);
+        emit EncryptedL1MessageRecorded(domainChainId, sourceChainId, from, ciphertext, nonce, fee);
     }
 
     function l1MessageCounts(uint64 domainChainId) external view returns (uint256) {

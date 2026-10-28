@@ -67,7 +67,10 @@ interface IDomainHub {
         bytes32 messageHash
     );
 
-    /// @notice Emitted for every recorded encrypted L1 -> domain message.
+    /// @notice Emitted for every recorded encrypted L1 -> domain message: an L1 caller's
+    /// `sendEncryptedL1Message`, or a source domain's `sendEncryptedDomainMessage` forwarded by
+    /// `relayDomainMessage`. sourceChainId/from identify the authenticated origin either way;
+    /// the destination client opens `ciphertext` into the target and payload.
     event EncryptedL1MessageRecorded(
         uint64 indexed domainChainId,
         uint64 sourceChainId,
@@ -181,9 +184,10 @@ interface IDomainHub {
     /// @notice Proves any domain-origin message against its source anchor. If its destination
     /// is L1, invokes onDomainMessage and returns callback success (failure is retryable here);
     /// no value may be attached. Otherwise atomically queues it through the same path as
-    /// sendL1Message, with `msg.value` as the destination delivery fee (at least the minimum
-    /// for the envelope's data), and returns true; destination execution/retry happens on that
-    /// domain. Messages can arrive in any order.
+    /// sendL1Message (sendEncryptedL1Message for an `Encrypted` envelope, which must name no
+    /// target and cannot go to L1), with `msg.value` as the destination delivery fee (at least
+    /// the minimum for the envelope's data), and returns true; destination execution/retry
+    /// happens on that domain. Messages can arrive in any order.
     function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
         external
         payable
@@ -311,8 +315,17 @@ interface IDomainSpoke is IDomainAccessControl {
     /// @notice Sends a message to L1 or another domain through the same authenticated
     /// envelope. Source identity and nonce are assigned by this spoke. An L1 destination
     /// executes a callback there; a domain destination is forwarded without an L1 callback.
+    /// Records an envelope of kind `Plain`.
     /// @param salt Fresh cryptographically random bytes, kept private until relay.
     function sendDomainMessage(uint64 destinationChainId, address to, bytes calldata data, bytes32 salt)
+        external
+        returns (bytes32 messageId);
+
+    /// @notice Sends a message to another domain with its target and payload sealed to that
+    /// domain's viewing key: `ciphertext` encrypts `to[20] || data` in the format of
+    /// `sendEncryptedL1Message`. The recorded envelope has kind `Encrypted`, a zero target,
+    /// a zero salt and the ciphertext as its data. MUST reject the L1 as destination.
+    function sendEncryptedDomainMessage(uint64 destinationChainId, bytes calldata ciphertext)
         external
         returns (bytes32 messageId);
 
