@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { zeroHash, type Address, type Hex, type PublicClient } from "viem";
+import { zeroAddress, zeroHash, type Address, type Hex, type PublicClient } from "viem";
 import {
   decodeDomainMessage, encodeDomainMessage, hashMessage, hashDomainMessage,
-  domainDeliveryEnvelope, type DomainMessage,
+  domainDeliveryEnvelope, isEncryptedDomainMessage, MessageKind, type DomainMessage,
 } from "../src/message.js";
 import {
   fetchDomainBatch, fetchDomainMessages, findBatchForNonce, proveMessage, routedMessageDeliveryStatus,
@@ -14,7 +14,7 @@ const addr = (n: number) => `0x${n.toString(16).padStart(40,"0")}` as Address;
 const context = { l1ChainId: 1n, hub: addr(1) };
 const spoke = addr(2);
 const routed: DomainMessage = {
-  sourceChainId: 7777n, destinationChainId: 8888n,
+  kind: MessageKind.Plain, sourceChainId: 7777n, destinationChainId: 8888n,
   from: addr(3), to: addr(4), sourceNonce: 9n, salt: `0x${"01".repeat(32)}`, data: "0x1234",
 };
 const legacy: DomainMessage = { ...routed, destinationChainId: 1n, sourceNonce: 8n, salt: `0x${"02".repeat(32)}`, data: "0xabcd" };
@@ -39,6 +39,7 @@ test("routed envelope round-trips and rejects non-canonical encodings", () => {
 
 test("message IDs commit to every field and deployment context", () => {
   for (const message of [
+    { ...routed, kind: MessageKind.Encrypted },
     { ...routed, sourceChainId: 7778n },
     { ...routed, destinationChainId: 8889n }, { ...routed, from: addr(5) },
     { ...routed, to: addr(5) }, { ...routed, sourceNonce: 10n }, { ...routed, data: "0x1235" as Hex },
@@ -90,6 +91,50 @@ for (const [success, expected] of [
     assert.equal((query.event as { name: string }).name, "L1MessageRelayed");
   });
 }
+
+// ---------------------------------------------------------------------------
+// Encrypted envelopes: kind Encrypted with no target, delivered as the plaintext the sender sealed
+// ---------------------------------------------------------------------------
+
+const encrypted: DomainMessage = { ...routed, kind: MessageKind.Encrypted, to: zeroAddress, sourceNonce: 11n, salt: zeroHash, data: "0x04c0ffee" };
+const plaintext = { to: addr(4), data: "0x1234" as Hex };
+
+test("encrypted envelopes round-trip and unknown kinds are rejected", () => {
+  assert.ok(isEncryptedDomainMessage(encrypted));
+  assert.ok(!isEncryptedDomainMessage(routed));
+  assert.deepEqual(decodeDomainMessage(encodeDomainMessage(encrypted)), encrypted);
+  assert.notEqual(hashDomainMessage(encrypted, context), hashDomainMessage({ ...encrypted, data: "0x04c0ffef" }, context));
+  const unknownKind = encodeDomainMessage({ ...encrypted, kind: 2 as MessageKind });
+  assert.throws(() => decodeDomainMessage(unknownKind), /unknown message kind/);
+});
+
+test("an encrypted envelope delivers as its plaintext", () => {
+  assert.throws(() => domainDeliveryEnvelope(encrypted, 3n), /plaintext/);
+  assert.deepEqual(domainDeliveryEnvelope(encrypted, 3n, plaintext), {
+    sourceChainId: encrypted.sourceChainId, from: encrypted.from, to: plaintext.to, data: plaintext.data, nonce: 3n,
+  });
+  // Same delivery hash as a plaintext route of the same content.
+  assert.equal(
+    hashMessage(domainDeliveryEnvelope(encrypted, 3n, plaintext)),
+    hashMessage(domainDeliveryEnvelope({ ...routed, to: plaintext.to, data: plaintext.data }, 3n)),
+  );
+  assert.deepEqual(domainDeliveryEnvelope(routed, 3n, plaintext), domainDeliveryEnvelope(routed, 3n));
+});
+
+test("encrypted routed delivery status queries by the plaintext delivery hash", async () => {
+  const queries: Record<string, unknown>[] = [];
+  const client = {
+    getBlockNumber: async () => 42n,
+    getLogs: async (request: Record<string, unknown>) => {
+      queries.push(request);
+      return [{ args: { success: true }, blockNumber: 41n, logIndex: 0 }];
+    },
+  } as unknown as PublicClient;
+  await assert.rejects(routedMessageDeliveryStatus(client, encrypted, spoke, 3n), /plaintext/);
+  assert.equal(queries.length, 0);
+  assert.equal(await routedMessageDeliveryStatus(client, encrypted, spoke, 3n, plaintext), "delivered");
+  assert.deepEqual(queries[0]!.args, { messageHash: hashMessage(domainDeliveryEnvelope(encrypted, 3n, plaintext)) });
+});
 
 // ---------------------------------------------------------------------------
 // Attested batches: nonce ranges between consecutive checkpoints
