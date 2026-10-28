@@ -111,6 +111,7 @@ contract DomainBridgeTest is DomainTestBase {
         // The recorded message: from this bridge, to the L1 bridge, transfer payload.
         bytes32 expectedHash = MessageLib.hashDomainMessage(
             MessageLib.DomainMessage({
+                kind: MessageLib.MessageKind.Plain,
                 sourceChainId: CHAIN_ID,
                 destinationChainId: uint64(block.chainid),
                 from: address(bridge),

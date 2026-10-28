@@ -21,6 +21,7 @@ contract MessageLibTest is Test {
 
     function test_hashDomainMessage_matchesConformanceVector() public pure {
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: 7777,
             destinationChainId: 31337,
             from: address(0x1000),
@@ -30,7 +31,34 @@ contract MessageLibTest is Test {
         });
         assertEq(
             MessageLib.hashDomainMessage(message, 31337, 0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3),
-            0xe867f835d5347f0a6f0cea6d36500780cd7799407d148df34cc30dde3150a08b
+            0x091f41585f89c2fff450fd526ac3bd2c66ff4de55f5aee758f6b4d4432583dc2
+        );
+
+        message.kind = MessageLib.MessageKind.Encrypted;
+        message.destinationChainId = 8888;
+        message.to = address(0);
+        message.data = hex"04c0ffee";
+        assertEq(
+            MessageLib.hashDomainMessage(message, 31337, 0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3),
+            0x7d68d18e053e5e777d2b1d8365c8eea8b388bf982cda20e269b7c42e0767c675
+        );
+    }
+
+    function testFuzz_hashDomainMessage_bindsKind(address to, bytes memory data) public pure {
+        MessageLib.DomainMessage memory plain = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
+            sourceChainId: 7777,
+            destinationChainId: 8888,
+            from: address(0xA11CE),
+            to: to,
+            sourceNonce: 1,
+            data: data
+        });
+        MessageLib.DomainMessage memory encrypted = abi.decode(abi.encode(plain), (MessageLib.DomainMessage));
+        encrypted.kind = MessageLib.MessageKind.Encrypted;
+        assertNotEq(
+            MessageLib.hashDomainMessage(plain, 1, address(0xB0B)),
+            MessageLib.hashDomainMessage(encrypted, 1, address(0xB0B))
         );
     }
 }

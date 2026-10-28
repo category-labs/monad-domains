@@ -4,10 +4,19 @@ pragma solidity ^0.8.24;
 /// @notice Canonical encoding of cross-domain messages and of the token bridge payload
 /// carried inside them, shared by the hub, the spoke and both bridges.
 library MessageLib {
+    /// @notice `Plain`: `to` and `data` are the target and payload. `Encrypted`: `to` is zero
+    /// and `data` is `to[20] || data` sealed to the destination domain's viewing key, so the
+    /// destination must be a domain.
+    enum MessageKind {
+        Plain,
+        Encrypted
+    }
+
     /// @notice An authenticated domain-origin message. The source spoke assigns origin and nonce.
     /// The hub proves this envelope and assigns a separate destination delivery nonce when forwarding.
-    /// The destination selects L1 execution or domain forwarding.
+    /// The destination selects L1 execution or domain forwarding; `kind` selects the delivery path.
     struct DomainMessage {
+        MessageKind kind;
         uint64 sourceChainId;
         uint64 destinationChainId;
         address from;
@@ -26,6 +35,7 @@ library MessageLib {
             abi.encode(
                 l1ChainId,
                 hub,
+                message.kind,
                 message.sourceChainId,
                 message.destinationChainId,
                 message.from,
