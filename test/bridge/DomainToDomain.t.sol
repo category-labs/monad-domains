@@ -237,6 +237,7 @@ contract DomainToDomainTest is DomainTestBase {
         uint256 nonce = _domainANonce++;
         anchor = _attestBatch(hub, spokeA, VALIDATOR_KEY);
         message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_A,
             destinationChainId: uint64(block.chainid),
             from: address(domainBridgeA),

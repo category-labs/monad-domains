@@ -61,8 +61,10 @@ export {
 } from "./checkpoint.js";
 export {
   DOMAIN_MESSAGE_PARAMS,
+  MessageKind,
   hashDomainMessage, encodeDomainMessage, decodeDomainMessage, domainDeliveryEnvelope,
-  type DomainMessage, type MessageContext,
+  isEncryptedDomainMessage,
+  type DomainMessage, type MessageContext, type MessagePlaintext,
 } from "./message.js";
 export {
   DOMAIN_MESSAGE_ROUTED_EVENT,

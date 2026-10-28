@@ -1,5 +1,5 @@
 import { parseAbiItem, type Address, type PublicClient } from "viem";
-import { hashMessage, domainDeliveryEnvelope, type DomainMessage } from "./message.js";
+import { hashMessage, domainDeliveryEnvelope, type DomainMessage, type MessagePlaintext } from "./message.js";
 import { l1MessageDeliveryStatus, type L1DeliveryStatus } from "./prover.js";
 
 export const DOMAIN_MESSAGE_ROUTED_EVENT = parseAbiItem(
@@ -9,15 +9,17 @@ export const DOMAIN_MESSAGE_ROUTED_EVENT = parseAbiItem(
 export type RoutedDeliveryStatus = L1DeliveryStatus;
 
 /** Query execution on the destination's locally configured spoke. Obtain deliveryNonce
- * from DomainMessageRouted. The hub does not store or need that spoke's address.
+ * from DomainMessageRouted. The hub does not store or need that spoke's address. An
+ * encrypted envelope is tracked by the plaintext it seals, which its sender supplies.
  */
 export async function routedMessageDeliveryStatus(
   client: PublicClient,
   message: DomainMessage,
   destinationSpoke: Address,
   deliveryNonce: bigint,
+  plaintext?: MessagePlaintext,
 ): Promise<RoutedDeliveryStatus> {
-  const envelope = domainDeliveryEnvelope(message, deliveryNonce);
+  const envelope = domainDeliveryEnvelope(message, deliveryNonce, plaintext);
   return l1MessageDeliveryStatus(client, {
     message: envelope, messageHash: hashMessage(envelope), blockNumber: 0n, logIndex: 0,
   }, destinationSpoke);

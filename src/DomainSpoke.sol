@@ -155,8 +155,27 @@ contract DomainSpoke is IDomainSpoke {
     {
         require(destinationChainId != DOMAIN_CHAIN_ID, "DomainSpoke: same domain");
         require(to != address(0), "DomainSpoke: zero target");
+        return _recordDomainMessage(MessageLib.MessageKind.Plain, destinationChainId, to, data);
+    }
+
+    function sendEncryptedDomainMessage(uint64 destinationChainId, bytes calldata ciphertext)
+        external
+        returns (bytes32 messageId)
+    {
+        require(destinationChainId != DOMAIN_CHAIN_ID, "DomainSpoke: same domain");
+        require(destinationChainId != L1_CHAIN_ID, "DomainSpoke: L1 destination");
+        return _recordDomainMessage(MessageLib.MessageKind.Encrypted, destinationChainId, address(0), ciphertext);
+    }
+
+    function _recordDomainMessage(
+        MessageLib.MessageKind kind,
+        uint64 destinationChainId,
+        address to,
+        bytes calldata data
+    ) internal returns (bytes32 messageId) {
         uint256 sourceNonce = domainMessageCount++;
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: kind,
             sourceChainId: DOMAIN_CHAIN_ID,
             destinationChainId: destinationChainId,
             from: msg.sender,

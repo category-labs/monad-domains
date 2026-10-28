@@ -142,6 +142,7 @@ contract BridgeHandler is DomainTestBase {
         // counter) and attest its single-message batch as the validator at the next
         // checkpoint. The require cross-checks the reconstruction against the anchor.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: address(DOMAIN_BRIDGE),

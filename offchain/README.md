@@ -54,6 +54,14 @@ another domain. The spoke stores every message id by nonce; a checkpoint anchors
 range recorded since the previous checkpoint, so a batch is identified by the two attested
 heights.
 
+To hide a message's target and payload from the L1, seal them to the destination's viewing
+key (`hub.viewingKeys(destinationChainId)`) with `encryptMessage(viewingKey, to, data)` and
+call `spoke.sendEncryptedDomainMessage(destinationChainId, ciphertext)`. The envelope has kind
+`Encrypted` and no target; the hub forwards it as an `EncryptedL1MessageRecorded` delivery
+that only the destination client opens. Tracking it needs the sealed `(to, data)` (see
+`routedMessageDeliveryStatus` below). `npx tsx src/e2e-routing-cli.ts` runs both routes
+against a fresh two-domain devnet (needs `VIEWING_KEY_A` and `VIEWING_KEY_B`).
+
 ```ts
 import {
   findBatchForNonce, fetchDomainBatch, proveMessage, isDomainAnchorRecorded,
@@ -80,11 +88,13 @@ if (message.destinationChainId === L1_CHAIN_ID) {
   // A failed L1 callback is retried with hub.retryDomainMessage(message).
 } else {
   // Read deliveryNonce from DomainMessageRouted; SPOKE_B is local client configuration.
+  // An encrypted envelope (isEncryptedDomainMessage) is delivered as the plaintext it seals,
+  // so its sender passes the { to, data } it encrypted as the last argument.
   const destinationStatus = await routedMessageDeliveryStatus(
-    domainB, message, SPOKE_B, deliveryNonce,
+    domainB, message, SPOKE_B, deliveryNonce, /* plaintext */
   ); // "pending" | "failed" | "delivered"
   if (destinationStatus === "failed") {
-    const deliveryEnvelope = domainDeliveryEnvelope(message, deliveryNonce);
+    const deliveryEnvelope = domainDeliveryEnvelope(message, deliveryNonce /* , plaintext */);
     // Submit spokeB.retryL1Message(deliveryEnvelope) with enough gas.
   }
 }

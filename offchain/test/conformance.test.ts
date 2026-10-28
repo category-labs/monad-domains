@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { keccak256, toHex, type Address, type Hex } from "viem";
-import { decodeTransfer, encodeTransfer, hashMessage, type Message } from "../src/message.js";
+import { decodeTransfer, encodeTransfer, hashDomainMessage, hashMessage, MessageKind, type DomainMessage, type Message } from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
 import { proveMessage, type RecordedMessage } from "../src/prover.js";
 import { domainFeeCaps, sponsoredOuterGasLimit } from "../src/transaction-policy.js";
@@ -158,4 +158,16 @@ test("stateTransitionDigest matches DomainHub.stateTransitionDigest", () => {
     },
   );
   assert.equal(digest, "0x0d0b8d03916739143e31e096b5c5be7aa303cbbd90e4ef6a17f6c7e1f4bbff22");
+});
+
+/** Domain-origin envelope ids from `script/GenVectors.s.sol`, at the same hub and chain. */
+test("hashDomainMessage matches MessageLib for a plain and an encrypted envelope", () => {
+  const context = { l1ChainId: 31337n, hub: "0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3" as Address };
+  const plain: DomainMessage = {
+    kind: MessageKind.Plain, sourceChainId: 7777n, destinationChainId: 8888n,
+    from: toHex(0x1000, { size: 20 }), to: toHex(0x2000, { size: 20 }), sourceNonce: 3n, data: "0x1234",
+  };
+  const encrypted: DomainMessage = { ...plain, kind: MessageKind.Encrypted, to: toHex(0, { size: 20 }), data: "0x04c0ffee" };
+  assert.equal(hashDomainMessage(plain, context), "0x071890835df78534f61decb11ffdb3043519da6ff6bde6435ad64a17949de2f7");
+  assert.equal(hashDomainMessage(encrypted, context), "0x7d68d18e053e5e777d2b1d8365c8eea8b388bf982cda20e269b7c42e0767c675");
 });

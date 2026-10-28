@@ -109,6 +109,9 @@ export interface UndecryptableMessage {
 /**
  * Fetches all encrypted L1 -> domain messages recorded for `domainChainId` in the
  * block range and decrypts them with the domain viewing secret key, in recording order.
+ * The event's `sourceChainId`/`from` are the authenticated origin: the L1 caller of
+ * `sendEncryptedL1Message`, or the source domain and sender of a forwarded
+ * `sendEncryptedDomainMessage`; the decrypted envelope carries them through.
  * A decrypted message is returned in the exact shape the plaintext stream yields — its
  * `messageHash` is the plaintext hash the spoke derives at delivery — so
  * `l1MessageDeliveryStatus` works on it unchanged.
