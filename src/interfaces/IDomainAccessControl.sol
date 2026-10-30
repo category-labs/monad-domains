@@ -21,6 +21,7 @@ interface IDomainAccessControl is IDomainAccessPolicy {
     event ContractDeployed(address indexed target, address indexed deployer, address indexed policyOwner);
     /// @notice A zero `policy` opens the contract to every caller.
     event AccessPolicySet(address indexed target, address indexed policy);
+    event LogReaderSet(address indexed target, address indexed reader, bool allowed);
 
     /// @notice Deploy using CREATE and assign a nonzero owner of the new contract's access policy.
     /// @param initCode Creation bytecode including ABI-encoded constructor arguments.
@@ -33,4 +34,11 @@ interface IDomainAccessControl is IDomainAccessPolicy {
     /// before naming it: it decides the target's access.
     function setAccessPolicy(address target, address policy) external;
     function accessPolicies(address target) external view returns (address);
+
+    /// @notice Policy-owner-only. Grant or revoke `reader`'s read access, enforced by the
+    /// domain RPC, to every log `target` emits.
+    function setLogReader(address target, address reader, bool allowed) external;
+
+    /// @notice Accounts besides the policy owner that may read every log of a contract.
+    function logReaders(address target, address reader) external view returns (bool);
 }

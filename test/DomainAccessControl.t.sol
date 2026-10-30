@@ -248,4 +248,60 @@ contract DomainAccessControlTest is DomainTestBase {
         vm.etch(allowAll, hex"");
         assertFalse(spoke.canCall(alice, token, _balance(alice)));
     }
+
+    // ----- log readers -----
+
+    function test_policyOwnerGrantsAndRevokesLogReaders() public {
+        vm.expectEmit(true, true, false, true, address(spoke));
+        emit IDomainAccessControl.LogReaderSet(token, alice, true);
+        vm.prank(policyOwner);
+        spoke.setLogReader(token, alice, true);
+        assertTrue(spoke.logReaders(token, alice));
+        assertFalse(spoke.logReaders(token, bob));
+
+        vm.expectEmit(true, true, false, true, address(spoke));
+        emit IDomainAccessControl.LogReaderSet(token, alice, false);
+        vm.prank(policyOwner);
+        spoke.setLogReader(token, alice, false);
+        assertFalse(spoke.logReaders(token, alice));
+    }
+
+    function testFuzz_onlyThePolicyOwnerSetsLogReaders(address stranger, bool allowed) public {
+        vm.assume(stranger != policyOwner);
+        vm.prank(policyOwner);
+        spoke.setLogReader(token, alice, true);
+        vm.startPrank(stranger);
+        vm.expectRevert("DomainSpoke: not policy owner");
+        spoke.setLogReader(token, stranger, allowed);
+        vm.expectRevert("DomainSpoke: not policy owner");
+        spoke.setLogReader(token, alice, allowed);
+        vm.stopPrank();
+        assertFalse(spoke.logReaders(token, stranger));
+        assertTrue(spoke.logReaders(token, alice));
+    }
+
+    function test_logReaderGrantIsScopedToItsTarget() public {
+        vm.prank(deployer);
+        address other = spoke.deployContract(type(TestERC20).creationCode, policyOwner);
+        vm.prank(policyOwner);
+        spoke.setLogReader(token, alice, true);
+        assertTrue(spoke.logReaders(token, alice));
+        assertFalse(spoke.logReaders(other, alice));
+    }
+
+    function test_cannotSetLogReadersForAnIndependentlyDeployedTarget() public {
+        address independent = address(new TestERC20());
+        vm.prank(policyOwner);
+        vm.expectRevert("DomainSpoke: not policy owner");
+        spoke.setLogReader(independent, alice, true);
+    }
+
+    function test_logAccessStorageSlots() public {
+        vm.prank(policyOwner);
+        spoke.setLogReader(token, alice, true);
+        bytes32 ownerSlot = keccak256(abi.encode(token, uint256(2)));
+        bytes32 readerSlot = keccak256(abi.encode(alice, keccak256(abi.encode(token, uint256(6)))));
+        assertEq(vm.load(address(spoke), ownerSlot), bytes32(uint256(uint160(policyOwner))));
+        assertEq(vm.load(address(spoke), readerSlot), bytes32(uint256(1)));
+    }
 }

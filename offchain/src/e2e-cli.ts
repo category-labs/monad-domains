@@ -1,4 +1,5 @@
 import {
+  BaseError,
   createPublicClient,
   createWalletClient,
   defineChain,
@@ -6,6 +7,7 @@ import {
   encodeFunctionData,
   getContractAddress,
   http,
+  parseAbiItem,
   parseEventLogs,
   toFunctionSelector,
   type Address,
@@ -46,15 +48,20 @@ import { type MessageContext } from "./message.js";
  *      `DomainAccessRules` policy for it, restrict `balanceOf` to its subject, and check
  *      that the execution client (which calls `spoke.canCall` before every domain call frame)
  *      denies both eth_call and sequenced transactions — including nested calls whose
- *      failure the caller catches — until the policy owner grants a reader.
+ *      failure the caller catches — until the policy owner grants a reader;
+ *   5. log access: the domain RPC serves a contract's logs to its policy owner and the log
+ *      readers it names on the spoke, strips other logs from receipts, and everyone else reads
+ *      only logs that name them in a topic.
  *
  * Configuration via env: L1_RPC_URL (default http://localhost:8080),
- * DOMAIN_CHAIN_ID (default (1 << 16) | 20143 = 85679), and VIEWING_KEY — the
+ * DOMAIN_CHAIN_ID (default (1 << 16) | 20143 = 85679), VIEWING_KEY — the
  * domain viewing public key matching the PEM the node was started with
  * (`--private-domain <id> <spoke address> <key.pem>`, where the spoke address is
  * CREATE(admin, 0) on the domain = the hub address on the L1); every sequenced
- * transaction is encrypted to it. The well-known dev accounts below exist in
- * MONAD_DEVNET_ALLOC with huge balances.
+ * transaction is encrypted to it — and DOMAIN_ACCESS_KEY, which signs the domain
+ * route's access token for reads that are not tied to an actor (default admin, the
+ * devnet's `--domain-operator`); each actor's own reads carry its own token. The
+ * well-known dev accounts below exist in MONAD_DEVNET_ALLOC with huge balances.
  */
 
 const L1_RPC_URL = process.env.L1_RPC_URL ?? "http://localhost:8080";
@@ -76,6 +83,7 @@ const VALIDATOR_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603
 const ALICE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" as Hex; // acct 2: L1 depositor
 const BOB_KEY = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6" as Hex; // acct 3: domain recipient
 const CAROL = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65" as Address; // acct 4: L1 withdrawal recipient
+const DOMAIN_ACCESS_KEY = (process.env.DOMAIN_ACCESS_KEY ?? ADMIN_KEY) as Hex;
 
 const DEPOSIT = 100n * 10n ** 18n;
 const WITHDRAWAL = 40n * 10n ** 18n;
@@ -105,6 +113,45 @@ async function retry<T>(label: string, fn: () => Promise<T>, predicate: (v: T) =
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
+}
+
+/** `<chain id>.<EIP-712 signature over DomainAccessToken(uint64 chainId)>`, the domain route's access token. */
+async function domainAccessToken(key: Hex, chainId: bigint): Promise<string> {
+  const signature = await privateKeyToAccount(key).signTypedData({
+    domain: { name: "Monad Domain RPC", version: "1", chainId: Number(chainId) },
+    types: { DomainAccessToken: [{ name: "chainId", type: "uint64" }] },
+    primaryType: "DomainAccessToken",
+    message: { chainId },
+  });
+  return `${chainId}.${signature}`;
+}
+
+const domainClients = new Map<Hex, PublicClient>();
+
+/** A domain client whose requests carry `key`'s access token; eth_call runs as that signer. */
+function domainAs(key: Hex): PublicClient {
+  let client = domainClients.get(key);
+  if (!client) {
+    const chain = defineChain({
+      id: Number(DOMAIN_CHAIN_ID),
+      name: `domain-${DOMAIN_CHAIN_ID}`,
+      nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
+      rpcUrls: { default: { http: [DOMAIN_RPC_URL] } },
+    });
+    const token = domainAccessToken(key, DOMAIN_CHAIN_ID);
+    // Batching sends each page of `domainMessageIds` reads as one JSON-RPC request.
+    const transport = http(DOMAIN_RPC_URL, {
+      batch: true,
+      fetchFn: async (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set("X-Authorization-Token", await token);
+        return fetch(input, { ...init, headers });
+      },
+    });
+    client = createPublicClient({ chain, transport });
+    domainClients.set(key, client);
+  }
+  return client;
 }
 
 /** Waits until the domain has executed the sequenced transaction, preferring the
@@ -158,6 +205,20 @@ async function expectCallDenied(label: string, fn: () => Promise<unknown>) {
   throw new Error(`${label}: expected the call to be denied, it returned ${String(value)}`);
 }
 
+/** Asserts that the domain RPC refuses a request with -32007 Forbidden. */
+async function expectForbidden(label: string, fn: () => Promise<unknown>) {
+  try {
+    await fn();
+  } catch (error) {
+    if (error instanceof BaseError && error.walk((e) => (e as { code?: unknown }).code === -32007)) {
+      console.log(`  forbidden as expected: ${label}`);
+      return;
+    }
+    throw error;
+  }
+  throw new Error(`${label}: expected the domain RPC to refuse it as Forbidden`);
+}
+
 async function main() {
   // --- Clients ---
   const l1Probe = createPublicClient({ transport: http(L1_RPC_URL) });
@@ -169,14 +230,7 @@ async function main() {
     rpcUrls: { default: { http: [L1_RPC_URL] } },
   });
   const l1 = createPublicClient({ chain: l1Chain, transport: http(L1_RPC_URL) });
-  const domainChain = defineChain({
-    id: Number(DOMAIN_CHAIN_ID),
-    name: `domain-${DOMAIN_CHAIN_ID}`,
-    nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
-    rpcUrls: { default: { http: [DOMAIN_RPC_URL] } },
-  });
-  // Batching sends each page of `domainMessageIds` reads as one JSON-RPC request.
-  const domain = createPublicClient({ chain: domainChain, transport: http(DOMAIN_RPC_URL, { batch: true }) });
+  const domain = domainAs(DOMAIN_ACCESS_KEY);
   const adminWallet = createWalletClient({ account: admin, chain: l1Chain, transport: http(L1_RPC_URL) });
   const aliceWallet = createWalletClient({ account: alice, chain: l1Chain, transport: http(L1_RPC_URL) });
   const validatorWallet = createWalletClient({ account: validator, chain: l1Chain, transport: http(L1_RPC_URL) });
@@ -340,7 +394,7 @@ async function main() {
     to: domainBridge,
     data: encodeFunctionData({ abi: domainBridgeArt.abi, functionName: "bridgeToL1", args: [CAROL, token, WITHDRAWAL] }),
     gas: 500_000n,
-    domainRpcUrl: DOMAIN_RPC_URL,
+    nonce: await domain.getTransactionCount({ address: bob.address }),
     viewingKey: VIEWING_KEY,
   });
   console.log("  sequenced domainBridge.bridgeToL1:", bridgeToL1.domainTxHash);
@@ -426,7 +480,7 @@ async function main() {
   const BALANCE_OF = toFunctionSelector("balanceOf(address)");
   const SUBJECT_MATCH = 1; // DomainAccessRules.AccessMode.SubjectMatch
   const PRIVATE_SUPPLY = 1000n * 10n ** 18n;
-  const sequence = (senderKey: Hex, to: Address | undefined, data: Hex, gas = 300_000n) =>
+  const sequence = async (senderKey: Hex, to: Address | undefined, data: Hex, gas = 300_000n) =>
     sequenceTransaction({
       l1RpcUrl: L1_RPC_URL,
       hub,
@@ -435,22 +489,22 @@ async function main() {
       to,
       data,
       gas,
-      domainRpcUrl: DOMAIN_RPC_URL,
+      nonce: await domain.getTransactionCount({ address: privateKeyToAccount(senderKey).address }),
       viewingKey: VIEWING_KEY,
     });
 
   // Contracts get a policy owner only when created through spoke.deployContract (CREATE from
-  // the spoke): the admin deploys a fresh TestERC20 and the BalanceReader probe that way.
-  const deployViaSpoke = async (initCode: Hex, label: string): Promise<Address> => {
+  // the spoke); the admin sequences each deployment and names the policy owner.
+  const deployViaSpoke = async (initCode: Hex, label: string, policyOwner: Address = admin.address): Promise<Address> => {
     const spokeNonce = await domain.getTransactionCount({ address: spoke });
     const predicted = getContractAddress({ from: spoke, nonce: BigInt(spokeNonce) });
     const seq = await sequence(
       ADMIN_KEY,
       spoke,
-      encodeFunctionData({ abi: spokeArt.abi, functionName: "deployContract", args: [initCode, admin.address] }),
+      encodeFunctionData({ abi: spokeArt.abi, functionName: "deployContract", args: [initCode, policyOwner] }),
       3_000_000n,
     );
-    const receipt = await waitForDomainTx(domain, seq.domainTxHash, `spoke.deployContract(${label}, policyOwner=admin)`);
+    const receipt = await waitForDomainTx(domain, seq.domainTxHash, `spoke.deployContract(${label}, policyOwner=${policyOwner})`);
     const [log] = parseEventLogs({ abi: spokeArt.abi, eventName: "ContractDeployed", logs: receipt.logs });
     const emitted = (log?.args as { target?: Address } | undefined)?.target;
     if (emitted && emitted.toLowerCase() !== predicted.toLowerCase()) {
@@ -460,8 +514,8 @@ async function main() {
     if (!emitted) console.log(`  (no ContractDeployed log in the domain receipt; using CREATE(spoke, ${spokeNonce}))`);
     await retry(`${label} code`, () => domain.getCode({ address: deployed }), (c) => !!c && c !== "0x", 30_000);
     const owner = (await domain.readContract({ address: spoke, abi: spokeArt.abi, functionName: "policyOwners", args: [deployed] })) as Address;
-    if (owner.toLowerCase() !== admin.address.toLowerCase()) throw new Error(`${label}: policy owner is ${owner}, expected admin`);
-    console.log(`  ${label} deployed through the spoke at ${deployed} (policy owner: admin)`);
+    if (owner.toLowerCase() !== policyOwner.toLowerCase()) throw new Error(`${label}: policy owner is ${owner}, expected ${policyOwner}`);
+    console.log(`  ${label} deployed through the spoke at ${deployed} (policy owner: ${policyOwner})`);
     return deployed;
   };
   const privateToken = await deployViaSpoke(tokenArt.bytecode, "TestERC20");
@@ -488,11 +542,13 @@ async function main() {
   await waitForDomainTx(domain, mint.domainTxHash, "privateToken.mint(alice, 1000)");
 
   const balanceOfData = (subject: Address) => encodeFunctionData({ abi: tokenArt.abi, functionName: "balanceOf", args: [subject] });
-  const readBalance = (from: Address, subject: Address) =>
-    domain.readContract({ address: privateToken, abi: tokenArt.abi, functionName: "balanceOf", args: [subject], account: from }) as Promise<bigint>;
+  const readBalance = (fromKey: Hex, subject: Address) =>
+    domainAs(fromKey).readContract({
+      address: privateToken, abi: tokenArt.abi, functionName: "balanceOf", args: [subject], account: privateKeyToAccount(fromKey).address,
+    }) as Promise<bigint>;
 
   // No policy yet: canCall returns true for everyone, so bob can read alice's balance.
-  const openRead = await readBalance(bob.address, alice.address);
+  const openRead = await readBalance(BOB_KEY, alice.address);
   if (openRead !== PRIVATE_SUPPLY) throw new Error(`unrestricted read returned ${openRead}, expected ${PRIVATE_SUPPLY}`);
   console.log(`  before any policy, bob reads alice's balance: ${openRead}`);
 
@@ -505,7 +561,7 @@ async function main() {
   await waitForDomainTx(domain, namePolicy.domainTxHash, "spoke.setAccessPolicy(privateToken, rules)");
   const namedPolicy = (await domain.readContract({ address: spoke, abi: spokeArt.abi, functionName: "accessPolicies", args: [privateToken] })) as Address;
   if (namedPolicy.toLowerCase() !== rules.toLowerCase()) throw new Error(`accessPolicies(privateToken) is ${namedPolicy}, expected ${rules}`);
-  const openUnderPolicy = await readBalance(bob.address, alice.address);
+  const openUnderPolicy = await readBalance(BOB_KEY, alice.address);
   if (openUnderPolicy !== PRIVATE_SUPPLY) throw new Error(`read under a policy without rules returned ${openUnderPolicy}`);
   console.log("  policy named, no rule yet: bob still reads alice's balance");
 
@@ -532,15 +588,15 @@ async function main() {
   console.log("  spoke.canCall: alice->balanceOf(alice) true, bob->balanceOf(alice) false");
 
   // eth_call on the domain route runs the same check with caller = `from`.
-  const aliceOwn = await readBalance(alice.address, alice.address);
+  const aliceOwn = await readBalance(ALICE_KEY, alice.address);
   if (aliceOwn !== PRIVATE_SUPPLY) throw new Error(`alice's own read returned ${aliceOwn}`);
   console.log(`  eth_call alice -> balanceOf(alice): ${aliceOwn}`);
-  const bobOwn = await readBalance(bob.address, bob.address);
+  const bobOwn = await readBalance(BOB_KEY, bob.address);
   if (bobOwn !== 0n) throw new Error(`bob's own read returned ${bobOwn}`);
   console.log(`  eth_call bob -> balanceOf(bob): ${bobOwn}`);
-  await expectCallDenied("eth_call bob -> balanceOf(alice)", () => readBalance(bob.address, alice.address));
-  await expectCallDenied("eth_call admin (policy owner, no grant) -> balanceOf(alice)", () => readBalance(admin.address, alice.address));
-  const supply = (await domain.readContract({ address: privateToken, abi: tokenArt.abi, functionName: "totalSupply", account: bob.address })) as bigint;
+  await expectCallDenied("eth_call bob -> balanceOf(alice)", () => readBalance(BOB_KEY, alice.address));
+  await expectCallDenied("eth_call admin (policy owner, no grant) -> balanceOf(alice)", () => readBalance(ADMIN_KEY, alice.address));
+  const supply = (await domainAs(BOB_KEY).readContract({ address: privateToken, abi: tokenArt.abi, functionName: "totalSupply", account: bob.address })) as bigint;
   if (supply !== PRIVATE_SUPPLY) throw new Error(`totalSupply (unrestricted selector) returned ${supply}`);
   console.log(`  eth_call bob -> totalSupply() (unrestricted selector): ${supply}`);
 
@@ -553,13 +609,15 @@ async function main() {
     encodeFunctionData({ abi: rulesArt.abi, functionName: "setAccessControl", args: [privateToken, ALLOWANCE, SUBJECT_MATCH, 0b11] }),
   );
   await waitForDomainTx(domain, bothParties.domainTxHash, "rules.setAccessControl(privateToken, allowance, SubjectMatch, words 0|1)");
-  const readAllowance = (from: Address) =>
-    domain.readContract({ address: privateToken, abi: tokenArt.abi, functionName: "allowance", args: [alice.address, bob.address], account: from }) as Promise<bigint>;
-  const ownerRead = await readAllowance(alice.address);
-  const spenderRead = await readAllowance(bob.address);
+  const readAllowance = (fromKey: Hex) =>
+    domainAs(fromKey).readContract({
+      address: privateToken, abi: tokenArt.abi, functionName: "allowance", args: [alice.address, bob.address], account: privateKeyToAccount(fromKey).address,
+    }) as Promise<bigint>;
+  const ownerRead = await readAllowance(ALICE_KEY);
+  const spenderRead = await readAllowance(BOB_KEY);
   if (ownerRead !== 0n || spenderRead !== 0n) throw new Error(`allowance reads returned ${ownerRead} / ${spenderRead}, expected 0 (nothing approved)`);
   console.log("  eth_call allowance(alice, bob): readable by alice (owner) and by bob (spender)");
-  await expectCallDenied("eth_call admin (policy owner and RPC operator, neither party) -> allowance(alice, bob)", () => readAllowance(admin.address));
+  await expectCallDenied("eth_call admin (policy owner and RPC operator, neither party) -> allowance(alice, bob)", () => readAllowance(ADMIN_KEY));
 
   // Sequenced transactions: a denied frame reverts the whole transaction.
   const bobDirect = await sequence(BOB_KEY, privateToken, balanceOfData(alice.address));
@@ -607,7 +665,7 @@ async function main() {
     encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessPolicy", args: [privateToken, reader] }),
   );
   await waitForDomainTx(domain, unanswerable.domainTxHash, "spoke.setAccessPolicy(privateToken, reader) [no canCall: fails closed]");
-  await expectCallDenied("eth_call alice -> balanceOf(alice) under a policy that cannot answer", () => readBalance(alice.address, alice.address));
+  await expectCallDenied("eth_call alice -> balanceOf(alice) under a policy that cannot answer", () => readBalance(ALICE_KEY, alice.address));
 
   // Clearing the policy reopens the token.
   const cleared = await sequence(
@@ -616,12 +674,12 @@ async function main() {
     encodeFunctionData({ abi: spokeArt.abi, functionName: "setAccessPolicy", args: [privateToken, zeroAddress] }),
   );
   await waitForDomainTx(domain, cleared.domainTxHash, "spoke.setAccessPolicy(privateToken, 0)");
-  const reopened = await readBalance(bob.address, alice.address);
+  const reopened = await readBalance(BOB_KEY, alice.address);
   if (reopened !== PRIVATE_SUPPLY) throw new Error(`read after clearing the policy returned ${reopened}`);
   console.log("  policy cleared: bob reads alice's balance again");
 
   // eth_estimateGas on the domain route accounts for the canCall frames.
-  const estimate = await domain.estimateContractGas({
+  const estimate = await domainAs(ALICE_KEY).estimateContractGas({
     address: privateToken,
     abi: tokenArt.abi,
     functionName: "transfer",
@@ -632,7 +690,73 @@ async function main() {
   console.log("  ✅ access control enforced by the client for eth_call and sequenced transactions");
 
   // -------------------------------------------------------------------------
-  step("6. final accounting");
+  step("6. log access: the domain RPC serves a contract's logs to its policy owner and log readers");
+  // -------------------------------------------------------------------------
+  // Admin is an RPC operator and bypasses every rule, so alice owns this token. Bob mints to
+  // carol (a log naming neither) and admin mints to bob (a log naming bob).
+  const logsFrom = await domain.getBlockNumber();
+  const logToken = await deployViaSpoke(tokenArt.bytecode, "TestERC20 (log access)", alice.address);
+  const mintToCarol = await sequence(BOB_KEY, logToken, encodeFunctionData({ abi: tokenArt.abi, functionName: "mint", args: [CAROL, 5n] }));
+  await waitForDomainTx(domain, mintToCarol.domainTxHash, "bob -> logToken.mint(carol, 5)");
+  const mintToBob = await sequence(ADMIN_KEY, logToken, encodeFunctionData({ abi: tokenArt.abi, functionName: "mint", args: [bob.address, 7n] }));
+  await waitForDomainTx(domain, mintToBob.domainTxHash, "admin -> logToken.mint(bob, 7)");
+
+  const tokenLogs = (key: Hex, address: Address | Address[] = logToken) =>
+    domainAs(key).getLogs({ address, fromBlock: logsFrom, toBlock: "latest" });
+  const ownerLogs = await retry("alice's logToken logs", () => tokenLogs(ALICE_KEY), (logs) => logs.length === 2);
+  console.log(`  alice (policy owner) reads every logToken log: ${ownerLogs.length} Transfer logs`);
+  await expectForbidden("bob -> eth_getLogs(logToken)", () => tokenLogs(BOB_KEY));
+  await expectForbidden("alice -> eth_getLogs([logToken, privateToken]) [privateToken is admin's]", () =>
+    tokenLogs(ALICE_KEY, [logToken, privateToken]),
+  );
+  const pinned = await domainAs(BOB_KEY).getLogs({
+    address: logToken,
+    event: parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)"),
+    args: { to: bob.address },
+    fromBlock: logsFrom,
+    toBlock: "latest",
+  });
+  if (pinned.length !== 1 || pinned[0]!.args.value !== 7n) throw new Error(`bob's pinned query returned ${pinned.length} logs`);
+  console.log("  bob reads only the logToken Transfer that names him (topic pinning)");
+
+  // The sender gets its receipt without the logs it may not read; the bloom covers the rest.
+  const ZERO_BLOOM = `0x${"00".repeat(256)}`;
+  const fullReceipt = await domain.getTransactionReceipt({ hash: mintToCarol.domainTxHash });
+  const bobReceipt = () => domainAs(BOB_KEY).getTransactionReceipt({ hash: mintToCarol.domainTxHash });
+  const redacted = await bobReceipt();
+  if (fullReceipt.logs.length !== 1 || redacted.logs.length !== 0 || redacted.logsBloom !== ZERO_BLOOM) {
+    throw new Error(`bob's receipt kept ${redacted.logs.length} of ${fullReceipt.logs.length} logs, bloom ${redacted.logsBloom}`);
+  }
+  console.log("  bob's receipt for mint(carol): Transfer log removed, bloom zeroed");
+  await expectForbidden("alice -> eth_getTransactionReceipt(bob's mint) [not the sender]", () =>
+    domainAs(ALICE_KEY).getTransactionReceipt({ hash: mintToCarol.domainTxHash }),
+  );
+
+  // Naming bob a log reader opens the token's whole log history to him, receipts included.
+  const setLogReader = async (allowed: boolean) => {
+    const seq = await sequence(
+      ALICE_KEY,
+      spoke,
+      encodeFunctionData({ abi: spokeArt.abi, functionName: "setLogReader", args: [logToken, bob.address, allowed] }),
+    );
+    await waitForDomainTx(domain, seq.domainTxHash, `alice -> spoke.setLogReader(logToken, bob, ${allowed})`);
+  };
+  await setLogReader(true);
+  const readerLogs = await tokenLogs(BOB_KEY);
+  if (readerLogs.length !== 2) throw new Error(`bob as log reader read ${readerLogs.length} logToken logs, expected 2`);
+  const unredacted = await bobReceipt();
+  if (unredacted.logs.length !== 1 || unredacted.logsBloom !== fullReceipt.logsBloom) {
+    throw new Error(`bob's receipt as log reader kept ${unredacted.logs.length} logs, bloom ${unredacted.logsBloom}`);
+  }
+  console.log("  bob as log reader: reads both logToken logs and the full receipt");
+
+  await setLogReader(false);
+  await expectForbidden("bob -> eth_getLogs(logToken) after the grant is revoked", () => tokenLogs(BOB_KEY));
+  if ((await bobReceipt()).logs.length !== 0) throw new Error("bob's receipt kept the log after the grant was revoked");
+  console.log("  ✅ log access enforced by the domain RPC");
+
+  // -------------------------------------------------------------------------
+  step("7. final accounting");
   // -------------------------------------------------------------------------
   const carolBalance = (await l1.readContract({ address: token, abi: tokenArt.abi, functionName: "balanceOf", args: [CAROL] })) as bigint;
   const lockedCollateral = (await l1.readContract({ address: token, abi: tokenArt.abi, functionName: "balanceOf", args: [l1Bridge] })) as bigint;
