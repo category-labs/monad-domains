@@ -42,6 +42,8 @@ contract DomainSpoke is IDomainSpoke {
     /// permissionlessly via `retryL1Message`.
     mapping(bytes32 => bool) public failedL1Messages;
 
+    mapping(address => mapping(address => bool)) public logReaders;
+
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
         require(policyOwner != address(0) && msg.sender == policyOwner, "DomainSpoke: not policy owner");
@@ -82,6 +84,11 @@ contract DomainSpoke is IDomainSpoke {
         require(policy != address(this), "DomainSpoke: spoke cannot be its own policy");
         accessPolicies[target] = policy;
         emit AccessPolicySet(target, policy);
+    }
+
+    function setLogReader(address target, address reader, bool allowed) external onlyPolicyOwner(target) {
+        logReaders[target][reader] = allowed;
+        emit LogReaderSet(target, reader, allowed);
     }
 
     /// @notice Ask the policy named for `context`; no policy means allow.
