@@ -29,7 +29,7 @@ const TAG_SIZE = 16;
  */
 const FRAME_VERSION = 0x01;
 
-/** An L1 -> domain message plaintext is `to[20] || data`. */
+/** An encrypted message plaintext (L1 -> domain or domain -> domain) is `to[20] || data`. */
 const ADDRESS_SIZE = 20;
 
 /** Raised for every encryption and decryption failure. */
@@ -162,14 +162,16 @@ export async function decryptTransaction(viewingSecretKey: Hex, ciphertext: Hex)
 }
 
 /**
- * Encrypts one L1 -> domain message to the domain viewing key, hiding both the
- * domain target and the payload.
+ * Encrypts one message to a domain's viewing key, hiding both the domain target and the
+ * payload. The same ciphertext format serves `sendEncryptedL1Message` on the hub and
+ * `sendEncryptedDomainMessage` on a source domain's spoke: either way the destination's
+ * execution client is the only party that opens it.
  *
- * @param viewingPublicKey The domain's 65-byte uncompressed P-256 public key.
+ * @param viewingPublicKey The destination domain's 65-byte uncompressed P-256 public key,
+ *                         as published by `hub.viewingKeys(domainChainId)`.
  * @param to               The domain target the client will deliver to.
  * @param data             The message payload, as `sendL1Message` would carry it.
- * @returns The `ciphertext` argument to pass to `sendEncryptedL1Message`:
- *          `enc[65] || AEAD(0x01 || to[20] || data)`.
+ * @returns The `ciphertext` argument: `enc[65] || AEAD(0x01 || to[20] || data)`.
  */
 export async function encryptMessage(viewingPublicKey: Hex, to: Address, data: Hex): Promise<Hex> {
   const dataBytes = hexToBytes(data);
@@ -181,7 +183,8 @@ export async function encryptMessage(viewingPublicKey: Hex, to: Address, data: H
 
 /**
  * Authenticates and decrypts one ciphertext produced by {@link encryptMessage}, recovering
- * the `(to, data)` the client packages into the `relayL1Message` system transaction.
+ * the `(to, data)` the client packages into the `relayL1Message` system transaction. The
+ * message's origin (source chain and sender) travels in the clear on the hub's event.
  *
  * Provided for tests and local tooling; in production this runs inside the domain
  * execution client.

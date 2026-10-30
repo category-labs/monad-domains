@@ -45,4 +45,22 @@ contract MessageLibTest is Test {
         assertEq(decodedToken, l1Token);
         assertEq(decodedAmount, amount);
     }
+
+    function testFuzz_hashDomainMessage_bindsKind(address to, bytes memory data) public pure {
+        MessageLib.DomainMessage memory plain = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
+            sourceChainId: 7777,
+            destinationChainId: 8888,
+            from: address(0xA11CE),
+            to: to,
+            sourceNonce: 1,
+            data: data
+        });
+        MessageLib.DomainMessage memory encrypted = abi.decode(abi.encode(plain), (MessageLib.DomainMessage));
+        encrypted.kind = MessageLib.MessageKind.Encrypted;
+        assertNotEq(
+            MessageLib.hashDomainMessage(plain, 1, address(0xB0B)),
+            MessageLib.hashDomainMessage(encrypted, 1, address(0xB0B))
+        );
+    }
 }

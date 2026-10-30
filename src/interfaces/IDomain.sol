@@ -45,7 +45,10 @@ interface IDomainHub {
         bytes32 messageHash
     );
 
-    /// @notice Emitted for every recorded encrypted L1 -> domain message.
+    /// @notice Emitted for every recorded encrypted L1 -> domain message: an L1 caller's
+    /// `sendEncryptedL1Message`, or a source domain's `sendEncryptedDomainMessage` forwarded by
+    /// `relayDomainMessage`. sourceChainId/from identify the authenticated origin either way;
+    /// the destination client opens `ciphertext` into the target and payload.
     event EncryptedL1MessageRecorded(
         uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, bytes ciphertext, uint256 nonce
     );
@@ -196,7 +199,16 @@ interface IDomainSpoke is IDomainAccessControl {
     /// @notice Sends a message to L1 or another domain through the same authenticated
     /// envelope. Source identity and nonce are assigned by this spoke. An L1 destination
     /// executes a callback there; a domain destination is forwarded without an L1 callback.
+    /// Records an envelope of kind `Plain`.
     function sendDomainMessage(uint64 destinationChainId, address to, bytes calldata data)
+        external
+        returns (bytes32 messageId);
+
+    /// @notice Sends a message to another domain with its target and payload sealed to that
+    /// domain's viewing key: `ciphertext` encrypts `to[20] || data` in the format of
+    /// `sendEncryptedL1Message`.  The recorded envelope has kind `Encrypted`, a zero target
+    /// and the ciphertext as its data. MUST reject the L1 as destination.
+    function sendEncryptedDomainMessage(uint64 destinationChainId, bytes calldata ciphertext)
         external
         returns (bytes32 messageId);
 

@@ -67,7 +67,9 @@ contract DomainRelayTest is DomainTestBase {
     }
 
     function _message(uint256 nonce) internal view returns (MessageLib.DomainMessage memory) {
-        return MessageLib.DomainMessage(CHAIN_A, uint64(block.chainid), sender, address(receiver), nonce, hex"123456");
+        return MessageLib.DomainMessage(
+            MessageLib.MessageKind.Plain, CHAIN_A, uint64(block.chainid), sender, address(receiver), nonce, hex"123456"
+        );
     }
 
     /// @dev Attests `anchor` for `chainId` at its next scheduled height.

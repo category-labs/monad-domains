@@ -62,5 +62,23 @@ contract GenVectors is Script {
         console.logBytes32(anchor);
         console.log("stateTransitionDigest");
         console.logBytes32(hub.stateTransitionDigest(VECTOR_DOMAIN, VECTOR_BLOCK, stateRoot, anchor));
+
+        // Domain-origin envelope ids at the same hub: a plaintext and an encrypted envelope.
+        MessageLib.DomainMessage memory envelope = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
+            sourceChainId: VECTOR_DOMAIN,
+            destinationChainId: 8888,
+            from: address(0x1000),
+            to: address(0x2000),
+            sourceNonce: 3,
+            data: hex"1234"
+        });
+        console.log("plain envelope id");
+        console.logBytes32(MessageLib.hashDomainMessage(envelope, VECTOR_CHAIN_ID, address(hub)));
+        envelope.kind = MessageLib.MessageKind.Encrypted;
+        envelope.to = address(0);
+        envelope.data = hex"04c0ffee";
+        console.log("encrypted envelope id");
+        console.logBytes32(MessageLib.hashDomainMessage(envelope, VECTOR_CHAIN_ID, address(hub)));
     }
 }

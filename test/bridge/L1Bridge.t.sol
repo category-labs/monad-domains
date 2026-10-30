@@ -176,6 +176,7 @@ contract L1BridgeTest is DomainTestBase {
         returns (MessageLib.DomainMessage memory message)
     {
         message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
@@ -215,6 +216,7 @@ contract L1BridgeTest is DomainTestBase {
         // Anchored message whose `from` is not the counterpart: rejected even though
         // the proof itself is valid.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: makeAddr("attacker"),
@@ -233,6 +235,7 @@ contract L1BridgeTest is DomainTestBase {
     function test_messageToOtherDestinationDoesNotReleaseCollateral() public {
         token.mint(address(bridge), 40 ether);
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
@@ -250,6 +253,7 @@ contract L1BridgeTest is DomainTestBase {
 
     function test_withdraw_rejectsUnknownAnchor() public {
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
@@ -265,6 +269,7 @@ contract L1BridgeTest is DomainTestBase {
         // Anchor recorded under a different chain id: this bridge must not accept it,
         // even with a valid proof — this is the asset-isolation property.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
@@ -293,6 +298,7 @@ contract L1BridgeTest is DomainTestBase {
     function test_withdraw_rejectsUnregisteredCounterpart() public {
         L1Bridge fresh = new L1Bridge(hub, CHAIN_ID);
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: address(0),

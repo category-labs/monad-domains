@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Vm} from "forge-std/Test.sol";
-import {IDomainSpoke} from "../src/interfaces/IDomain.sol";
+import {IDomainHub, IDomainSpoke} from "../src/interfaces/IDomain.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {DomainBridge} from "../src/bridge/DomainBridge.sol";
@@ -30,6 +30,9 @@ contract NativeRoutingTest is DomainTestBase {
     address internal alice = makeAddr("alice");
     bytes32 internal constant L1_EVENT =
         keccak256("L1MessageRecorded(uint64,uint64,address,address,bytes,uint256,bytes32)");
+    bytes32 internal constant ENCRYPTED_L1_EVENT =
+        keccak256("EncryptedL1MessageRecorded(uint64,uint64,address,bytes,uint256)");
+    bytes internal constant CIPHERTEXT = hex"04c0ffee";
 
     function setUp() public {
         vm.chainId(L1);
@@ -63,11 +66,53 @@ contract NativeRoutingTest is DomainTestBase {
         vm.chainId(A);
         vm.prank(alice);
         bytes32 id = spokeA.sendDomainMessage(destination, target, data);
+        return _recorded(id);
+    }
+
+    function _sendEncrypted(uint64 destination, bytes memory ciphertext)
+        internal
+        returns (MessageLib.DomainMessage memory message)
+    {
+        vm.recordLogs();
+        vm.chainId(A);
+        vm.prank(alice);
+        bytes32 id = spokeA.sendEncryptedDomainMessage(destination, ciphertext);
+        message = _recorded(id);
+        assertTrue(message.kind == MessageLib.MessageKind.Encrypted);
+        assertEq(message.to, address(0));
+    }
+
+    /// @dev The envelope spoke A just recorded under `id`, checked against the event and state.
+    function _recorded(bytes32 id) internal returns (MessageLib.DomainMessage memory message) {
         vm.chainId(L1);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         message = abi.decode(abi.decode(logs[0].data, (bytes)), (MessageLib.DomainMessage));
         assertEq(id, _id(message));
         assertEq(logs[0].topics[1], id);
+        assertEq(spokeA.domainMessageIds(message.sourceNonce), id);
+    }
+
+    /// @dev Relays an encrypted envelope and returns the encrypted delivery the hub recorded.
+    function _routeEncrypted(MessageLib.DomainMessage memory message, bytes32 anchor, bytes32[] memory proof)
+        internal
+        returns (uint64 source, address from, bytes memory ciphertext, uint256 nonce)
+    {
+        vm.recordLogs();
+        vm.prank(makeAddr("relayer"));
+        assertTrue(hub.relayDomainMessage(message, anchor, proof));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(hub)) continue;
+            assertTrue(logs[i].topics[0] != L1_EVENT, "encrypted route must not record a plaintext delivery");
+            if (logs[i].topics[0] != ENCRYPTED_L1_EVENT) continue;
+            assertFalse(found, "one delivery per route");
+            found = true;
+            assertEq(uint256(logs[i].topics[1]), message.destinationChainId);
+            from = address(uint160(uint256(logs[i].topics[2])));
+            (source, ciphertext, nonce) = abi.decode(logs[i].data, (uint64, bytes, uint256));
+        }
+        assertTrue(found, "missing encrypted delivery event");
     }
 
     function _id(MessageLib.DomainMessage memory message) internal view returns (bytes32) {
@@ -270,13 +315,18 @@ contract NativeRoutingTest is DomainTestBase {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"abcd");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         _post(hub, C, anchor); // Even reattestation under another source cannot change its identity.
-        field = uint8(bound(field, 0, 5));
+        field = uint8(bound(field, 0, 6));
         if (field == 0) message.sourceChainId = C;
         if (field == 1) message.destinationChainId = C;
         if (field == 2) message.from = address(123);
         if (field == 3) message.to = address(123);
         if (field == 4) message.sourceNonce++;
         if (field == 5) message.data = hex"abce";
+        if (field == 6) {
+            // Canonical encrypted form of the same bytes: kind and target change together.
+            message.kind = MessageLib.MessageKind.Encrypted;
+            message.to = address(0);
+        }
         vm.expectRevert("DomainHub: invalid proof");
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(message.sourceChainId, _id(message)));
@@ -312,7 +362,8 @@ contract NativeRoutingTest is DomainTestBase {
     function test_mixedL1AndRoutedBatchHasSharedSourceNonce() public {
         vm.prank(alice);
         spokeA.sendDomainMessage(uint64(L1), address(123), hex"01");
-        MessageLib.DomainMessage memory local = MessageLib.DomainMessage(A, uint64(L1), alice, address(123), 0, hex"01");
+        MessageLib.DomainMessage memory local =
+            MessageLib.DomainMessage(MessageLib.MessageKind.Plain, A, uint64(L1), alice, address(123), 0, hex"01");
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"02");
         assertEq(message.sourceNonce, 1);
         bytes32[] memory leaves = _pendingLeaves(spokeA);
@@ -353,7 +404,8 @@ contract NativeRoutingTest is DomainTestBase {
         DomainSpoke spokeC = new DomainSpoke(C, L1, address(hub));
         vm.prank(alice);
         spokeC.sendDomainMessage(B, address(receiver), hex"");
-        MessageLib.DomainMessage memory second = MessageLib.DomainMessage(C, B, alice, address(receiver), 0, hex"");
+        MessageLib.DomainMessage memory second =
+            MessageLib.DomainMessage(MessageLib.MessageKind.Plain, C, B, alice, address(receiver), 0, hex"");
         bytes32 anchor = _attestBatch(hub, spokeC, KEY);
         uint256 nonce = hub.l1MessageCounts(B);
         assertTrue(hub.relayDomainMessage(second, anchor, new bytes32[](0)));
@@ -509,5 +561,144 @@ contract NativeRoutingTest is DomainTestBase {
         vm.expectRevert("DomainSpoke: out-of-order nonce");
         spokeB.relayL1Message(envelope.sourceChainId, envelope.from, envelope.to, envelope.data, envelope.nonce);
         assertEq(receiver.calls(), 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // Encrypted domain -> domain messages
+    // ---------------------------------------------------------------------
+
+    function test_encryptedRouteForwardsCiphertextOnly() public {
+        MessageLib.DomainMessage memory message = _sendEncrypted(B, CIPHERTEXT);
+        assertEq(message.data, CIPHERTEXT);
+        assertEq(message.from, alice);
+        assertEq(message.sourceChainId, A);
+        assertEq(message.destinationChainId, B);
+
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+        vm.expectEmit(address(hub));
+        emit IDomainHub.EncryptedL1MessageRecorded(B, A, alice, CIPHERTEXT, 0);
+        vm.expectEmit(address(hub));
+        emit IDomainHub.DomainMessageRouted(_id(message), A, B, 0);
+        (uint64 source, address from, bytes memory ciphertext, uint256 nonce) =
+            _routeEncrypted(message, anchor, new bytes32[](0));
+        assertEq(source, A);
+        assertEq(from, alice);
+        assertEq(ciphertext, CIPHERTEXT);
+        assertEq(nonce, 0);
+        assertTrue(hub.relayedDomainMessages(A, _id(message)));
+        assertEq(hub.l1MessageCounts(B), 1);
+        assertEq(receiver.calls(), 0, "nothing executes on the L1");
+
+        // The delivery B's client derives once it opens the ciphertext as (receiver, 0x1234).
+        MessageLib.Message memory envelope = MessageLib.Message(source, from, address(receiver), hex"1234", nonce);
+        vm.expectEmit(address(spokeB));
+        emit IDomainSpoke.L1MessageRelayed(MessageLib.hashMessage(envelope), A, alice, address(receiver), 0, true);
+        _deliver(envelope);
+        assertEq(receiver.calls(), 1);
+        assertEq(receiver.source(), A);
+        assertEq(receiver.sender(), alice);
+        assertEq(receiver.payload(), hex"1234");
+        assertEq(spokeB.nextL1Nonce(), 1);
+    }
+
+    function test_encryptedAndPlaintextRoutesShareNoncesAndBatches() public {
+        hub.sendL1Message(B, address(123), hex"");
+        MessageLib.DomainMessage memory plain = _send(address(receiver), hex"aa");
+        MessageLib.DomainMessage memory secret = _sendEncrypted(B, CIPHERTEXT);
+        assertEq(plain.sourceNonce, 0);
+        assertEq(secret.sourceNonce, 1);
+        bytes32[] memory leaves = _pendingLeaves(spokeA);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+
+        (,,, uint256 sealedNonce) = _routeEncrypted(secret, anchor, MerkleTreeLib.getProof(leaves, 1));
+        assertEq(sealedNonce, 1, "encrypted route draws from B's shared delivery queue");
+        vm.expectEmit(address(hub));
+        emit IDomainHub.L1MessageRecorded(
+            B,
+            A,
+            alice,
+            address(receiver),
+            hex"aa",
+            2,
+            MessageLib.hashMessage(MessageLib.Message(A, alice, address(receiver), hex"aa", 2))
+        );
+        assertTrue(hub.relayDomainMessage(plain, anchor, MerkleTreeLib.getProof(leaves, 0)));
+        assertEq(hub.l1MessageCounts(B), 3);
+
+        // Nonces 0 and 1 go undelivered; the spoke accepts the gap and closes it.
+        _deliver(MessageLib.Message(A, alice, address(receiver), hex"aa", 2));
+        assertEq(receiver.payload(), hex"aa");
+        assertEq(spokeB.nextL1Nonce(), 3);
+        vm.prank(spokeB.SYSTEM_RELAYER());
+        vm.expectRevert("DomainSpoke: out-of-order nonce");
+        spokeB.relayL1Message(A, alice, address(receiver), hex"1234", 1);
+    }
+
+    function test_encryptedRouteBindsCiphertextAndCannotRepeat() public {
+        MessageLib.DomainMessage memory message = _sendEncrypted(B, CIPHERTEXT);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+        MessageLib.DomainMessage memory tampered = abi.decode(abi.encode(message), (MessageLib.DomainMessage));
+        tampered.data = hex"04deadbeef";
+        vm.expectRevert("DomainHub: invalid proof");
+        hub.relayDomainMessage(tampered, anchor, new bytes32[](0));
+        tampered = abi.decode(abi.encode(message), (MessageLib.DomainMessage));
+        tampered.kind = MessageLib.MessageKind.Plain;
+        tampered.to = address(receiver);
+        vm.expectRevert("DomainHub: invalid proof");
+        hub.relayDomainMessage(tampered, anchor, new bytes32[](0));
+        _routeEncrypted(message, anchor, new bytes32[](0));
+        vm.expectRevert("DomainHub: message already relayed");
+        hub.relayDomainMessage(message, anchor, new bytes32[](0));
+        assertEq(hub.l1MessageCounts(B), 1);
+    }
+
+    function test_encryptedSendRejectsSameDomainAndL1() public {
+        vm.chainId(A);
+        vm.expectRevert("DomainSpoke: same domain");
+        spokeA.sendEncryptedDomainMessage(A, CIPHERTEXT);
+        vm.expectRevert("DomainSpoke: L1 destination");
+        spokeA.sendEncryptedDomainMessage(uint64(L1), CIPHERTEXT);
+        vm.chainId(L1);
+        assertEq(spokeA.domainMessageCount(), 0);
+    }
+
+    /// @dev Rejected before the anchor is consulted, so even an attested forgery is not consumed.
+    function test_hubRejectsNonCanonicalEnvelopes() public {
+        MessageLib.DomainMessage memory forged = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Encrypted,
+            sourceChainId: A,
+            destinationChainId: uint64(L1),
+            from: alice,
+            to: address(0),
+            sourceNonce: 0,
+            data: CIPHERTEXT
+        });
+        _post(hub, A, _id(forged));
+        vm.expectRevert("DomainHub: encrypted L1 callback");
+        hub.relayDomainMessage(forged, _id(forged), new bytes32[](0));
+        assertFalse(hub.relayedDomainMessages(A, _id(forged)));
+
+        forged.destinationChainId = B;
+        forged.to = address(receiver);
+        _post(hub, A, _id(forged));
+        vm.expectRevert("DomainHub: encrypted message with target");
+        hub.relayDomainMessage(forged, _id(forged), new bytes32[](0));
+        assertFalse(hub.relayedDomainMessages(A, _id(forged)));
+
+        forged.kind = MessageLib.MessageKind.Plain;
+        forged.to = address(0);
+        _post(hub, A, _id(forged));
+        vm.expectRevert("DomainHub: zero target");
+        hub.relayDomainMessage(forged, _id(forged), new bytes32[](0));
+        assertFalse(hub.relayedDomainMessages(A, _id(forged)));
+        assertEq(hub.l1MessageCounts(B), 0);
+    }
+
+    function test_encryptedRouteToUnregisteredDestinationIsNotConsumed() public {
+        MessageLib.DomainMessage memory message = _sendEncrypted(1234, CIPHERTEXT);
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+        vm.expectRevert("DomainHub: destination not registered");
+        hub.relayDomainMessage(message, anchor, new bytes32[](0));
+        assertFalse(hub.relayedDomainMessages(A, _id(message)));
     }
 }

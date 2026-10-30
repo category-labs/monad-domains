@@ -118,6 +118,7 @@ contract DepositEndToEndTest is DomainTestBase {
 
         // 4. Anyone finalizes the withdrawal on the L1 with preimage + proof.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: address(domainBridge),
@@ -151,6 +152,7 @@ contract DepositEndToEndTest is DomainTestBase {
         uint256[3] memory amounts = [uint256(10 ether), 20 ether, 30 ether];
         for (uint256 i = 0; i < 3; i++) {
             MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+                kind: MessageLib.MessageKind.Plain,
                 sourceChainId: CHAIN_ID,
                 destinationChainId: uint64(block.chainid),
                 from: address(domainBridge),
