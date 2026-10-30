@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Vm} from "forge-std/Test.sol";
-import {IDomainSpoke} from "../src/interfaces/IDomain.sol";
+import {IDomainHub, IDomainSpoke} from "../src/interfaces/IDomain.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {DomainBridge} from "../src/bridge/DomainBridge.sol";
@@ -29,7 +29,9 @@ contract NativeRoutingTest is DomainTestBase {
     CrossDomainReceiver internal receiver;
     address internal alice = makeAddr("alice");
     bytes32 internal constant L1_EVENT =
-        keccak256("L1MessageRecorded(uint64,uint64,address,address,bytes,uint256,bytes32)");
+        keccak256("L1MessageRecorded(uint64,uint64,address,address,bytes,uint256,uint256,bytes32)");
+    /// @dev Gas limit of a delivery whose fee bought this much gas.
+    uint256 internal constant DELIVERY_GAS = 2_500_000;
 
     function setUp() public {
         vm.chainId(L1);
@@ -40,6 +42,8 @@ contract NativeRoutingTest is DomainTestBase {
         spokeA = new DomainSpoke(A, L1, address(hub));
         spokeB = new DomainSpoke(B, L1, address(hub));
         receiver = new CrossDomainReceiver(address(spokeB), A, alice);
+        vm.deal(makeAddr("relayer"), 100 ether);
+        vm.deal(alice, 100 ether);
     }
 
     function _register(DomainHub h, uint64 chain) internal {
@@ -80,12 +84,12 @@ contract NativeRoutingTest is DomainTestBase {
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         vm.recordLogs();
         vm.prank(makeAddr("relayer"));
-        hub.relayDomainMessage(message, anchor, new bytes32[](0));
+        hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0));
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter == address(hub) && logs[i].topics[0] == L1_EVENT) {
-                (uint64 source, bytes memory data, uint256 nonce, bytes32 hash) =
-                    abi.decode(logs[i].data, (uint64, bytes, uint256, bytes32));
+                (uint64 source, bytes memory data, uint256 nonce,, bytes32 hash) =
+                    abi.decode(logs[i].data, (uint64, bytes, uint256, uint256, bytes32));
                 envelope = MessageLib.Message(
                     source,
                     address(uint160(uint256(logs[i].topics[2]))),
@@ -104,7 +108,9 @@ contract NativeRoutingTest is DomainTestBase {
     function _deliver(MessageLib.Message memory envelope) internal {
         vm.chainId(B);
         vm.prank(spokeB.SYSTEM_RELAYER());
-        spokeB.relayL1Message(envelope.sourceChainId, envelope.from, envelope.to, envelope.data, envelope.nonce);
+        spokeB.relayL1Message{gas: DELIVERY_GAS}(
+            envelope.sourceChainId, envelope.from, envelope.to, envelope.data, envelope.nonce
+        );
         vm.chainId(L1);
     }
 
@@ -138,7 +144,7 @@ contract NativeRoutingTest is DomainTestBase {
         assertEq(l1Receiver.calls(), 1);
         assertEq(l1Receiver.payload(), hex"aa");
         assertEq(hub.l1MessageCounts(B), 0);
-        assertTrue(hub.relayDomainMessage(remote, anchor, MerkleTreeLib.getProof(leaves, 1)));
+        assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(remote, anchor, MerkleTreeLib.getProof(leaves, 1)));
         assertEq(hub.l1MessageCounts(B), 1);
         assertEq(receiver.calls(), 0);
         assertEq(l1Receiver.calls(), 1, "forwarding must not execute an L1 operation");
@@ -198,7 +204,7 @@ contract NativeRoutingTest is DomainTestBase {
     function test_registeredDomainNeedsNoSpokeRegistration() public {
         MessageLib.DomainMessage memory message = _sendTo(C, address(receiver), hex"");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
-        assertTrue(hub.relayDomainMessage(message, anchor, new bytes32[](0)));
+        assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0)));
         assertTrue(hub.relayedDomainMessages(A, _id(message)));
         assertEq(hub.l1MessageCounts(C), 1);
     }
@@ -223,10 +229,10 @@ contract NativeRoutingTest is DomainTestBase {
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         RoutingHubHarness(address(hub)).setDeliveryNonce(B, type(uint256).max);
         vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", uint256(0x11)));
-        hub.relayDomainMessage(message, anchor, new bytes32[](0));
+        hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(message.sourceChainId, _id(message)));
         RoutingHubHarness(address(hub)).setDeliveryNonce(B, 0);
-        assertTrue(hub.relayDomainMessage(message, anchor, new bytes32[](0)));
+        assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0)));
     }
 
     function testFuzz_reverseOrderRoutingAndRetriesExecuteEachMessageOnce(uint8 count, uint256 failures) public {
@@ -244,7 +250,7 @@ contract NativeRoutingTest is DomainTestBase {
             MessageLib.DomainMessage memory message = messages[sourceIndex];
             bytes32[] memory proof = MerkleTreeLib.getProof(leaves, sourceIndex);
             uint256 deliveryNonce = hub.l1MessageCounts(B);
-            assertTrue(hub.relayDomainMessage(message, anchor, proof));
+            assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, proof));
             assertEq(deliveryNonce, i);
             envelopes[i] = MessageLib.Message(message.sourceChainId, message.from, message.to, message.data, i);
             bool fails = (failures >> i) & 1 == 1;
@@ -297,7 +303,7 @@ contract NativeRoutingTest is DomainTestBase {
         vm.expectRevert("DomainHub: invalid proof");
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
         vm.chainId(L1);
-        hub.relayDomainMessage(message, anchor, new bytes32[](0));
+        hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0));
     }
 
     function test_wrongAnchorNamespaceRejected() public {
@@ -320,7 +326,7 @@ contract NativeRoutingTest is DomainTestBase {
         bytes32[] memory routeProof = MerkleTreeLib.getProof(leaves, 1);
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         assertTrue(hub.relayDomainMessage(local, anchor, l1Proof));
-        assertTrue(hub.relayDomainMessage(message, anchor, routeProof));
+        assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, routeProof));
     }
 
     function test_routedProofCannotBeUsedForL1Callback() public {
@@ -331,9 +337,54 @@ contract NativeRoutingTest is DomainTestBase {
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
     }
 
+    function test_routeForwardsTheRelayerFeeToTheDestination() public {
+        MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+        address relayer = makeAddr("relayer");
+        vm.deal(relayer, 1 ether);
+        uint256 before = address(this).balance;
+
+        vm.expectEmit(address(hub));
+        emit IDomainHub.L1MessageRecorded(
+            B, A, alice, address(receiver), hex"", 0, 0.3 ether, MessageLib.hashMessage(_route_envelope(message, 0))
+        );
+        vm.prank(relayer);
+        assertTrue(hub.relayDomainMessage{value: 0.3 ether}(message, anchor, new bytes32[](0)));
+        assertEq(address(this).balance - before, 0.3 ether, "B's fee recipient is paid");
+        assertEq(address(hub).balance, 0);
+    }
+
+    function test_l1CallbackRejectsAFee() public {
+        MessageLib.DomainMessage memory message = _sendTo(uint64(L1), address(receiver), hex"");
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert("DomainHub: fee on L1 callback");
+        hub.relayDomainMessage{value: 1}(message, anchor, new bytes32[](0));
+        assertFalse(hub.relayedDomainMessages(A, _id(message)));
+    }
+
+    function test_routeRejectsAFeeBelowTheDestinationMinimum() public {
+        MessageLib.DomainMessage memory message = _send(address(receiver), hex"1234");
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+        uint256 minimum = hub.minDeliveryFee(2);
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert("DomainHub: delivery fee too low");
+        hub.relayDomainMessage{value: minimum - 1}(message, anchor, new bytes32[](0));
+        assertFalse(hub.relayedDomainMessages(A, _id(message)), "an underpaid relay consumes nothing");
+        assertTrue(hub.relayDomainMessage{value: minimum}(message, anchor, new bytes32[](0)));
+    }
+
+    function _route_envelope(MessageLib.DomainMessage memory message, uint256 nonce)
+        internal
+        pure
+        returns (MessageLib.Message memory)
+    {
+        return MessageLib.Message(message.sourceChainId, message.from, message.to, message.data, nonce);
+    }
+
     function test_deliveryNoncesSharePlaintextAndEncryptedQueue() public {
-        hub.sendL1Message(B, address(123), hex"");
-        hub.sendEncryptedL1Message(B, hex"bad0");
+        hub.sendL1Message{value: DELIVERY_FEE}(B, address(123), hex"");
+        hub.sendEncryptedL1Message{value: DELIVERY_FEE}(B, hex"bad0");
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
         MessageLib.Message memory envelope = _route(message);
         assertEq(message.sourceNonce, 0);
@@ -356,7 +407,7 @@ contract NativeRoutingTest is DomainTestBase {
         MessageLib.DomainMessage memory second = MessageLib.DomainMessage(C, B, alice, address(receiver), 0, hex"");
         bytes32 anchor = _attestBatch(hub, spokeC, KEY);
         uint256 nonce = hub.l1MessageCounts(B);
-        assertTrue(hub.relayDomainMessage(second, anchor, new bytes32[](0)));
+        assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(second, anchor, new bytes32[](0)));
         MessageLib.Message memory envelope =
             MessageLib.Message(second.sourceChainId, second.from, second.to, second.data, nonce);
         assertNotEq(_id(first), _id(second));
@@ -391,7 +442,7 @@ contract NativeRoutingTest is DomainTestBase {
     }
 
     function test_retryCanSupplyMoreGas() public {
-        receiver.setMinimumGas(2_100_000);
+        receiver.setMinimumGas(2_600_000);
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
         MessageLib.Message memory envelope = _route(message);
         _deliver(envelope);
@@ -451,7 +502,7 @@ contract NativeRoutingTest is DomainTestBase {
         spokeB.relayL1Message(A, alice, address(receiver), hex"", 0);
         // Even the same sender address on L1 cannot claim source domain A.
         vm.prank(alice);
-        hub.sendL1Message(B, address(receiver), hex"");
+        hub.sendL1Message{value: DELIVERY_FEE}(B, address(receiver), hex"");
         MessageLib.Message memory forged = MessageLib.Message(uint64(L1), alice, address(receiver), hex"", 0);
         _deliver(forged);
         assertEq(receiver.calls(), 0);
@@ -471,7 +522,7 @@ contract NativeRoutingTest is DomainTestBase {
     function test_ordinaryAndRoutedDeliveryUseTheSameApplicationCallback() public {
         receiver.setPeer(uint64(L1), alice);
         vm.prank(alice);
-        hub.sendL1Message(B, address(receiver), hex"11");
+        hub.sendL1Message{value: DELIVERY_FEE}(B, address(receiver), hex"11");
         _deliver(MessageLib.Message(uint64(L1), alice, address(receiver), hex"11", 0));
         assertEq(receiver.source(), L1);
         assertEq(receiver.sender(), alice);

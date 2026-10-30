@@ -15,10 +15,20 @@ contract DomainHub is IDomainHub, EIP712 {
     );
     /// @notice Length of an uncompressed SEC1 P-256 point: the only accepted viewing key encoding.
     uint256 public constant VIEWING_KEY_LENGTH = 65;
+    uint256 public constant DOMAIN_GAS_PRICE = 50 gwei;
+    /// @notice Gas a delivery needs beyond its payload to run or be recorded as failed: the
+    /// system transaction's intrinsic gas, the spoke's own work and its reserve.
+    uint256 public constant DELIVERY_BASE_GAS = 200_000;
+    /// @notice Gas a delivery needs per payload byte: the calldata floor (EIP-7623) and the
+    /// spoke's copies.
+    uint256 public constant DELIVERY_GAS_PER_BYTE = 48;
+    uint256 public constant DOMAIN_BLOCK_GAS_LIMIT = 150_000_000;
 
     /// @notice Emitted for every L1-sequenced domain transaction. Domain validators
     /// derive their blocks from these events. The transaction's sender is recovered from the
     /// signature inside `rlpTx`; the L1 submitter is the enclosing L1 transaction's own sender.
+    /// `fee` is the wei paid: the transaction executes only if its gas limit is within
+    /// `fee / DOMAIN_GAS_PRICE`.
     event DomainTransactionSequenced(uint64 indexed domainChainId, bytes rlpTx, uint256 fee);
     /// @notice Emitted for each validator signature accepted toward the pending state
     /// transition, carrying the running vote tally for that proposal.
@@ -40,11 +50,17 @@ contract DomainHub is IDomainHub, EIP712 {
         bytes32 domainAnchor
     );
 
+    /// @notice Gas sold for a domain's current L1 block.
+    struct BlockGas {
+        uint64 blockNumber;
+        uint192 gasSold;
+    }
+
     struct DomainConfig {
         bool registered;
         /// @dev Attested block numbers must be multiples of this interval.
         uint64 checkpointInterval;
-        /// @dev Receives the value attached to `sequenceToDomain`.
+        /// @dev Receives every fee paid for the domain.
         address feeRecipient;
         uint256 quorum;
         address[] validators;
@@ -54,19 +70,15 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     mapping(uint64 => DomainConfig) internal _configs;
+    mapping(uint64 => BlockGas) public blockGas;
     mapping(uint64 => bytes32) internal _commitments;
-    /// @notice Shared destination delivery nonce for plaintext, encrypted and routed messages.
     mapping(uint64 => uint256) public l1MessageCounts;
     mapping(uint64 => mapping(bytes32 => bool)) public domainAnchors;
-    /// @notice Source messages consumed by the shared relay path, scoped by source domain.
-    /// A native relay marks queueing here; destination execution is tracked by the spoke.
     mapping(uint64 => mapping(bytes32 => bool)) public relayedDomainMessages;
     mapping(uint64 => mapping(bytes32 => bool)) public failedDomainMessages;
     /// @notice Monotonic per-domain counter binding each state transition, so a round's
     /// signatures cannot be replayed against a later transition.
     mapping(uint64 => uint256) public stateNonces;
-    /// @notice The domain block number of the latest committed state root. Transitions must
-    /// commit strictly increasing block numbers.
     mapping(uint64 => uint64) public domainBlockNumbers;
     /// @notice Votes accumulated for a proposal, keyed by its `stateTransitionDigest`.
     mapping(bytes32 => uint256) public stateVotes;
@@ -209,10 +221,9 @@ contract DomainHub is IDomainHub, EIP712 {
     // Delivery of domain messages
     // ---------------------------------------------------------------------
 
-    /// @notice One proof and replay boundary for every domain-origin message. The
-    /// authenticated destination selects L1 execution or direct domain forwarding.
     function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
         external
+        payable
         returns (bool success)
     {
         require(message.sourceChainId != message.destinationChainId, "DomainHub: same domain");
@@ -227,12 +238,13 @@ contract DomainHub is IDomainHub, EIP712 {
         if (message.destinationChainId != block.chainid) {
             require(_configs[message.destinationChainId].registered, "DomainHub: destination not registered");
             uint256 deliveryNonce = _sendL1Message(
-                message.destinationChainId, message.sourceChainId, message.from, message.to, message.data
+                message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
             );
             emit DomainMessageRouted(messageHash, message.sourceChainId, message.destinationChainId, deliveryNonce);
             return true; // Queued atomically; destination execution happens asynchronously.
         }
 
+        require(msg.value == 0, "DomainHub: fee on L1 callback");
         (success,) = message.to
             .call(
                 abi.encodeCall(
@@ -268,42 +280,62 @@ contract DomainHub is IDomainHub, EIP712 {
 
     /// @notice Sequences a domain transaction through the L1. Forwards `msg.value` to the
     /// domain's fee recipient as a prepaid, non-refundable execution fee and emits the
-    /// transaction for domain validators to include.
+    /// transaction for domain validators to include. The fee bounds the transaction's gas limit.
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable {
-        DomainConfig storage config = _configs[domainChainId];
-        require(config.registered, "DomainHub: domain not registered");
-
-        (bool success,) = config.feeRecipient.call{value: msg.value}("");
-        require(success, "DomainHub: fee transfer failed");
+        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
+        _buyGas(domainChainId, msg.value);
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
+    }
+
+    /// @dev Counts the gas `fee` buys against the domain's budget for this L1 block and pays
+    /// the fee to the domain's fee recipient, who must accept it.
+    function _buyGas(uint64 domainChainId, uint256 fee) internal {
+        BlockGas storage budget = blockGas[domainChainId];
+        uint256 sold = budget.blockNumber == block.number ? budget.gasSold : 0;
+        sold += fee / DOMAIN_GAS_PRICE;
+        require(sold <= DOMAIN_BLOCK_GAS_LIMIT, "DomainHub: domain block gas limit exceeded");
+        budget.blockNumber = uint64(block.number);
+        budget.gasSold = uint192(sold);
+        if (fee == 0) return;
+        (bool success,) = _configs[domainChainId].feeRecipient.call{value: fee}("");
+        require(success, "DomainHub: fee transfer failed");
     }
 
     // ---------------------------------------------------------------------
     // Messaging: L1 -> domain
     // ---------------------------------------------------------------------
 
-    /// @notice Records a message to the target domain. The domain protocol derives this call's
-    /// `L1MessageRecorded` event and delivers the message onto the spoke as a system transaction.
-    function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external {
-        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
-        _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data);
+    function minDeliveryFee(uint256 dataLength) public pure returns (uint256) {
+        return (DELIVERY_BASE_GAS + DELIVERY_GAS_PER_BYTE * dataLength) * DOMAIN_GAS_PRICE;
     }
 
-    function _sendL1Message(uint64 domainChainId, uint64 sourceChainId, address from, address to, bytes memory data)
-        internal
-        returns (uint256 nonce)
-    {
+    function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable {
+        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
+        _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data, msg.value);
+    }
+
+    function _sendL1Message(
+        uint64 domainChainId,
+        uint64 sourceChainId,
+        address from,
+        address to,
+        bytes memory data,
+        uint256 fee
+    ) internal returns (uint256 nonce) {
+        require(fee >= minDeliveryFee(data.length), "DomainHub: delivery fee too low");
+        _buyGas(domainChainId, fee);
         nonce = l1MessageCounts[domainChainId]++;
         bytes32 messageHash = MessageLib.hashMessage(MessageLib.Message(sourceChainId, from, to, data, nonce));
-        emit L1MessageRecorded(domainChainId, sourceChainId, from, to, data, nonce, messageHash);
+        emit L1MessageRecorded(domainChainId, sourceChainId, from, to, data, nonce, fee, messageHash);
     }
 
-    /// @notice Records an encrypted message to the target domain. Draws from the same
-    /// nonce sequence as `sendL1Message`. The client decrypts `abi.encodePacked(to, data)`
-    /// out of `ciphertext` before deriving the system delivery transaction.
-    function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external {
+    function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable {
         require(_configs[domainChainId].registered, "DomainHub: domain not registered");
+        require(msg.value >= minDeliveryFee(ciphertext.length), "DomainHub: delivery fee too low");
+        _buyGas(domainChainId, msg.value);
         uint256 nonce = l1MessageCounts[domainChainId]++;
-        emit EncryptedL1MessageRecorded(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, ciphertext, nonce);
+        emit EncryptedL1MessageRecorded(
+            domainChainId, SafeCast.toUint64(block.chainid), msg.sender, ciphertext, nonce, msg.value
+        );
     }
 }

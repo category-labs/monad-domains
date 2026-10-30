@@ -43,6 +43,7 @@ contract DepositEndToEndTest is DomainTestBase {
         token.mint(alice, 1000 ether);
         vm.prank(alice);
         token.approve(address(l1Bridge), type(uint256).max);
+        vm.deal(alice, 100 ether);
     }
 
     /// @dev Delivers the recorded deposit message onto the spoke.
@@ -64,7 +65,7 @@ contract DepositEndToEndTest is DomainTestBase {
     function test_singleDeposit() public {
         // 1. Alice locks 100 tokens on the L1 for bob on the domain.
         vm.prank(alice);
-        l1Bridge.bridgeToDomain(bob, address(token), 100 ether);
+        l1Bridge.bridgeToDomain{value: DELIVERY_FEE}(bob, address(token), 100 ether);
         assertEq(token.balanceOf(address(l1Bridge)), 100 ether);
         assertEq(hub.l1MessageCounts(CHAIN_ID), 1);
 
@@ -76,9 +77,9 @@ contract DepositEndToEndTest is DomainTestBase {
 
     function test_multipleDepositsInOneBlock() public {
         vm.startPrank(alice);
-        l1Bridge.bridgeToDomain(bob, address(token), 100 ether);
-        l1Bridge.bridgeToDomain(carol, address(token), 25 ether);
-        l1Bridge.bridgeToDomain(bob, address(token), 5 ether);
+        l1Bridge.bridgeToDomain{value: DELIVERY_FEE}(bob, address(token), 100 ether);
+        l1Bridge.bridgeToDomain{value: DELIVERY_FEE}(carol, address(token), 25 ether);
+        l1Bridge.bridgeToDomain{value: DELIVERY_FEE}(bob, address(token), 5 ether);
         vm.stopPrank();
 
         _deliverDeposit(bob, 100 ether);
@@ -100,7 +101,7 @@ contract DepositEndToEndTest is DomainTestBase {
     /// @dev Deposits `amount` for `recipient` on the L1 and delivers it.
     function _finalizedDeposit(address recipient, uint256 amount) internal {
         vm.prank(alice);
-        l1Bridge.bridgeToDomain(recipient, address(token), amount);
+        l1Bridge.bridgeToDomain{value: DELIVERY_FEE}(recipient, address(token), amount);
         _deliverDeposit(recipient, amount);
     }
 

@@ -4,7 +4,7 @@ import { keccak256, toHex, type Address, type Hex } from "viem";
 import { decodeTransfer, encodeTransfer, hashMessage, type Message } from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
 import { proveMessage, type RecordedMessage } from "../src/prover.js";
-import { domainFeeCaps, sponsoredOuterGasLimit } from "../src/transaction-policy.js";
+import { domainFeeCaps, domainGasFee } from "../src/transaction-policy.js";
 import { stateTransitionDigest } from "../src/checkpoint.js";
 
 /**
@@ -124,10 +124,10 @@ test("proveMessage builds a proof consumable against the batch anchor", () => {
   assert.throws(() => proveMessage(batch, keccak256(toHex("missing"))), /not in batch/);
 });
 
-test("sponsored outer gas covers both the L1 call and embedded transaction", () => {
-  assert.equal(sponsoredOuterGasLimit(100_000n, 1_000_000n), 1_000_000n);
-  assert.equal(sponsoredOuterGasLimit(2_000_000n, 1_000_000n), 2_000_000n);
-  assert.equal(sponsoredOuterGasLimit(1_000_000n, 1_000_000n), 1_000_000n);
+test("the L1 fee buys the domain gas limit at the hub's price", () => {
+  const price = 50_000_000_000n;
+  assert.equal(domainGasFee(1_000_000n, price), 50_000_000_000_000_000n);
+  assert.equal(domainGasFee(0n, price), 0n);
 });
 
 test("domain fee caps remain valid above the observed base fee", () => {
