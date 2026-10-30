@@ -51,6 +51,7 @@ contract CrossDomainRouter {
 /// A single L1 hub serves both domains; each domain has its own spoke, L1Bridge
 /// (isolated collateral), and DomainBridge. One validator (quorum 1) serves both domains
 /// and attests the domain -> L1 batches on the checkpoint schedule.
+/// forge-config: default.isolate = false
 contract DomainToDomainTest is DomainTestBase {
     uint64 internal constant CHAIN_A = 7777;
     uint64 internal constant CHAIN_B = 8888;

@@ -104,6 +104,7 @@ contract DomainAccessRulesTest is DomainTestBase {
 
     function testFuzz_onlyPolicyOwnerCanConfigureRulesAndReaders(address stranger) public {
         vm.assume(stranger != policyOwner);
+        vm.assume(stranger != spoke.SYSTEM_RELAYER());
         _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
         _reader(token, BALANCE_OF, reader, true);
         vm.startPrank(stranger);

@@ -25,8 +25,8 @@ contract DomainSpoke is IDomainSpoke {
     error ZeroTarget();
     error ZeroSalt();
 
-    /// @notice Reserved sender of protocol-injected system transactions.
-    address public constant SYSTEM_RELAYER = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    /// @notice Sender of protocol-injected system transactions: the L1 system sender.
+    address public constant SYSTEM_RELAYER = 0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e;
 
     /// @notice Gas kept back from a delivery's target call so the spoke can still record a
     /// failed delivery for retry after the target exhausts everything it was given.

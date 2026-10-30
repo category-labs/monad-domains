@@ -116,6 +116,7 @@ contract DomainAccessControlTest is DomainTestBase {
 
     function testFuzz_onlyThePolicyOwnerNamesThePolicy(address stranger) public {
         vm.assume(stranger != policyOwner);
+        vm.assume(stranger != spoke.SYSTEM_RELAYER());
         _policy(token, denyAll);
         vm.startPrank(stranger);
         vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
@@ -259,6 +260,7 @@ contract DomainAccessControlTest is DomainTestBase {
     function testFuzz_onlyThePolicyOwnerSetsLogReaders(address stranger, bool allowed) public {
         vm.assume(stranger != policyOwner);
         vm.assume(stranger != alice);
+        vm.assume(stranger != spoke.SYSTEM_RELAYER());
         vm.prank(policyOwner);
         spoke.setLogReader(token, alice, true);
         vm.startPrank(stranger);

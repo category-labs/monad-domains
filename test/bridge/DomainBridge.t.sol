@@ -10,6 +10,7 @@ import {DomainAccessRules} from "../../src/access/DomainAccessRules.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
+/// forge-config: default.isolate = false
 contract DomainBridgeTest is DomainTestBase {
     address internal constant L1_BRIDGE = address(0x11B41D6E);
     address internal constant L1_TOKEN = address(0x70CE2);

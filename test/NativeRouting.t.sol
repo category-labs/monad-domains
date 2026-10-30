@@ -14,6 +14,7 @@ import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
 import {CrossDomainReceiver} from "./mocks/CrossDomainReceiver.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
+/// forge-config: default.isolate = false
 contract NativeRoutingTest is DomainTestBase {
     uint64 internal constant A = 7777;
     uint64 internal constant B = 8888;

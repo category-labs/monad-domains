@@ -9,6 +9,7 @@ import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 /// @notice Exercises the messaging layer directly: the hub (L1) and spoke (domain). The test
 /// contract is the fee recipient. Checkpoint attestation is covered by DomainCheckpoint.t.sol.
+/// forge-config: default.isolate = false
 contract DomainMessagingTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
 

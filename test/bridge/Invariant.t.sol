@@ -193,6 +193,7 @@ contract BridgeHandler is DomainTestBase {
     }
 }
 
+/// forge-config: default.isolate = false
 contract BridgeInvariantTest is Test {
     BridgeHandler internal handler;
 

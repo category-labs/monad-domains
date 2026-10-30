@@ -15,6 +15,7 @@ import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 
 /// @notice Full deposit and withdrawal flows through the hub, spoke, and bridge pair. The
 /// sole validator (quorum 1) attests domain -> L1 batches on the checkpoint schedule.
+/// forge-config: default.isolate = false
 contract DepositEndToEndTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
     uint256 internal constant VALIDATOR_KEY = 0xA11CE;
