@@ -11,8 +11,8 @@ import {MessageLib} from "./libraries/MessageLib.sol";
 /// domain messages, and receives the L1 -> domain envelopes that the domain
 /// protocol delivers as system transactions.
 contract DomainSpoke is IDomainSpoke {
-    /// @notice Reserved sender of protocol-injected system transactions.
-    address public constant SYSTEM_RELAYER = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    /// @notice Sender of protocol-injected system transactions: the L1 system sender.
+    address public constant SYSTEM_RELAYER = 0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e;
 
     /// @notice Gas forwarded to the target of a delivered message. Fixed so that delivery
     /// success is deterministic across every node executing the same system transaction.
