@@ -30,14 +30,13 @@ contract BridgeHandler is DomainTestBase {
     DomainSpoke internal immutable SPOKE;
     TestERC20 internal immutable TOKEN;
 
-    struct Transfer {
+    struct Deposit {
         MessageLib.Message message;
         bytes32 messageHash;
         uint256 amount;
-        bool finalized;
     }
 
-    Transfer[] internal _deposits;
+    Deposit[] internal _deposits;
 
     struct Withdrawal {
         MessageLib.DomainMessage message;
@@ -102,9 +101,7 @@ contract BridgeHandler is DomainTestBase {
         });
         require(_l1Nonce == HUB.l1MessageCounts(CHAIN_ID), "handler: nonce desync");
 
-        _deposits.push(
-            Transfer({message: message, messageHash: MessageLib.hashMessage(message), amount: amount, finalized: false})
-        );
+        _deposits.push(Deposit({message: message, messageHash: MessageLib.hashMessage(message), amount: amount}));
         ghost_inFlightDeposits += amount;
     }
 
@@ -112,19 +109,14 @@ contract BridgeHandler is DomainTestBase {
     /// is not a choice - the spoke enforces the hub's nonce sequence.
     function deliverDeposit(uint256) external {
         if (_nextDepositToDeliver >= _deposits.length) return;
-        Transfer storage transfer = _deposits[_nextDepositToDeliver++];
-        transfer.finalized = true;
-        ghost_inFlightDeposits -= transfer.amount;
+        Deposit storage pending = _deposits[_nextDepositToDeliver++];
+        ghost_inFlightDeposits -= pending.amount;
 
         vm.prank(SPOKE.SYSTEM_RELAYER());
         SPOKE.relayL1Message(
-            uint64(block.chainid),
-            transfer.message.from,
-            transfer.message.to,
-            transfer.message.data,
-            transfer.message.nonce
+            uint64(block.chainid), pending.message.from, pending.message.to, pending.message.data, pending.message.nonce
         );
-        require(!SPOKE.failedL1Messages(transfer.messageHash), "handler: deposit delivery failed");
+        require(!SPOKE.failedL1Messages(pending.messageHash), "handler: deposit delivery failed");
     }
 
     function withdraw(uint256 actorSeed, uint256 recipientSeed, uint256 amount) external {

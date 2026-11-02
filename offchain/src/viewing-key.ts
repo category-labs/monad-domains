@@ -7,7 +7,7 @@ import { EncryptionError } from "./encryption.js";
  *
  * The domain execution client loads the viewing SECRET key from an unencrypted PKCS#8 PEM
  * file. Senders pass the viewing PUBLIC key to `encryptTransaction` as a 65-byte uncompressed
- * SEC1 point, and the offchain decrypt helpers take the raw 32-byte scalar. These helpers move 
+ * SEC1 point, and the offchain decrypt helpers take the raw 32-byte scalar. These helpers move
  * between the two so a key generated on either side can be used on the other.
  */
 

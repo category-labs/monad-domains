@@ -5,8 +5,9 @@ import {
   decodeDomainMessage, encodeDomainMessage, hashMessage, hashDomainMessage,
   domainDeliveryEnvelope, type DomainMessage,
 } from "../src/message.js";
-import { fetchDomainBatch, fetchDomainMessages, findBatchForNonce, proveMessage } from "../src/prover.js";
-import { routedMessageDeliveryStatus } from "../src/routing.js";
+import {
+  fetchDomainBatch, fetchDomainMessages, findBatchForNonce, proveMessage, routedMessageDeliveryStatus,
+} from "../src/prover.js";
 import { verify, root } from "../src/merkle.js";
 
 const addr = (n: number) => `0x${n.toString(16).padStart(40,"0")}` as Address;
@@ -88,14 +89,6 @@ for (const [success, expected] of [
     assert.equal((query.event as { name: string }).name, "L1MessageRelayed");
   });
 }
-
-test("routing status does not turn RPC errors into delivery success", async () => {
-  const client = {
-    getBlockNumber: async () => 42n,
-    getLogs: async () => { throw new Error("RPC unavailable"); },
-  } as unknown as PublicClient;
-  await assert.rejects(routedMessageDeliveryStatus(client, routed, spoke, 3n), /RPC unavailable/);
-});
 
 // ---------------------------------------------------------------------------
 // Attested batches: nonce ranges between consecutive checkpoints

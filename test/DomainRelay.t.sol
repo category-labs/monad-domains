@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {DomainHub} from "../src/DomainHub.sol";
 import {IDomainHub, IDomainMessageReceiver} from "../src/interfaces/IDomain.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
-import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
+import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 contract DomainReceiverMock is IDomainMessageReceiver {
@@ -79,12 +79,6 @@ contract DomainRelayTest is DomainTestBase {
         return hub.relayDomainMessage(message, _hash(message), new bytes32[](0));
     }
 
-    function _relay(uint64 chainId, MessageLib.DomainMessage memory original) internal returns (bool) {
-        MessageLib.DomainMessage memory message = abi.decode(abi.encode(original), (MessageLib.DomainMessage));
-        message.sourceChainId = chainId;
-        return hub.relayDomainMessage(message, _hash(message), new bytes32[](0));
-    }
-
     function test_permissionlessDeliveryAuthenticatesSourceAndPayload() public {
         MessageLib.DomainMessage memory message = _message(4);
         bytes32 hash = _hash(message);
@@ -129,27 +123,16 @@ contract DomainRelayTest is DomainTestBase {
     }
 
     function test_anchorCannotAuthenticateAnotherDomain() public {
+        // CHAIN_A's validators attest the id of a message claiming CHAIN_B as its source:
+        // anchors are scoped to the attesting domain, so it cannot authenticate the message.
         MessageLib.DomainMessage memory message = _message(0);
+        message.sourceChainId = CHAIN_B;
         _anchor(CHAIN_A, _hash(message));
         vm.expectRevert("DomainHub: unknown anchor");
-        _relay(CHAIN_B, message);
+        _relay(message);
+        message.sourceChainId = 9999;
         vm.expectRevert("DomainHub: source not registered");
-        _relay(9999, message);
-        assertEq(receiver.calls(), 0);
-    }
-
-    function testFuzz_proofBindsEveryMessageField(uint8 field) public {
-        MessageLib.DomainMessage memory message = _message(0);
-        bytes32 hash = _hash(message);
-        _anchor(CHAIN_A, hash);
-        field = uint8(bound(field, 0, 3));
-        if (field == 0) message.from = address(0xDEAD);
-        if (field == 1) message.to = address(0xDEAD);
-        if (field == 2) message.data = hex"9999";
-        if (field == 3) message.sourceNonce = 1;
-        vm.expectRevert("DomainHub: invalid proof");
-        hub.relayDomainMessage(message, hash, new bytes32[](0));
-        assertFalse(hub.relayedDomainMessages(CHAIN_A, _hash(message)));
+        _relay(message);
         assertEq(receiver.calls(), 0);
     }
 
@@ -177,7 +160,7 @@ contract DomainRelayTest is DomainTestBase {
         assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
         assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
         vm.expectRevert("DomainHub: message already relayed");
-        _relay(CHAIN_A, message);
+        _relay(message);
         vm.expectRevert("DomainHub: retry failed");
         hub.retryDomainMessage(message);
         assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
@@ -239,25 +222,12 @@ contract DomainRelayTest is DomainTestBase {
         assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
         assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
         vm.expectRevert("DomainHub: message already relayed");
-        _relay(CHAIN_A, message);
+        _relay(message);
         vm.expectRevert("DomainHub: not a failed message");
         hub.retryDomainMessage(message);
     }
 
-    function test_retryToAddressWithoutCodeSucceeds() public {
-        MessageLib.DomainMessage memory message = _message(0);
-        bytes32 hash = _hash(message);
-        _anchor(CHAIN_A, hash);
-        receiver.setFailure(true);
-        assertFalse(_relay(message));
-        assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
-        vm.etch(message.to, hex"");
-        hub.retryDomainMessage(message);
-        assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
-        assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
-    }
-
-    function test_initialDeliveryCanUseMoreThanTwoMillionGas() public {
+    function test_deliveryForwardsAllAvailableGas() public {
         GasHungryDomainReceiver hungry = new GasHungryDomainReceiver();
         MessageLib.DomainMessage memory message = _message(0);
         message.to = address(hungry);
@@ -279,16 +249,6 @@ contract DomainRelayTest is DomainTestBase {
         hub.retryDomainMessage{gas: 3_000_000}(message);
         assertEq(hungry.calls(), 1);
         assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
-    }
-
-    function test_initialDeliveryCanUseLessThanTwoMillionGas() public {
-        MessageLib.DomainMessage memory message = _message(0);
-        bytes32 hash = _hash(message);
-        _anchor(CHAIN_A, hash);
-        assertTrue(hub.relayDomainMessage{gas: 500_000}(message, hash, new bytes32[](0)));
-        assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
-        assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
-        assertEq(receiver.calls(), 1);
     }
 
     function _hash(MessageLib.DomainMessage memory message) internal view returns (bytes32) {

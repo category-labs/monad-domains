@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @notice Canonical merkle tree construction for message anchors: sorted-pair keccak256
-/// over the raw message hashes as leaves, with an odd node promoted unchanged to the next
-/// level. Proofs verify with OpenZeppelin `MerkleProof`.
+/// @notice Reference construction of the anchor tree validators attest: sorted-pair keccak256
+/// over the message IDs in nonce order, with an odd node promoted unchanged to the next level.
+/// Proofs verify with OpenZeppelin `MerkleProof`, as the hub does. Used by tests and
+/// `script/GenVectors.s.sol`; the off-chain mirror is `offchain/src/merkle.ts`.
 library MerkleTreeLib {
     /// @notice Computes the root over `leaves`. A single leaf is its own root.
     function root(bytes32[] memory leaves) internal pure returns (bytes32) {

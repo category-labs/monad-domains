@@ -1,44 +1,16 @@
-import {
-  createPublicClient,
-  createWalletClient,
-  defineChain,
-  encodeDeployData,
-  getContractAddress,
-  http,
-  type Address,
-  type Hex,
-} from "viem";
+import { createPublicClient, createWalletClient, encodeDeployData, getContractAddress, http, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadArtifact } from "./artifacts.js";
+import { fetchL1Chain } from "./chain.js";
 import { encryptTransaction } from "./encryption.js";
-import { domainFeeCaps, domainGasFee, readDomainGasPrice } from "./transaction-policy.js";
+import { domainFeeCaps, readDomainGasPrice } from "./sequence.js";
 
-/**
- * End-to-end setup for a fully L1-sequenced domain.
- *
- * All domain transactions flow through `DomainHub.sequenceToDomain` on the L1, so the
- * domain has no direct transaction path — its system contracts are brought up by *sequencing*
- * their deployment transactions as the seed deployer's first two domain transactions. CREATE
- * addresses are deterministic (`keccak256(rlp(deployer, nonce))`), so the spoke and bridge
- * addresses are known before they execute, which lets the L1 side (`registerDomainBridge`)
- * be wired immediately.
- *
- * Order:
- *   L1:  deploy/reuse DomainHub -> registerDomain (validators, quorum, fee recipient,
- *        viewing key, checkpoint interval)
- *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
- *   -    precompute domain spoke = CREATE(seed, 0), domainBridge = CREATE(seed, 1)
- *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx)   [nonce 0]
- *   L1:  sequenceToDomain(seed's signed DomainBridge creation tx)  [nonce 1]
- *   L1:  L1Bridge.registerDomainBridge(domainBridge) (one-shot)
- *   L1:  optionally setTokenAllowed(allowedToken) — e.g. wrapped MON for deposits
- */
 export interface SetupConfig {
   /** L1 RPC endpoint. */
   l1RpcUrl: string;
   /** Key that deploys the hub + L1Bridge on the L1 and registers the domain; becomes the L1Bridge owner. */
   adminKey: Hex;
-  /** Reuse this native-routing hub for another domain. Omit to deploy a new hub. */
+  /** Register on this existing hub instead of deploying one; domains must share a hub to message each other. */
   existingHub?: Address;
   /** The domain chain id. */
   domainChainId: bigint;
@@ -48,7 +20,7 @@ export interface SetupConfig {
   quorum: bigint;
   /** Receives the fee of every sequencing and message call. Defaults to the admin. */
   feeRecipient?: Address;
-  /** Attested L1 heights must be multiples of this many blocks. Default 10. */
+  /** Attested L1 heights must be multiples of this many blocks. Default 5. */
   checkpointInterval?: bigint;
   /**
    * Key of the domain account whose first two (sequenced) transactions create the spoke and bridge.
@@ -81,6 +53,25 @@ export interface SetupResult {
   seededTransactions: { spoke: Hex; domainBridge: Hex };
 }
 
+/**
+ * End-to-end setup for a fully L1-sequenced domain.
+ *
+ * All domain transactions flow through `DomainHub.sequenceToDomain` on the L1, so the domain's
+ * system contracts are brought up by *sequencing* their deployment transactions as the seed
+ * deployer's first two domain transactions. CREATE addresses are deterministic, so the spoke
+ * and bridge addresses are known before they execute, which lets the L1 side
+ * (`registerDomainBridge`) be wired immediately.
+ *
+ * Order:
+ *   L1:  deploy/reuse DomainHub -> registerDomain (validators, quorum, fee recipient,
+ *        viewing key, checkpoint interval)
+ *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
+ *   -    precompute domain spoke = CREATE(seed, 0), domainBridge = CREATE(seed, 1)
+ *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx)   [nonce 0]
+ *   L1:  sequenceToDomain(seed's signed DomainBridge creation tx)  [nonce 1]
+ *   L1:  L1Bridge.registerDomainBridge(domainBridge) (one-shot)
+ *   L1:  optionally setTokenAllowed(allowedToken) — e.g. wrapped MON for deposits
+ */
 export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const {
     l1RpcUrl,
@@ -104,15 +95,8 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const seed = privateKeyToAccount(config.seedDeployerKey ?? adminKey);
   const feeRecipient = config.feeRecipient ?? admin.address;
 
-  // --- L1 clients ---
-  const probe = createPublicClient({ transport: http(l1RpcUrl) });
-  const l1ChainId = await probe.getChainId();
-  const l1Chain = defineChain({
-    id: l1ChainId,
-    name: `l1-${l1ChainId}`,
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: { default: { http: [l1RpcUrl] } },
-  });
+  const l1Chain = await fetchL1Chain(l1RpcUrl);
+  const l1ChainId = l1Chain.id;
   const publicClient = createPublicClient({ chain: l1Chain, transport: http(l1RpcUrl) });
   const wallet = createWalletClient({ account: admin, chain: l1Chain, transport: http(l1RpcUrl) });
 
@@ -171,8 +155,8 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   console.log("DomainSpoke (seeded):", spoke);
   console.log("DomainBridge (seeded):", domainBridge);
 
-  // 4. Build + sign standard domain creation transactions; their gas is paid for
-  // by the fee attached to the L1 call that sequences them.
+  // 4. Sign the domain creation transactions; their gas is paid for by the fee attached to the
+  // L1 call that sequences them.
   const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
   const feeCaps = domainFeeCaps(latestBlock.baseFeePerGas ?? (await publicClient.getGasPrice()));
   const domainTxDefaults = {
@@ -194,7 +178,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
 
   // 5. Sequence them through the hub (order matters: spoke before bridge). With a viewing key
   // the hub records the HPKE ciphertext of each creation; the execution client decrypts it.
-  const sequencingFee = domainGasFee(domainGas, await readDomainGasPrice(publicClient, hub));
+  const sequencingFee = domainGas * (await readDomainGasPrice(publicClient, hub));
   const sequenceSeedTransaction = async (rawTransaction: Hex): Promise<Hex> => {
     const rlpTx = viewingKey ? await encryptTransaction(viewingKey, rawTransaction) : rawTransaction;
     return wallet.writeContract({

@@ -3,10 +3,16 @@ pragma solidity ^0.8.24;
 
 import {IDomainAccessControl, IDomainAccessPolicy} from "../interfaces/IDomainAccessControl.sol";
 
+/// @notice Example access policy: a rule table keyed by (target, selector), configured by each
+/// target's policy owner on `SPOKE`. A selector without a rule is open. Approved readers of a
+/// (target, selector) pass every rule.
 contract DomainAccessRules is IDomainAccessPolicy {
     enum AccessMode {
+        // Every caller is allowed.
         Open,
+        // Approved readers, and callers equal to one of the rule's listed address arguments.
         SubjectMatch,
+        // Approved readers only.
         ReadersOnly
     }
 
@@ -23,7 +29,9 @@ contract DomainAccessRules is IDomainAccessPolicy {
     /// @notice Spoke whose `policyOwners` decide who may configure each target.
     IDomainAccessControl public immutable SPOKE;
 
+    /// @notice Rule for each (target, selector); an unset rule is `Open`.
     mapping(address => mapping(bytes4 => AccessRule)) public accessControl;
+    /// @notice Callers admitted to a (target, selector) under any rule.
     mapping(address => mapping(bytes4 => mapping(address => bool))) public approvedReaders;
 
     modifier onlyPolicyOwner(address target) {

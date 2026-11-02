@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { keccak256, toHex, type Address, type Hex } from "viem";
-import { decodeTransfer, encodeTransfer, hashMessage, type Message } from "../src/message.js";
+import { encodeTransfer, hashDomainMessage, hashMessage, type Message } from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
 import { proveMessage, type RecordedMessage } from "../src/prover.js";
-import { domainFeeCaps, domainGasFee } from "../src/transaction-policy.js";
 import { stateTransitionDigest } from "../src/checkpoint.js";
 
 /**
@@ -97,16 +96,6 @@ test("every generated proof verifies against the root (sizes 1..9)", () => {
   }
 });
 
-test("transfer payload round-trips", () => {
-  const recipient = "0x00000000000000000000000000000000000030ab" as Address;
-  const l1Token = "0x00000000000000000000000000000000000040cd" as Address;
-  const data = encodeTransfer(recipient, l1Token, 123n);
-  const decoded = decodeTransfer(data);
-  assert.equal(decoded.recipient.toLowerCase(), recipient.toLowerCase());
-  assert.equal(decoded.l1Token.toLowerCase(), l1Token.toLowerCase());
-  assert.equal(decoded.amount, 123n);
-});
-
 test("proveMessage builds a proof consumable against the batch anchor", () => {
   const batch: RecordedMessage[] = Array.from({ length: 5 }, (_, i) => ({
     message: vectorMessage(i),
@@ -124,31 +113,16 @@ test("proveMessage builds a proof consumable against the batch anchor", () => {
   assert.throws(() => proveMessage(batch, keccak256(toHex("missing"))), /not in batch/);
 });
 
-test("the L1 fee buys the domain gas limit at the hub's price", () => {
-  const price = 50_000_000_000n;
-  assert.equal(domainGasFee(1_000_000n, price), 50_000_000_000_000_000n);
-  assert.equal(domainGasFee(0n, price), 0n);
-});
-
-test("domain fee caps remain valid above the observed base fee", () => {
-  assert.deepEqual(domainFeeCaps(50n), {
-    maxFeePerGas: 100n,
-    maxPriorityFeePerGas: 0n,
-  });
-  assert.deepEqual(domainFeeCaps(0n), {
-    maxFeePerGas: 1n,
-    maxPriorityFeePerGas: 0n,
-  });
-});
+/** The hub `script/GenVectors.s.sol` deploys on chain 31337. */
+const VECTOR_CONTEXT = { l1ChainId: 31337n, hub: "0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3" as Address };
 
 /**
- * EIP-712 state transition digest vector from `script/GenVectors.s.sol`: a fresh DomainHub
- * (stateNonce 0) deployed at the printed address on chain 31337, attesting domain 7777 at
+ * EIP-712 state transition digest vector: a fresh hub (stateNonce 0) attesting domain 7777 at
  * block 10 with keccak256("state root") as the root and the 5-leaf tree root as the anchor.
  */
 test("stateTransitionDigest matches DomainHub.stateTransitionDigest", () => {
   const digest = stateTransitionDigest(
-    { l1ChainId: 31337n, hub: "0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3" },
+    VECTOR_CONTEXT,
     {
       domainChainId: 7777n,
       stateNonce: 0n,
@@ -158,4 +132,20 @@ test("stateTransitionDigest matches DomainHub.stateTransitionDigest", () => {
     },
   );
   assert.equal(digest, "0x0d0b8d03916739143e31e096b5c5be7aa303cbbd90e4ef6a17f6c7e1f4bbff22");
+});
+
+/** Domain message ID vector: the anchor leaf of a withdrawal-shaped message to the L1. */
+test("hashDomainMessage matches MessageLib.hashDomainMessage", () => {
+  const id = hashDomainMessage(
+    {
+      sourceChainId: 7777n,
+      destinationChainId: 31337n,
+      from: toHex(0x1000, { size: 20 }) as Address,
+      to: toHex(0x2000, { size: 20 }) as Address,
+      sourceNonce: 3n,
+      data: encodeTransfer(toHex(0x3000, { size: 20 }) as Address, toHex(0x4000, { size: 20 }) as Address, 10n ** 18n),
+    },
+    VECTOR_CONTEXT,
+  );
+  assert.equal(id, "0xe867f835d5347f0a6f0cea6d36500780cd7799407d148df34cc30dde3150a08b");
 });

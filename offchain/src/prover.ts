@@ -1,7 +1,15 @@
 import { parseAbiItem, type Address, type Hex, type PublicClient } from "viem";
 import { batchRoot, domainMessageCountAt, fetchDomainMessageIds } from "./checkpoint.js";
 import { decryptMessage } from "./encryption.js";
-import { hashMessage, hashDomainMessage, decodeDomainMessage, type DomainMessage, type MessageContext, type Message } from "./message.js";
+import {
+  decodeDomainMessage,
+  domainDeliveryEnvelope,
+  hashDomainMessage,
+  hashMessage,
+  type DomainMessage,
+  type Message,
+  type MessageContext,
+} from "./message.js";
 import { getProof, root } from "./merkle.js";
 
 export const L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
@@ -22,7 +30,12 @@ export const L1_MESSAGE_RELAYED_EVENT = parseAbiItem(
 );
 
 export const DOMAIN_MESSAGE_RELAYED_EVENT = parseAbiItem(
-  "event DomainMessageRelayed(uint64 indexed domainChainId, bytes32 indexed messageHash, address indexed from, address to, uint256 nonce, bool success)",
+  "event DomainMessageRelayed(uint64 indexed sourceChainId, bytes32 indexed messageHash, address indexed from, address to, uint256 nonce, bool success)",
+);
+
+/** Emitted by the hub when it forwards a domain message; `deliveryNonce` is its nonce on the destination. */
+export const DOMAIN_MESSAGE_ROUTED_EVENT = parseAbiItem(
+  "event DomainMessageRouted(bytes32 indexed messageId, uint64 indexed sourceChainId, uint64 indexed destinationChainId, uint256 deliveryNonce)",
 );
 
 /** Emitted by the hub when a quorum attests a checkpoint; `domainAnchor` is that batch's root. */
@@ -31,8 +44,8 @@ export const DOMAIN_STATE_UPDATED_EVENT = parseAbiItem(
 );
 
 const HUB_DELIVERY_ABI = [
-  parseAbiItem("function relayedDomainMessages(uint64 domainChainId, bytes32 messageHash) view returns (bool)"),
-  parseAbiItem("function failedDomainMessages(uint64 domainChainId, bytes32 messageHash) view returns (bool)"),
+  parseAbiItem("function relayedDomainMessages(uint64 sourceChainId, bytes32 messageHash) view returns (bool)"),
+  parseAbiItem("function failedDomainMessages(uint64 sourceChainId, bytes32 messageHash) view returns (bool)"),
 ] as const;
 
 const DOMAIN_ANCHOR_ABI = [
@@ -71,8 +84,8 @@ function toRecorded(log: {
   return { message, messageHash, blockNumber: log.blockNumber, logIndex: log.logIndex };
 }
 
-function sortByPosition<T>(messages: RecordedMessage<T>[]): RecordedMessage<T>[] {
-  return messages.sort((a, b) =>
+function sortByPosition<T extends { blockNumber: bigint; logIndex: number }>(items: T[]): T[] {
+  return items.sort((a, b) =>
     a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1,
   );
 }
@@ -347,7 +360,6 @@ export async function domainMessageDeliveryStatus(
   message: DomainMessage,
   context: MessageContext,
 ): Promise<DomainDeliveryStatus> {
-  const domainChainId = message.sourceChainId;
   const messageHash = hashDomainMessage(message, context);
   const hub = context.hub;
   const blockNumber = await client.getBlockNumber({ cacheTime: 0 });
@@ -356,26 +368,27 @@ export async function domainMessageDeliveryStatus(
       address: hub,
       abi: HUB_DELIVERY_ABI,
       functionName: "relayedDomainMessages",
-      args: [domainChainId, messageHash],
+      args: [message.sourceChainId, messageHash],
       blockNumber,
     }),
     client.readContract({
       address: hub,
       abi: HUB_DELIVERY_ABI,
       functionName: "failedDomainMessages",
-      args: [domainChainId, messageHash],
+      args: [message.sourceChainId, messageHash],
       blockNumber,
     }),
   ]);
   return !relayed ? "pending" : failed ? "failed" : message.destinationChainId === context.l1ChainId ? "delivered" : "queued";
 }
 
-/** Returns the latest delivery outcome recorded by the destination spoke.
- * An absent event means pending, even if the queue has advanced past the nonce.
+/**
+ * Returns the latest delivery outcome the destination spoke recorded for a message. An absent
+ * event means pending, even if the queue has advanced past the nonce.
  */
 export async function l1MessageDeliveryStatus(
   client: PublicClient,
-  recorded: RecordedMessage,
+  recorded: Pick<RecordedMessage, "messageHash">,
   spoke: Address,
 ): Promise<L1DeliveryStatus> {
   const toBlock = await client.getBlockNumber({ cacheTime: 0 });
@@ -387,10 +400,22 @@ export async function l1MessageDeliveryStatus(
     toBlock,
     strict: true,
   });
-  const latest = logs.sort((a, b) =>
-    a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1,
-  ).at(-1);
+  const latest = sortByPosition(logs).at(-1);
   return latest === undefined ? "pending" : latest.args.success ? "delivered" : "failed";
+}
+
+/**
+ * Execution status of a forwarded domain message on its destination spoke, which the caller
+ * configures locally. Read `deliveryNonce` from the hub's `DomainMessageRouted` event.
+ */
+export async function routedMessageDeliveryStatus(
+  client: PublicClient,
+  message: DomainMessage,
+  destinationSpoke: Address,
+  deliveryNonce: bigint,
+): Promise<L1DeliveryStatus> {
+  const messageHash = hashMessage(domainDeliveryEnvelope(message, deliveryNonce));
+  return l1MessageDeliveryStatus(client, { messageHash }, destinationSpoke);
 }
 
 /** Checks a computed anchor is recorded in the hub's `domainAnchors`. */

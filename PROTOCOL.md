@@ -31,16 +31,18 @@ A domain is identified by its chain ID. A domain is created by calling `register
 
 Everything that enters a domain is pushed by the protocol from L1 events.
 
-**Sequenced transactions.** A domain transaction is an ordinary EIP-1559 transaction signed with the domain chain ID, with zero value. Its encrypted bytes are passed to `sequenceToDomain` on the hub, and any value attached is forwarded to the domain's fee recipient as a non-refundable fee. The execution client scans every L1 block for calls to the hub with that selector, decrypts the payload, and executes all eligible transactions of one L1 block as one gasless domain block against the domain state at the parent L1 height. No gas is charged on the domain.
+**Sequenced transactions.** A domain transaction is an ordinary EIP-1559 transaction signed with the domain chain ID, with zero value. Its encrypted bytes are passed to `sequenceToDomain` on the hub with a fee, which the hub forwards to the domain's fee recipient. The fee buys `fee / DOMAIN_GAS_PRICE` gas, capped at the L1 block gas limit, and the transaction executes only if its gas limit is within that. The execution client derives the transactions of each L1 block from the hub's `DomainTransactionSequenced` events in its receipts, decrypts them, and executes all eligible ones as one gasless domain block against the domain state at the parent L1 height. No gas is charged on the domain.
 
-**L1 to domain messages.** A call to `sendL1Message` on the hub records an event carrying the target and payload. The execution client derives one system transaction per event and calls `relayL1Message` on the spoke. Failed messages can be retried with a higher gas limit.
+**Fees.** Every sequencing and message call pays its fee in the L1 native token at the hub's fixed `DOMAIN_GAS_PRICE`, which the execution client mirrors. The hub sells at most `DOMAIN_BLOCK_GAS_LIMIT` gas per domain per L1 block, across sequencing and messages; a call that would exceed it reverts.
+
+**L1 to domain messages.** A call to `sendL1Message` on the hub records an event carrying the target, the payload and the fee, which must be at least `minDeliveryFee(payload length)`. The execution client derives one system transaction per event, with the gas the fee bought as its gas limit, and calls `relayL1Message` on the spoke. The spoke forwards all but `DELIVERY_GAS_RESERVE` of that gas to the target, so a target that fails or runs out of gas is still recorded as failed. Anyone can retry a failed message with `retryL1Message` and a higher gas limit.
 
 **Domain to L1 messages.**
 
 1. A domain contract calls `sendDomainMessage(destinationChainId, to, data)` on the spoke. The spoke builds an envelope of source chain, destination chain, sender, target and the payload.
-2. A batch is defined by two consecutive checkpoints: messages within these two consecutive checkpoints are put into a merkle tree. The root of the tree is the anchor.
+2. A batch is defined by two consecutive checkpoints: the message IDs recorded between them, in nonce order, are the leaves of a merkle tree whose root is the anchor. The tree hashes sorted pairs with keccak256, so proofs verify with OpenZeppelin `MerkleProof`, and promotes an odd node unchanged to the next level; a single message is its own root.
 3. Validators sign the anchor together with the state root. Once a quorum signed, the hub records the anchor.
-4. Anyone calls `relayDomainMessage(message, anchor, proof)` on the hub to execute the message.
+4. Anyone calls `relayDomainMessage(message, anchor, proof)` on the hub to execute the message. A message to another domain is queued there as an L1 to domain message instead, and the caller attaches its delivery fee.
 
 ## Checkpoint attestation
 

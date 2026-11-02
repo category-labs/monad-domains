@@ -3,12 +3,12 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
-import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
+import {MerkleTreeLib} from "../test/helpers/MerkleTreeLib.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 
 /// @notice Prints the conformance vectors `offchain/test/conformance.test.ts` pins: message
-/// hashes, merkle roots and proofs, and the EIP-712 state transition digest of a hub deployed
-/// at a known chain id. Run with `forge script script/GenVectors.s.sol`.
+/// hashes, merkle roots and proofs, and the domain message ID and EIP-712 state transition
+/// digest of a hub deployed at a known chain id. Run with `forge script script/GenVectors.s.sol`.
 contract GenVectors is Script {
     uint64 internal constant VECTOR_CHAIN_ID = 31337;
     uint64 internal constant VECTOR_DOMAIN = 7777;
@@ -62,5 +62,17 @@ contract GenVectors is Script {
         console.logBytes32(anchor);
         console.log("stateTransitionDigest");
         console.logBytes32(hub.stateTransitionDigest(VECTOR_DOMAIN, VECTOR_BLOCK, stateRoot, anchor));
+
+        // Domain message ID (the anchor leaf) of a withdrawal-shaped message to the L1.
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: VECTOR_DOMAIN,
+            destinationChainId: VECTOR_CHAIN_ID,
+            from: address(0x1000),
+            to: address(0x2000),
+            sourceNonce: 3,
+            data: MessageLib.encodeTransfer(address(0x3000), address(0x4000), 1e18)
+        });
+        console.log("hashDomainMessage");
+        console.logBytes32(MessageLib.hashDomainMessage(message, VECTOR_CHAIN_ID, address(hub)));
     }
 }

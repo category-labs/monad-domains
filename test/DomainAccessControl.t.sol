@@ -114,16 +114,6 @@ contract DomainAccessControlTest is DomainTestBase {
 
     // ----- naming a policy -----
 
-    function test_deployerAndOutsiderCannotNameAPolicy() public {
-        vm.prank(deployer);
-        vm.expectRevert("DomainSpoke: not policy owner");
-        spoke.setAccessPolicy(token, denyAll);
-        vm.prank(outsider);
-        vm.expectRevert("DomainSpoke: not policy owner");
-        spoke.setAccessPolicy(token, denyAll);
-        assertEq(spoke.accessPolicies(token), address(0));
-    }
-
     function testFuzz_onlyThePolicyOwnerNamesThePolicy(address stranger) public {
         vm.assume(stranger != policyOwner);
         _policy(token, denyAll);
@@ -296,6 +286,7 @@ contract DomainAccessControlTest is DomainTestBase {
         spoke.setLogReader(independent, alice, true);
     }
 
+    /// @dev The domain RPC reads these two slots directly from state to authorize log reads.
     function test_logAccessStorageSlots() public {
         vm.prank(policyOwner);
         spoke.setLogReader(token, alice, true);

@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import {IDomainSpoke, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
 import {IDomainAccessPolicy} from "./interfaces/IDomainAccessControl.sol";
-import {MerkleTreeLib} from "./libraries/MerkleTreeLib.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 
 contract DomainSpoke is IDomainSpoke {
@@ -16,20 +15,30 @@ contract DomainSpoke is IDomainSpoke {
 
     /// @notice Chain id of the domain this spoke serves.
     uint64 public immutable DOMAIN_CHAIN_ID;
-    /// @notice Protocol deployment binding outbound message IDs; the client authenticates inbound hub events.
+    /// @notice L1 chain id bound into every outbound message ID.
     uint64 public immutable L1_CHAIN_ID;
+    /// @notice Hub address bound into every outbound message ID.
     address public immutable HUB;
 
+    // Storage layout: the domain RPC reads `policyOwners` (slot 2) and `logReaders` (slot 6)
+    // directly from state, so these declarations must not be reordered.
+
+    /// @notice Number of domain-origin messages recorded so far; the nonce the next one gets.
     uint256 public domainMessageCount;
+    /// @notice Message ID of every recorded domain-origin message, by source nonce.
     mapping(uint256 => bytes32) public domainMessageIds;
-
+    /// @notice Account that may name each contract's access policy; zero for contracts not
+    /// deployed through `deployContract`.
     mapping(address => address) public policyOwners;
+    /// @notice Policy deciding calls into each contract; zero admits every caller.
     mapping(address => address) public accessPolicies;
-
+    /// @notice Minimum nonce the next delivered L1 -> domain message may carry.
     uint256 public nextL1Nonce;
-
+    /// @notice Hashes of delivered messages whose target call failed; retryable via
+    /// `retryL1Message`.
     mapping(bytes32 => bool) public failedL1Messages;
-
+    /// @notice Accounts besides the policy owner that the domain RPC lets read every log of a
+    /// contract.
     mapping(address => mapping(address => bool)) public logReaders;
 
     modifier onlyPolicyOwner(address target) {
@@ -88,7 +97,6 @@ contract DomainSpoke is IDomainSpoke {
         bytes memory query = abi.encodeCall(IDomainAccessPolicy.canCall, (caller, context, data));
         bool ok;
         uint256 verdict;
-        // Only one word of the answer is copied back; anything but a canonical `true` denies.
         assembly ("memory-safe") {
             ok := staticcall(gas(), policy, add(query, 32), mload(query), 0, 32)
             ok := and(ok, eq(returndatasize(), 32))
@@ -158,16 +166,5 @@ contract DomainSpoke is IDomainSpoke {
         messageId = MessageLib.hashDomainMessage(message, L1_CHAIN_ID, HUB);
         domainMessageIds[sourceNonce] = messageId;
         emit DomainMessageRecorded(messageId, abi.encode(message));
-    }
-
-    function domainMessagesRoot(uint256 fromNonce, uint256 toNonce) external view returns (bytes32) {
-        require(fromNonce <= toNonce, "DomainSpoke: invalid range");
-        require(toNonce <= domainMessageCount, "DomainSpoke: range beyond recorded messages");
-        if (fromNonce == toNonce) return bytes32(0);
-        bytes32[] memory leaves = new bytes32[](toNonce - fromNonce);
-        for (uint256 i = 0; i < leaves.length; i++) {
-            leaves[i] = domainMessageIds[fromNonce + i];
-        }
-        return MerkleTreeLib.root(leaves);
     }
 }

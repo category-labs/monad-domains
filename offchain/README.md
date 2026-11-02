@@ -1,4 +1,4 @@
-# Off-chain prover
+# Off-chain tooling
 
 ## Domain setup
 
@@ -9,15 +9,14 @@ creation transactions.
 ## Fees
 
 Every sequencing or message call on the hub carries a fee in L1 native tokens for the domain's fee
-recipient. `hub.DOMAIN_GAS_PRICE()` (50 gwei) prices one unit of domain gas: `npm run sequence` and
-`npm run setup` attach `gas * DOMAIN_GAS_PRICE` so the client executes the transaction, and a
-`sendL1Message` / `bridgeToDomain` / domain-bound `relayDomainMessage` call must attach the fee of the
-gas its delivery needs, since the delivery runs with exactly that much (`domainGasFee`,
-`readDomainGasPrice`). The hub rejects anything below `minDeliveryFee(payload length)`
-(`readMinDeliveryFee`), the gas that lets the spoke deliver or record a retryable failure, so a
-recorded message can be delayed by a stingy relayer but never lost. It also sells at most
-`DOMAIN_BLOCK_GAS_LIMIT` gas per domain per L1 block; a call that does not fit reverts and is
-retried in a later block.
+recipient. `hub.DOMAIN_GAS_PRICE()` (50 gwei, read with `readDomainGasPrice`) prices one unit of
+domain gas: `npm run sequence` and `npm run setup` attach `gas * DOMAIN_GAS_PRICE` so the client
+executes the transaction. A `sendL1Message` / `bridgeToDomain` / domain-bound `relayDomainMessage`
+call must attach the fee of the gas its delivery needs, since the delivery runs with exactly that
+much. The hub rejects anything below `hub.minDeliveryFee(payload length)`, the gas that lets the
+spoke deliver or record a retryable failure, so a recorded message can be delayed by a stingy
+relayer but never lost. It also sells at most `DOMAIN_BLOCK_GAS_LIMIT` gas per domain per L1 block;
+a call that does not fit reverts and can be sent again in a later block.
 
 ## Transaction encryption
 
@@ -76,7 +75,7 @@ import {
 const context = { l1ChainId: L1_CHAIN_ID, hub: HUB_ADDRESS };
 // Locate the attested batch covering the message's source nonce (hub DomainStateUpdated
 // events + the spoke's message count at each attested height), then rebuild it from the
-// spoke's events, cross-checked against the spoke's own root at the attested height.
+// spoke's events, each id cross-checked against the spoke's stored id at the attested height.
 // Include ALL destinations: filtering the batch before computing its root produces an
 // invalid proof.
 const located = await findBatchForNonce(l1, domainA, HUB_ADDRESS, SPOKE_A, domainAChainId, sourceNonce, { fromBlock, toBlock });
@@ -114,7 +113,10 @@ await l1MessageDeliveryStatus(domain, deposit, SPOKE_ADDRESS);
 
 ```sh
 npm install
-npm test          # conformance vectors + round-trip tests
+npm test          # unit tests, including conformance vectors from script/GenVectors.s.sol
 npm run typecheck
-npm run test:integration # requires forge + anvil; builds contracts and starts three local EVM chains
+npm run e2e       # deposit, withdrawal, access control and log access against a live devnet node
 ```
+
+`npm run e2e` (`e2e/e2e-cli.ts`) expects a fresh single-node devnet started with the domain flags
+for `DOMAIN_CHAIN_ID`; the header of that file lists the environment it reads.

@@ -1,5 +1,6 @@
-import { createPublicClient, createWalletClient, defineChain, http, type Address, type Hex } from "viem";
+import { createPublicClient, createWalletClient, http, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { fetchL1Chain } from "./chain.js";
 import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI, nextCheckpointHeight } from "./checkpoint.js";
 
 /**
@@ -32,14 +33,7 @@ async function main() {
   const submitterKey = required("SUBMITTER_KEY") as Hex;
   const domainRpcUrl = process.env.DOMAIN_RPC_URL ?? `${l1RpcUrl}/domain/${domainChainId}`;
 
-  const probe = createPublicClient({ transport: http(l1RpcUrl) });
-  const l1ChainId = await probe.getChainId();
-  const l1Chain = defineChain({
-    id: l1ChainId,
-    name: `l1-${l1ChainId}`,
-    nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
-    rpcUrls: { default: { http: [l1RpcUrl] } },
-  });
+  const l1Chain = await fetchL1Chain(l1RpcUrl);
   const l1 = createPublicClient({ chain: l1Chain, transport: http(l1RpcUrl) });
   // Batching sends each page of `domainMessageIds` reads as one JSON-RPC request.
   const domain = createPublicClient({ transport: http(domainRpcUrl, { batch: true }) });

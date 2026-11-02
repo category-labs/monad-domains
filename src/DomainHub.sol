@@ -15,6 +15,7 @@ contract DomainHub is IDomainHub, EIP712 {
     );
     /// @notice Length of an uncompressed SEC1 P-256 point: the only accepted viewing key encoding.
     uint256 public constant VIEWING_KEY_LENGTH = 65;
+    /// @notice Price of one unit of domain gas, in wei; mirrored by the execution client.
     uint256 public constant DOMAIN_GAS_PRICE = 50 gwei;
     /// @notice Gas a delivery needs beyond its payload to run or be recorded as failed: the
     /// system transaction's intrinsic gas, the spoke's own work and its reserve.
@@ -22,37 +23,14 @@ contract DomainHub is IDomainHub, EIP712 {
     /// @notice Gas a delivery needs per payload byte: the calldata floor (EIP-7623) and the
     /// spoke's copies.
     uint256 public constant DELIVERY_GAS_PER_BYTE = 48;
+    /// @notice Most gas each domain may sell per L1 block, across sequencing and messages.
     uint256 public constant DOMAIN_BLOCK_GAS_LIMIT = 150_000_000;
-
-    /// @notice Emitted for every L1-sequenced domain transaction. Domain validators
-    /// derive their blocks from these events. The transaction's sender is recovered from the
-    /// signature inside `rlpTx`; the L1 submitter is the enclosing L1 transaction's own sender.
-    /// `fee` is the wei paid: the transaction executes only if its gas limit is within
-    /// `fee / DOMAIN_GAS_PRICE`.
-    event DomainTransactionSequenced(uint64 indexed domainChainId, bytes rlpTx, uint256 fee);
-    /// @notice Emitted for each validator signature accepted toward the pending state
-    /// transition, carrying the running vote tally for that proposal.
-    event StateSignatureSubmitted(
-        uint64 indexed domainChainId,
-        address indexed validator,
-        uint64 domainBlockNumber,
-        bytes32 newStateRoot,
-        bytes32 domainAnchor,
-        uint256 votes
-    );
-    /// @notice Emitted when a quorum of domain validators advances the state.
-    /// `domainBlockNumber` is the domain block `newStateRoot` is the state root of.
-    event DomainStateUpdated(
-        uint64 indexed domainChainId,
-        uint256 stateNonce,
-        uint64 domainBlockNumber,
-        bytes32 newStateRoot,
-        bytes32 domainAnchor
-    );
 
     /// @notice Gas sold for a domain's current L1 block.
     struct BlockGas {
+        /// @dev L1 block `gasSold` counts; any earlier block means nothing is sold yet in this one.
         uint64 blockNumber;
+        /// @dev Domain gas bought by the fees paid in `blockNumber`.
         uint192 gasSold;
     }
 
@@ -62,6 +40,7 @@ contract DomainHub is IDomainHub, EIP712 {
         uint64 checkpointInterval;
         /// @dev Receives every fee paid for the domain.
         address feeRecipient;
+        /// @dev Distinct validator signatures required to advance the state.
         uint256 quorum;
         address[] validators;
         /// @dev Uncompressed P-256 point senders encrypt domain transactions to, or empty.
@@ -69,20 +48,29 @@ contract DomainHub is IDomainHub, EIP712 {
         mapping(address => bool) isValidator;
     }
 
+    /// @dev Registration of each domain, by chain id.
     mapping(uint64 => DomainConfig) internal _configs;
+    /// @notice Gas each domain has sold in the current L1 block, against `DOMAIN_BLOCK_GAS_LIMIT`.
     mapping(uint64 => BlockGas) public blockGas;
-    mapping(uint64 => bytes32) internal _commitments;
+    /// @notice Latest attested state root of each domain.
+    mapping(uint64 => bytes32) public stateRoots;
+    /// @notice Next delivery nonce of each destination domain, shared by plaintext, encrypted
+    /// and forwarded messages.
     mapping(uint64 => uint256) public l1MessageCounts;
+    /// @notice Attested batch roots of domain-origin messages, by source domain.
     mapping(uint64 => mapping(bytes32 => bool)) public domainAnchors;
+    /// @notice Domain-origin messages already relayed, by source domain.
     mapping(uint64 => mapping(bytes32 => bool)) public relayedDomainMessages;
+    /// @notice L1 callbacks that failed and await a successful retry, by source domain.
     mapping(uint64 => mapping(bytes32 => bool)) public failedDomainMessages;
-    /// @notice Monotonic per-domain counter binding each state transition, so a round's
+    /// @notice Monotonic per-domain transition counter bound into every digest, so a round's
     /// signatures cannot be replayed against a later transition.
     mapping(uint64 => uint256) public stateNonces;
+    /// @notice Domain block number of the latest attested state root; strictly increasing.
     mapping(uint64 => uint64) public domainBlockNumbers;
     /// @notice Votes accumulated for a proposal, keyed by its `stateTransitionDigest`.
     mapping(bytes32 => uint256) public stateVotes;
-    /// @notice Whether a given validator has already voted for a proposal digest.
+    /// @notice Whether a validator has already voted for a proposal digest.
     mapping(bytes32 => mapping(address => bool)) public hasVotedFor;
 
     constructor() EIP712("MonadDomainHub", "1") {}
@@ -136,10 +124,6 @@ contract DomainHub is IDomainHub, EIP712 {
         return _configs[domainChainId].validators;
     }
 
-    function isDomainValidator(uint64 domainChainId, address account) external view returns (bool) {
-        return _configs[domainChainId].isValidator[account];
-    }
-
     function quorums(uint64 domainChainId) external view returns (uint256) {
         return _configs[domainChainId].quorum;
     }
@@ -157,12 +141,8 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     // ---------------------------------------------------------------------
-    // State commitments & domain -> L1 anchors
+    // State attestation
     // ---------------------------------------------------------------------
-
-    function readCommitment(uint64 domainChainId) external view returns (bytes32) {
-        return _commitments[domainChainId];
-    }
 
     function stateTransitionDigest(
         uint64 domainChainId,
@@ -210,7 +190,7 @@ contract DomainHub is IDomainHub, EIP712 {
         // stateNonce bump changes the digest, so this proposal can never be revisited.
         if (votes == config.quorum) {
             uint256 nonce = stateNonces[domainChainId]++;
-            _commitments[domainChainId] = newStateRoot;
+            stateRoots[domainChainId] = newStateRoot;
             if (domainAnchor != bytes32(0)) domainAnchors[domainChainId][domainAnchor] = true;
             domainBlockNumbers[domainChainId] = domainBlockNumber;
             emit DomainStateUpdated(domainChainId, nonce, domainBlockNumber, newStateRoot, domainAnchor);
@@ -278,9 +258,6 @@ contract DomainHub is IDomainHub, EIP712 {
     // Domain transactions: sequenced on the L1
     // ---------------------------------------------------------------------
 
-    /// @notice Sequences a domain transaction through the L1. Forwards `msg.value` to the
-    /// domain's fee recipient as a prepaid, non-refundable execution fee and emits the
-    /// transaction for domain validators to include. The fee bounds the transaction's gas limit.
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable {
         require(_configs[domainChainId].registered, "DomainHub: domain not registered");
         _buyGas(domainChainId, msg.value);
@@ -314,6 +291,8 @@ contract DomainHub is IDomainHub, EIP712 {
         _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data, msg.value);
     }
 
+    /// @dev Charges `fee` for the delivery, assigns the next delivery nonce of `domainChainId` and
+    /// emits the message for the domain client to deliver.
     function _sendL1Message(
         uint64 domainChainId,
         uint64 sourceChainId,

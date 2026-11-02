@@ -5,7 +5,7 @@ import {VmSafe} from "forge-std/Vm.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
-import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
+import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 /// @notice Checkpoint attestation on the hub: vote accumulation, the checkpoint schedule, the
@@ -73,13 +73,13 @@ contract DomainCheckpointTest is DomainTestBase {
 
         _submit(10, root, anchor, K1);
         assertEq(hub.stateVotes(digest), 1);
-        assertEq(hub.readCommitment(CHAIN_ID), bytes32(0));
+        assertEq(hub.stateRoots(CHAIN_ID), bytes32(0));
         assertFalse(hub.domainAnchors(CHAIN_ID, anchor));
         assertEq(hub.stateNonces(CHAIN_ID), 0);
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 0);
 
         _submit(10, root, anchor, K2);
-        assertEq(hub.readCommitment(CHAIN_ID), root);
+        assertEq(hub.stateRoots(CHAIN_ID), root);
         assertTrue(hub.domainAnchors(CHAIN_ID, anchor));
         assertEq(hub.stateNonces(CHAIN_ID), 1);
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 10);
@@ -159,7 +159,7 @@ contract DomainCheckpointTest is DomainTestBase {
         bytes32 root = keccak256("idle root");
         _submit(10, root, bytes32(0), K1);
         _submit(10, root, bytes32(0), K2);
-        assertEq(hub.readCommitment(CHAIN_ID), root);
+        assertEq(hub.stateRoots(CHAIN_ID), root);
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 10);
         assertFalse(hub.domainAnchors(CHAIN_ID, bytes32(0)));
     }
@@ -176,7 +176,7 @@ contract DomainCheckpointTest is DomainTestBase {
         assertTrue(hub.domainAnchors(CHAIN_ID, firstAnchor));
         assertFalse(hub.domainAnchors(8888, firstAnchor));
 
-        // Idle period: the commitment advances with no messages and a zero anchor.
+        // Idle period: the state root advances with no messages and a zero anchor.
         assertEq(_attestBatch(hub, spoke, _keys(K1, K2)), bytes32(0));
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 20);
 

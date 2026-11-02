@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
-import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
+import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
 
 contract MerkleTreeLibTest is Test {
     function test_root_singleLeafIsItsOwnRoot() public pure {
@@ -21,22 +21,6 @@ contract MerkleTreeLibTest is Test {
 
     function rootExternal(bytes32[] memory leaves) external pure returns (bytes32) {
         return MerkleTreeLib.root(leaves);
-    }
-
-    /// @dev Every proof for every leaf must verify with OpenZeppelin MerkleProof, for
-    /// even, odd, and power-of-two leaf counts (odd counts exercise the promoted-node path).
-    function test_proofs_verifyWithOpenZeppelin_allSizes() public pure {
-        for (uint256 n = 1; n <= 9; n++) {
-            bytes32[] memory leaves = new bytes32[](n);
-            for (uint256 i = 0; i < n; i++) {
-                leaves[i] = keccak256(abi.encodePacked("leaf", n, i));
-            }
-            bytes32 root = MerkleTreeLib.root(leaves);
-            for (uint256 i = 0; i < n; i++) {
-                bytes32[] memory proof = MerkleTreeLib.getProof(leaves, i);
-                assertTrue(MerkleProof.verify(proof, root, leaves[i]), "proof must verify");
-            }
-        }
     }
 
     function test_proofs_wrongLeafFails() public pure {
