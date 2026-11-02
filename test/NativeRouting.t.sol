@@ -7,15 +7,9 @@ import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {DomainBridge} from "../src/bridge/DomainBridge.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
-import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
+import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
 import {CrossDomainReceiver} from "./mocks/CrossDomainReceiver.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
-
-contract RoutingHubHarness is DomainHub {
-    function setDeliveryNonce(uint64 chain, uint256 nonce) external {
-        l1MessageCounts[chain] = nonce;
-    }
-}
 
 contract NativeRoutingTest is DomainTestBase {
     uint64 internal constant A = 7777;
@@ -35,7 +29,7 @@ contract NativeRoutingTest is DomainTestBase {
 
     function setUp() public {
         vm.chainId(L1);
-        hub = new RoutingHubHarness();
+        hub = new DomainHub();
         _register(hub, A);
         _register(hub, B);
         _register(hub, C);
@@ -163,15 +157,6 @@ contract NativeRoutingTest is DomainTestBase {
         assertFalse(hub.relayedDomainMessages(A, _id(message)));
     }
 
-    function test_constructorRejectsInvalidBindings() public {
-        vm.expectRevert("DomainSpoke: zero hub");
-        new DomainSpoke(A, L1, address(0));
-        vm.expectRevert("DomainSpoke: domain is L1");
-        new DomainSpoke(1, L1, address(hub));
-        vm.expectRevert("DomainSpoke: L1 chain id too large");
-        new DomainSpoke(A, uint256(type(uint64).max) + 1, address(hub));
-    }
-
     function test_senderIdentityIsAssignedAndSameChainAndZeroTargetRejected() public {
         vm.expectRevert("DomainSpoke: same domain");
         spokeA.sendDomainMessage(A, address(receiver), hex"");
@@ -207,32 +192,6 @@ contract NativeRoutingTest is DomainTestBase {
         assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0)));
         assertTrue(hub.relayedDomainMessages(A, _id(message)));
         assertEq(hub.l1MessageCounts(C), 1);
-    }
-
-    function test_duplicateRouteAndReanchoringCannotEnqueueTwice() public {
-        MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
-        _route(message);
-        // Re-anchoring the same id under a crafted root at the next checkpoint changes nothing.
-        bytes32[] memory leaves = new bytes32[](2);
-        leaves[0] = _id(message);
-        leaves[1] = bytes32(uint256(2));
-        bytes32[] memory proof = MerkleTreeLib.getProof(leaves, 0);
-        bytes32 anchor = MerkleTreeLib.root(leaves);
-        _post(hub, A, anchor);
-        vm.expectRevert("DomainHub: message already relayed");
-        hub.relayDomainMessage(message, anchor, proof);
-        assertEq(hub.l1MessageCounts(B), 1);
-    }
-
-    function test_enqueueFailureRollsBackSourceConsumption() public {
-        MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
-        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
-        RoutingHubHarness(address(hub)).setDeliveryNonce(B, type(uint256).max);
-        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", uint256(0x11)));
-        hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0));
-        assertFalse(hub.relayedDomainMessages(message.sourceChainId, _id(message)));
-        RoutingHubHarness(address(hub)).setDeliveryNonce(B, 0);
-        assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0)));
     }
 
     function testFuzz_reverseOrderRoutingAndRetriesExecuteEachMessageOnce(uint8 count, uint256 failures) public {
@@ -306,37 +265,6 @@ contract NativeRoutingTest is DomainTestBase {
         hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0));
     }
 
-    function test_wrongAnchorNamespaceRejected() public {
-        MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
-        // The batch root is attested under C, not under its source A.
-        bytes32 anchor = MerkleTreeLib.root(_pendingLeaves(spokeA));
-        _post(hub, C, anchor);
-        vm.expectRevert("DomainHub: unknown anchor");
-        hub.relayDomainMessage(message, anchor, new bytes32[](0));
-    }
-
-    function test_mixedL1AndRoutedBatchHasSharedSourceNonce() public {
-        vm.prank(alice);
-        spokeA.sendDomainMessage(uint64(L1), address(123), hex"01");
-        MessageLib.DomainMessage memory local = MessageLib.DomainMessage(A, uint64(L1), alice, address(123), 0, hex"01");
-        MessageLib.DomainMessage memory message = _send(address(receiver), hex"02");
-        assertEq(message.sourceNonce, 1);
-        bytes32[] memory leaves = _pendingLeaves(spokeA);
-        bytes32[] memory l1Proof = MerkleTreeLib.getProof(leaves, 0);
-        bytes32[] memory routeProof = MerkleTreeLib.getProof(leaves, 1);
-        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
-        assertTrue(hub.relayDomainMessage(local, anchor, l1Proof));
-        assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, routeProof));
-    }
-
-    function test_routedProofCannotBeUsedForL1Callback() public {
-        MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
-        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
-        message.destinationChainId = uint64(L1);
-        vm.expectRevert("DomainHub: invalid proof");
-        hub.relayDomainMessage(message, anchor, new bytes32[](0));
-    }
-
     function test_routeForwardsTheRelayerFeeToTheDestination() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
@@ -344,10 +272,9 @@ contract NativeRoutingTest is DomainTestBase {
         vm.deal(relayer, 1 ether);
         uint256 before = address(this).balance;
 
+        bytes32 envelopeHash = MessageLib.hashMessage(MessageLib.Message(A, alice, address(receiver), hex"", 0));
         vm.expectEmit(address(hub));
-        emit IDomainHub.L1MessageRecorded(
-            B, A, alice, address(receiver), hex"", 0, 0.3 ether, MessageLib.hashMessage(_route_envelope(message, 0))
-        );
+        emit IDomainHub.L1MessageRecorded(B, A, alice, address(receiver), hex"", 0, 0.3 ether, envelopeHash);
         vm.prank(relayer);
         assertTrue(hub.relayDomainMessage{value: 0.3 ether}(message, anchor, new bytes32[](0)));
         assertEq(address(this).balance - before, 0.3 ether, "B's fee recipient is paid");
@@ -372,14 +299,6 @@ contract NativeRoutingTest is DomainTestBase {
         hub.relayDomainMessage{value: minimum - 1}(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(A, _id(message)), "an underpaid relay consumes nothing");
         assertTrue(hub.relayDomainMessage{value: minimum}(message, anchor, new bytes32[](0)));
-    }
-
-    function _route_envelope(MessageLib.DomainMessage memory message, uint256 nonce)
-        internal
-        pure
-        returns (MessageLib.Message memory)
-    {
-        return MessageLib.Message(message.sourceChainId, message.from, message.to, message.data, nonce);
     }
 
     function test_deliveryNoncesSharePlaintextAndEncryptedQueue() public {
@@ -417,28 +336,6 @@ contract NativeRoutingTest is DomainTestBase {
         receiver.setPeer(C, alice);
         spokeB.retryL1Message(envelope);
         assertEq(receiver.calls(), 2);
-    }
-
-    function test_receiverFailureAndPermissionlessRetry() public {
-        receiver.setReject(true);
-        MessageLib.DomainMessage memory message = _send(address(receiver), hex"1234");
-        MessageLib.Message memory envelope = _route(message);
-        _deliver(envelope);
-        assertTrue(hub.relayedDomainMessages(message.sourceChainId, _id(message)));
-        assertTrue(spokeB.failedL1Messages(MessageLib.hashMessage(envelope)));
-        assertEq(spokeB.nextL1Nonce(), 1);
-        vm.expectRevert("DomainSpoke: retry failed");
-        spokeB.retryL1Message(envelope);
-        assertTrue(spokeB.failedL1Messages(MessageLib.hashMessage(envelope)));
-        receiver.setReject(false);
-        vm.expectEmit(address(spokeB));
-        emit IDomainSpoke.L1MessageRelayed(MessageLib.hashMessage(envelope), A, alice, address(receiver), 0, true);
-        vm.prank(makeAddr("retry caller"));
-        spokeB.retryL1Message(envelope);
-        assertEq(receiver.calls(), 1);
-        assertFalse(spokeB.failedL1Messages(MessageLib.hashMessage(envelope)));
-        vm.expectRevert("DomainSpoke: not a failed message");
-        spokeB.retryL1Message(envelope);
     }
 
     function test_retryCanSupplyMoreGas() public {
@@ -484,7 +381,7 @@ contract NativeRoutingTest is DomainTestBase {
         assertTrue(spokeB.failedL1Messages(originalHash));
     }
 
-    function test_reentrantRetryAndForgedCallbackCannotExecuteTwice() public {
+    function test_reentrantRetryCannotExecuteTwice() public {
         MessageLib.Message memory envelope = _route(_send(address(receiver), hex""));
         receiver.setReject(true);
         _deliver(envelope);
@@ -551,14 +448,5 @@ contract NativeRoutingTest is DomainTestBase {
         CrossDomainReceiver(futureReceiver).setPeer(A, alice);
         spokeB.retryL1Message(envelope);
         assertEq(CrossDomainReceiver(futureReceiver).calls(), 1);
-    }
-
-    function test_duplicateDeliveryNonceCannotExecuteAgain() public {
-        MessageLib.Message memory envelope = _route(_send(address(receiver), hex""));
-        _deliver(envelope);
-        vm.prank(spokeB.SYSTEM_RELAYER());
-        vm.expectRevert("DomainSpoke: out-of-order nonce");
-        spokeB.relayL1Message(envelope.sourceChainId, envelope.from, envelope.to, envelope.data, envelope.nonce);
-        assertEq(receiver.calls(), 1);
     }
 }

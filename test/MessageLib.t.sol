@@ -4,45 +4,33 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 
+/// @notice Pins both message hashes to the vectors `offchain/test/conformance.test.ts` checks the
+/// TypeScript mirror against (printed by `script/GenVectors.s.sol`), so a change to either
+/// implementation fails a test.
 contract MessageLibTest is Test {
-    function test_hashMessage_matchesSpecFormat() public view {
+    function test_hashMessage_matchesConformanceVector() public pure {
         MessageLib.Message memory message = MessageLib.Message({
-            sourceChainId: uint64(block.chainid),
-            from: address(0xA11CE),
-            to: address(0xB0B),
-            data: hex"deadbeef",
-            nonce: 42
+            sourceChainId: 1,
+            from: address(0x1000),
+            to: address(0x2000),
+            data: MessageLib.encodeTransfer(address(0x3000), address(0x4000), 1e18),
+            nonce: 0
         });
-        bytes32 expected = keccak256(
-            abi.encodePacked(
-                uint64(block.chainid), address(0xA11CE), address(0xB0B), keccak256(hex"deadbeef"), uint256(42)
-            )
+        assertEq(MessageLib.hashMessage(message), 0x5f9026553b479ab6c7f6634745aafb4b320183912787adc801e2b85d4ccdefc2);
+    }
+
+    function test_hashDomainMessage_matchesConformanceVector() public pure {
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: 7777,
+            destinationChainId: 31337,
+            from: address(0x1000),
+            to: address(0x2000),
+            sourceNonce: 3,
+            data: MessageLib.encodeTransfer(address(0x3000), address(0x4000), 1e18)
+        });
+        assertEq(
+            MessageLib.hashDomainMessage(message, 31337, 0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3),
+            0xe867f835d5347f0a6f0cea6d36500780cd7799407d148df34cc30dde3150a08b
         );
-        assertEq(MessageLib.hashMessage(message), expected);
-    }
-
-    function testFuzz_hashMessage_distinctNoncesDistinctHashes(uint256 nonceA, uint256 nonceB) public view {
-        vm.assume(nonceA != nonceB);
-        MessageLib.Message memory a =
-            MessageLib.Message(uint64(block.chainid), address(1), address(2), hex"1234", nonceA);
-        MessageLib.Message memory b =
-            MessageLib.Message(uint64(block.chainid), address(1), address(2), hex"1234", nonceB);
-        assertNotEq(MessageLib.hashMessage(a), MessageLib.hashMessage(b));
-    }
-
-    function testFuzz_hashMessage_bindsSourceChain(uint64 sourceA, uint64 sourceB) public pure {
-        vm.assume(sourceA != sourceB);
-        MessageLib.Message memory message = MessageLib.Message(sourceA, address(1), address(2), hex"1234", 0);
-        bytes32 original = MessageLib.hashMessage(message);
-        message.sourceChainId = sourceB;
-        assertNotEq(original, MessageLib.hashMessage(message));
-    }
-
-    function testFuzz_transferPayload_roundTrip(address recipient, address l1Token, uint256 amount) public pure {
-        bytes memory data = MessageLib.encodeTransfer(recipient, l1Token, amount);
-        (address decodedRecipient, address decodedToken, uint256 decodedAmount) = MessageLib.decodeTransfer(data);
-        assertEq(decodedRecipient, recipient);
-        assertEq(decodedToken, l1Token);
-        assertEq(decodedAmount, amount);
     }
 }

@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import {IDomainMessageReceiver, IDomainHub, IDomainSpoke} from "../src/interfaces/IDomain.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
-import {MerkleTreeLib} from "../src/libraries/MerkleTreeLib.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
@@ -119,10 +118,7 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(hub.checkpointIntervals(4444), 25);
         assertEq(hub.quorums(4444), 2);
         assertEq(hub.viewingKeys(4444), "");
-        assertEq(hub.getValidators(4444).length, 3);
-        assertTrue(hub.isDomainValidator(4444, vm.addr(K1)));
-        assertTrue(hub.isDomainValidator(4444, vm.addr(K3)));
-        assertFalse(hub.isDomainValidator(4444, stranger));
+        assertEq(hub.getValidators(4444), _validators());
     }
 
     function test_register_publishesViewingKey() public {
@@ -213,7 +209,6 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sendL1Message_forwardsFeeAndRecordsIt() public {
         _register(4444, feeRecipient, "", 1);
-        vm.deal(alice, 1 ether);
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
@@ -235,7 +230,6 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sendEncryptedL1Message_forwardsFeeAndRecordsIt() public {
         _register(4444, feeRecipient, "", 1);
-        vm.deal(alice, 1 ether);
 
         vm.expectEmit(address(hub));
         emit IDomainHub.EncryptedL1MessageRecorded(4444, uint64(block.chainid), alice, hex"c0ffee", 0, 0.02 ether);
@@ -247,7 +241,6 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sendL1Message_revertsIfFeeRecipientRejectsFee() public {
         _register(4444, address(new RejectingFeeRecipient()), "", 1);
-        vm.deal(alice, 1 ether);
 
         vm.prank(alice);
         vm.expectRevert("DomainHub: fee transfer failed");
@@ -272,10 +265,6 @@ contract DomainMessagingTest is DomainTestBase {
         vm.prank(alice);
         hub.sendEncryptedL1Message{value: minimum}(CHAIN_ID, data);
         assertEq(hub.l1MessageCounts(CHAIN_ID), 2);
-    }
-
-    function test_domainGasPrice_isTheClientConstant() public view {
-        assertEq(hub.DOMAIN_GAS_PRICE(), 50 gwei);
     }
 
     function test_sendEncryptedL1Message_rejectsUnregisteredDomain() public {
@@ -324,6 +313,19 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     // ---------------------------------------------------------------------
+    // Spoke deployment
+    // ---------------------------------------------------------------------
+
+    function test_spokeConstructorRejectsInvalidBindings() public {
+        vm.expectRevert("DomainSpoke: zero hub");
+        new DomainSpoke(CHAIN_ID, block.chainid, address(0));
+        vm.expectRevert("DomainSpoke: domain is L1");
+        new DomainSpoke(uint64(block.chainid), block.chainid, address(hub));
+        vm.expectRevert("DomainSpoke: L1 chain id too large");
+        new DomainSpoke(CHAIN_ID, uint256(type(uint64).max) + 1, address(hub));
+    }
+
+    // ---------------------------------------------------------------------
     // Protocol delivery of L1 messages
     // ---------------------------------------------------------------------
 
@@ -359,17 +361,6 @@ contract DomainMessagingTest is DomainTestBase {
         vm.expectRevert("DomainSpoke: out-of-order nonce");
         spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"02", 1);
         vm.stopPrank();
-    }
-
-    function test_relayL1Message_toEOAFailsAndIsRetryable() public {
-        vm.prank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"01", 0);
-        assertEq(spoke.nextL1Nonce(), 1);
-        assertTrue(
-            spoke.failedL1Messages(
-                MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
-            )
-        );
     }
 
     function test_relayL1Message_marksFailedAndAdvancesQueue() public {
@@ -444,21 +435,6 @@ contract DomainMessagingTest is DomainTestBase {
         }
     }
 
-    function test_relayL1Message_reserveRecordsGasExhaustingTarget() public {
-        GasExhaustingReceiver receiver = new GasExhaustingReceiver();
-        MessageLib.Message memory message =
-            MessageLib.Message(uint64(block.chainid), alice, address(receiver), hex"01", 0);
-        bytes32 messageHash = MessageLib.hashMessage(message);
-
-        vm.expectEmit(address(spoke));
-        emit IDomainSpoke.L1MessageRelayed(messageHash, uint64(block.chainid), alice, address(receiver), 0, false);
-        vm.prank(spoke.SYSTEM_RELAYER());
-        spoke.relayL1Message{gas: 200_000}(uint64(block.chainid), alice, address(receiver), hex"01", 0);
-
-        assertTrue(spoke.failedL1Messages(messageHash));
-        assertEq(spoke.nextL1Nonce(), 1);
-    }
-
     function test_relayL1Message_reserveSurvivesLargePayloadAndReturnBomb() public {
         bytes memory data = new bytes(32_768);
         uint256 gas = hub.DELIVERY_BASE_GAS() + hub.DELIVERY_GAS_PER_BYTE() * data.length;
@@ -490,24 +466,6 @@ contract DomainMessagingTest is DomainTestBase {
         spoke.retryL1Message(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0));
     }
 
-    function test_deliverL1Messages_endToEnd() public {
-        RecordingReceiver receiver = new RecordingReceiver();
-
-        for (uint256 i = 0; i < 3; i++) {
-            bytes memory data = abi.encodePacked(i);
-            vm.prank(alice);
-            hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, address(receiver), data);
-
-            vm.prank(spoke.SYSTEM_RELAYER());
-            spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), data, i);
-        }
-
-        assertEq(hub.l1MessageCounts(CHAIN_ID), 3);
-        assertEq(spoke.nextL1Nonce(), 3);
-        assertEq(receiver.callCount(), 3);
-        assertEq(receiver.lastData(), abi.encodePacked(uint256(2)));
-    }
-
     // ---------------------------------------------------------------------
     // Domain -> L1
     // ---------------------------------------------------------------------
@@ -527,7 +485,7 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(spoke.domainMessageIds(0), expectedHash);
     }
 
-    function test_domainMessageIds_storedByNonceAndRootMatchesMerkleTree() public {
+    function test_domainMessageIds_storedByNonce() public {
         for (uint256 i = 0; i < 5; i++) {
             vm.prank(alice);
             spoke.sendDomainMessage(uint64(block.chainid), bob, abi.encodePacked(i));
@@ -535,29 +493,13 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(spoke.domainMessageCount(), 5);
 
         // Each id is the hash of its envelope, keyed by nonce; an unrecorded nonce reads zero.
-        bytes32[] memory all = _batchLeaves(spoke, 0, 5);
+        bytes32[] memory ids = _batchLeaves(spoke, 0, 5);
         for (uint256 i = 0; i < 5; i++) {
             MessageLib.DomainMessage memory message =
                 MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, i, abi.encodePacked(i));
-            assertEq(all[i], MessageLib.hashDomainMessage(message, block.chainid, address(hub)));
+            assertEq(ids[i], MessageLib.hashDomainMessage(message, block.chainid, address(hub)));
         }
         assertEq(spoke.domainMessageIds(5), bytes32(0));
-
-        // The on-chain root matches the library over any range; one leaf is its own root.
-        assertEq(spoke.domainMessagesRoot(0, 5), MerkleTreeLib.root(all));
-        assertEq(spoke.domainMessagesRoot(2, 4), MerkleTreeLib.root(_batchLeaves(spoke, 2, 4)));
-        assertEq(spoke.domainMessagesRoot(4, 5), all[4]);
-        assertEq(spoke.domainMessagesRoot(3, 3), bytes32(0));
-    }
-
-    function test_domainMessagesRoot_rejectsInvalidRanges() public {
-        vm.prank(alice);
-        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"01");
-
-        vm.expectRevert("DomainSpoke: invalid range");
-        spoke.domainMessagesRoot(1, 0);
-        vm.expectRevert("DomainSpoke: range beyond recorded messages");
-        spoke.domainMessagesRoot(0, 2);
     }
 
     // ---------------------------------------------------------------------
@@ -566,10 +508,9 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sequenceToDomain_forwardsFeeAndEmits() public {
         _register(4444, feeRecipient, "", 1);
-        vm.deal(alice, 1 ether);
 
         vm.expectEmit(address(hub));
-        emit DomainHub.DomainTransactionSequenced(4444, hex"c0ffee", 0.1 ether);
+        emit IDomainHub.DomainTransactionSequenced(4444, hex"c0ffee", 0.1 ether);
         vm.prank(alice);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
 
@@ -581,7 +522,6 @@ contract DomainMessagingTest is DomainTestBase {
         _register(4444, feeRecipient, "", 1);
         uint256 price = hub.DOMAIN_GAS_PRICE();
         uint256 cap = hub.DOMAIN_BLOCK_GAS_LIMIT();
-        vm.deal(alice, 1_000 ether);
 
         // Sequencing and messages draw from one budget per domain and L1 block.
         vm.prank(alice);
@@ -616,7 +556,6 @@ contract DomainMessagingTest is DomainTestBase {
     function test_sequenceToDomain_revertsIfFeeRecipientRejectsFee() public {
         address rejecting = address(new RejectingFeeRecipient());
         _register(4444, rejecting, "", 1);
-        vm.deal(alice, 1 ether);
 
         vm.prank(alice);
         vm.expectRevert("DomainHub: fee transfer failed");

@@ -11,14 +11,14 @@ const hub = addr(1);
 const spoke = addr(2);
 const ids: Hex[] = Array.from({ length: 5 }, (_, i) => keccak256(toHex(`id-${i}`)));
 
-test("nextCheckpointHeight is the smallest scheduled slot above the hub's commitment, once finalized", () => {
+test("nextCheckpointHeight is the smallest scheduled slot above the hub's last attested height, once finalized", () => {
   // Validators with different finality lags derive the same slot.
   assert.equal(nextCheckpointHeight(0n, 10n, 34n), 10n);
   assert.equal(nextCheckpointHeight(0n, 10n, 41n), 10n);
   // A validator whose node has not finalized the slot waits rather than picking another.
   assert.equal(nextCheckpointHeight(10n, 10n, 19n), null);
   assert.equal(nextCheckpointHeight(10n, 10n, 20n), 20n);
-  // The rule only depends on the hub's commitment, even after an off-rule attestation.
+  // The rule only depends on the hub's attested height, even after an off-rule attestation.
   assert.equal(nextCheckpointHeight(25n, 10n, 100n), 30n);
   assert.throws(() => nextCheckpointHeight(0n, 0n, 1n), /positive/);
 });

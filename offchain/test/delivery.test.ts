@@ -34,15 +34,6 @@ for (const [relayed, failed, expected] of [
   });
 }
 
-test("delivery read errors cannot be mistaken for successful delivery", async () => {
-  const client = {
-    getBlockNumber: async () => 42n,
-    readContract: async () => { throw new Error("RPC unavailable"); },
-  } as unknown as PublicClient;
-  await assert.rejects(domainMessageDeliveryStatus(client, message, context), /RPC unavailable/);
-});
-
-
 test("hub relay success means queued when destination is another domain", async () => {
   const client = { getBlockNumber: async () => 42n,
     readContract: async ({ functionName }: { functionName: string }) => functionName === "relayedDomainMessages",

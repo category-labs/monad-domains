@@ -2,8 +2,8 @@ import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/c
 import { bytesToHex, getAddress, hexToBytes, type Address, type Hex } from "viem";
 
 /**
- *
- * Ciphertext format: `enc[65] || hpke_ciphertext_and_tag`.
+ * HPKE (RFC 9180, Base mode) encryption of domain transactions and L1 -> domain messages to a
+ * domain's viewing key. Ciphertext format: `enc[65] || AEAD(0x01 || plaintext)`.
  */
 
 const suite = new CipherSuite({

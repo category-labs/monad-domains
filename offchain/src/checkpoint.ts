@@ -21,7 +21,7 @@ import type { MessageContext } from "./message.js";
  * interval and above the hub's last attested height. Every validator derives the same
  * proposal from the hub's state and the domain's state, and signs it independently:
  *
- *   - `H`: the smallest scheduled height above the hub's commitment, attested once the
+ *   - `H`: the smallest scheduled height above the hub's last attested one, attested once the
  *     validator's own node has finalized it (`nextCheckpointHeight`);
  *   - `stateRoot`: the domain's committed state root as of `H` (`monad_getDomainHeader`);
  *   - `anchor`: the Merkle root of the domain-origin messages recorded since the previous
@@ -39,20 +39,14 @@ export const HUB_CHECKPOINT_ABI = parseAbi([
   "function domainBlockNumbers(uint64 domainChainId) view returns (uint64)",
   "function checkpointIntervals(uint64 domainChainId) view returns (uint64)",
   "function stateNonces(uint64 domainChainId) view returns (uint256)",
-  "function readCommitment(uint64 domainChainId) view returns (bytes32)",
-  "function domainAnchors(uint64 domainChainId, bytes32 anchor) view returns (bool)",
-  "function viewingKeys(uint64 domainChainId) view returns (bytes)",
   "function hasVotedFor(bytes32 digest, address validator) view returns (bool)",
   "function stateTransitionDigest(uint64 domainChainId, uint64 domainBlockNumber, bytes32 newStateRoot, bytes32 domainAnchor) view returns (bytes32)",
   "function submitStateSignature(uint64 domainChainId, uint64 domainBlockNumber, bytes32 newStateRoot, bytes32 domainAnchor, bytes signature)",
-  "event StateSignatureSubmitted(uint64 indexed domainChainId, address indexed validator, uint64 domainBlockNumber, bytes32 newStateRoot, bytes32 domainAnchor, uint256 votes)",
-  "event DomainStateUpdated(uint64 indexed domainChainId, uint256 stateNonce, uint64 domainBlockNumber, bytes32 newStateRoot, bytes32 domainAnchor)",
 ]);
 
 export const SPOKE_BATCH_ABI = parseAbi([
   "function domainMessageCount() view returns (uint256)",
   "function domainMessageIds(uint256 sourceNonce) view returns (bytes32)",
-  "function domainMessagesRoot(uint256 fromNonce, uint256 toNonce) view returns (bytes32)",
 ]);
 
 /**

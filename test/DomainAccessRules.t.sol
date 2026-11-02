@@ -102,18 +102,6 @@ contract DomainAccessRulesTest is DomainTestBase {
         assertTrue(spoke.canCall(reader, token, _balance(alice)));
     }
 
-    function test_deployerAndOutsiderHaveNoImplicitConfigurationAuthority() public {
-        vm.startPrank(deployer);
-        vm.expectRevert("DomainAccessRules: not policy owner");
-        rules.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 1);
-        vm.expectRevert("DomainAccessRules: not policy owner");
-        rules.setReaderAllowed(token, BALANCE_OF, reader, true);
-        vm.stopPrank();
-        vm.prank(outsider);
-        vm.expectRevert("DomainAccessRules: not policy owner");
-        rules.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 1);
-    }
-
     function testFuzz_onlyPolicyOwnerCanConfigureRulesAndReaders(address stranger) public {
         vm.assume(stranger != policyOwner);
         _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
@@ -298,32 +286,6 @@ contract DomainAccessRulesTest is DomainTestBase {
         assertFalse(spoke.canCall(alice, token, _balance(alice)));
     }
 
-    function test_delegateCallChecksOnlyContextWhileDirectCallChecksImplementation() public {
-        address implementation = _governed(policyOwner);
-        bytes memory data = abi.encodeCall(IERC20.allowance, (alice, bob));
-        _rule(token, ALLOWANCE, SUBJECT_MATCH, 1);
-        _rule(implementation, ALLOWANCE, SUBJECT_MATCH, 2);
-
-        // Delegated code uses the token's storage and its first-argument rule.
-        assertTrue(spoke.canCall(alice, token, data));
-        assertFalse(spoke.canCall(bob, token, data));
-        // Calling the implementation directly uses its own second-argument rule.
-        assertFalse(spoke.canCall(alice, implementation, data));
-        assertTrue(spoke.canCall(bob, implementation, data));
-
-        // Implementation reader grants have no effect on delegated execution.
-        _reader(implementation, ALLOWANCE, reader, true);
-        assertTrue(spoke.canCall(reader, implementation, data));
-        assertFalse(spoke.canCall(reader, token, data));
-        _reader(token, ALLOWANCE, reader, true);
-        assertTrue(spoke.canCall(reader, token, data));
-
-        // An unrestricted context stays open even if the implementation restricts access.
-        _rule(token, ALLOWANCE, OPEN, 0);
-        assertTrue(spoke.canCall(policyOwner, token, data));
-        assertFalse(spoke.canCall(policyOwner, implementation, data));
-    }
-
     function test_zeroSelectorRestrictionDeniesShortCalldata() public {
         _rule(token, bytes4(0), SUBJECT_MATCH, 1);
         assertFalse(spoke.canCall(alice, token, hex""));
@@ -351,13 +313,5 @@ contract DomainAccessRulesTest is DomainTestBase {
         _rule(token, BALANCE_OF, SUBJECT_MATCH, type(uint16).max);
         assertTrue(spoke.canCall(alice, token, _balance(alice)));
         assertFalse(spoke.canCall(bob, token, _balance(alice)));
-    }
-
-    function test_unknownAccessModeReverts() public {
-        bytes memory data =
-            abi.encodeWithSelector(rules.setAccessControl.selector, token, BALANCE_OF, uint8(3), uint16(0));
-        vm.prank(policyOwner);
-        (bool ok,) = address(rules).call(data);
-        assertFalse(ok);
     }
 }

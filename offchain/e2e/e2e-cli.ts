@@ -16,10 +16,11 @@ import {
   zeroAddress,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { loadArtifact } from "./artifacts.js";
-import { setupDomain } from "./setup.js";
-import { sequenceTransaction } from "./sequence.js";
-import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI } from "./checkpoint.js";
+import { loadArtifact } from "../src/artifacts.js";
+import { fetchL1Chain } from "../src/chain.js";
+import { setupDomain } from "../src/setup.js";
+import { readDomainGasPrice, sequenceTransaction } from "../src/sequence.js";
+import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI } from "../src/checkpoint.js";
 import {
   fetchL1Messages,
   fetchDomainBatch,
@@ -28,9 +29,8 @@ import {
   domainMessageDeliveryStatus,
   proveMessage,
   type L1DeliveryStatus,
-} from "./prover.js";
-import { type MessageContext } from "./message.js";
-import { domainGasFee, readDomainGasPrice } from "./transaction-policy.js";
+} from "../src/prover.js";
+import { type MessageContext } from "../src/message.js";
 
 /**
  * End-to-end exercise of the domain token bridge against a live L1-sequencing
@@ -54,15 +54,21 @@ import { domainGasFee, readDomainGasPrice } from "./transaction-policy.js";
  *      readers it names on the spoke, strips other logs from receipts, and everyone else reads
  *      only logs that name them in a topic.
  *
- * Configuration via env: L1_RPC_URL (default http://localhost:8080),
- * DOMAIN_CHAIN_ID (default (1 << 16) | 20143 = 85679), VIEWING_KEY — the
- * domain viewing public key matching the PEM the node was started with
- * (`--private-domain <id> <spoke address> <key.pem>`, where the spoke address is
- * CREATE(admin, 0) on the domain = the hub address on the L1); every sequenced
- * transaction is encrypted to it — and DOMAIN_ACCESS_KEY, which signs the domain
- * route's access token for reads that are not tied to an actor (default admin, the
- * devnet's `--domain-operator`); each actor's own reads carry its own token. The
- * well-known dev accounts below exist in MONAD_DEVNET_ALLOC with huge balances.
+ * Configuration via env:
+ *   L1_RPC_URL           default http://localhost:8080
+ *   DOMAIN_CHAIN_ID      default (1 << 16) | 20143 = 85679
+ *   DOMAIN_RPC_URL       default `${L1_RPC_URL}/domain/${DOMAIN_CHAIN_ID}`
+ *   CHECKPOINT_INTERVAL  registered on the hub, default 5
+ *   EXPECTED_HUB         the hub address in the node's `--private-domain-sequencer` flag; must be
+ *                        CREATE(admin, 0), default 0x5FbDB2315678afecb367f032d93F642f64180aa3
+ *   VIEWING_KEY          the domain viewing public key matching the PEM the node was started with
+ *                        (`--private-domain <id> <spoke address> <key.pem>`, where the spoke address
+ *                        is CREATE(admin, 0) on the domain); every sequenced transaction is
+ *                        encrypted to it
+ *   DOMAIN_ACCESS_KEY    signs the domain route's access token for reads that are not tied to an
+ *                        actor (default admin, the devnet's `--domain-operator`); each actor's own
+ *                        reads carry its own token
+ * The well-known dev accounts below exist in MONAD_DEVNET_ALLOC with huge balances.
  */
 
 const L1_RPC_URL = process.env.L1_RPC_URL ?? "http://localhost:8080";
@@ -157,35 +163,35 @@ function domainAs(key: Hex): PublicClient {
   return client;
 }
 
-/** Waits until the domain has executed the sequenced transaction, preferring the
- * domain-scoped receipt and reporting a revert immediately. */
-async function waitForDomainTx(domain: PublicClient, hash: Hex, label: string) {
+/** Waits until the domain has executed the sequenced transaction and returns its receipt. */
+async function domainReceipt(domain: PublicClient, hash: Hex, label: string) {
   const receipt = await retry(
     `${label} domain receipt`,
     async () => domain.getTransactionReceipt({ hash }).catch(() => null),
     (r) => r !== null,
     90_000,
   );
-  if (receipt!.status !== "success") {
+  return receipt!;
+}
+
+/** Waits for the domain receipt of a sequenced transaction and asserts that it succeeded. */
+async function waitForDomainTx(domain: PublicClient, hash: Hex, label: string) {
+  const receipt = await domainReceipt(domain, hash, label);
+  if (receipt.status !== "success") {
     throw new Error(`${label}: domain transaction reverted (hash ${hash})`);
   }
-  console.log(`  domain receipt ok: ${label} (block ${receipt!.blockNumber}, gasUsed ${receipt!.gasUsed})`);
-  return receipt!;
+  console.log(`  domain receipt ok: ${label} (block ${receipt.blockNumber}, gasUsed ${receipt.gasUsed})`);
+  return receipt;
 }
 
 /** Waits for the domain receipt of a sequenced transaction and asserts that it reverted. */
 async function expectDomainRevert(domain: PublicClient, hash: Hex, label: string) {
-  const receipt = await retry(
-    `${label} domain receipt`,
-    async () => domain.getTransactionReceipt({ hash }).catch(() => null),
-    (r) => r !== null,
-    90_000,
-  );
-  if (receipt!.status !== "reverted") {
-    throw new Error(`${label}: expected the domain transaction to revert, receipt status is ${receipt!.status}`);
+  const receipt = await domainReceipt(domain, hash, label);
+  if (receipt.status !== "reverted") {
+    throw new Error(`${label}: expected the domain transaction to revert, receipt status is ${receipt.status}`);
   }
-  console.log(`  domain receipt reverted as expected: ${label} (block ${receipt!.blockNumber}, gasUsed ${receipt!.gasUsed})`);
-  return receipt!;
+  console.log(`  domain receipt reverted as expected: ${label} (block ${receipt.blockNumber}, gasUsed ${receipt.gasUsed})`);
+  return receipt;
 }
 
 /**
@@ -224,14 +230,8 @@ async function expectForbidden(label: string, fn: () => Promise<unknown>) {
 
 async function main() {
   // --- Clients ---
-  const l1Probe = createPublicClient({ transport: http(L1_RPC_URL) });
-  const l1ChainId = await l1Probe.getChainId();
-  const l1Chain = defineChain({
-    id: l1ChainId,
-    name: `l1-${l1ChainId}`,
-    nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
-    rpcUrls: { default: { http: [L1_RPC_URL] } },
-  });
+  const l1Chain = await fetchL1Chain(L1_RPC_URL);
+  const l1ChainId = l1Chain.id;
   const l1 = createPublicClient({ chain: l1Chain, transport: http(L1_RPC_URL) });
   const domain = domainAs(DOMAIN_ACCESS_KEY);
   const adminWallet = createWalletClient({ account: admin, chain: l1Chain, transport: http(L1_RPC_URL) });
@@ -321,7 +321,7 @@ async function main() {
   // -------------------------------------------------------------------------
   step("3. deposit: alice locks 100 TEST on the L1 for bob on the domain");
   // -------------------------------------------------------------------------
-  const deliveryFee = domainGasFee(DELIVERY_GAS, await readDomainGasPrice(l1, hub));
+  const deliveryFee = DELIVERY_GAS * (await readDomainGasPrice(l1, hub));
   await confirm(
     await aliceWallet.writeContract({
       address: l1Bridge,
@@ -470,9 +470,7 @@ async function main() {
     }),
     "hub.relayDomainMessage",
   );
-  const withdrawalStatus = await domainMessageDeliveryStatus(
-    l1, withdrawalProof.message, { l1ChainId: BigInt(await l1.getChainId()), hub },
-  );
+  const withdrawalStatus = await domainMessageDeliveryStatus(l1, withdrawalProof.message, context);
   if (withdrawalStatus !== "delivered") {
     throw new Error(`withdrawal delivery ${withdrawalStatus}; failed calls can be retried via hub.retryDomainMessage`);
   }

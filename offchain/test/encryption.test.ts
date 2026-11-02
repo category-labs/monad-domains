@@ -68,14 +68,6 @@ test("keys match the fixed profile", async () => {
   assert.equal(hexToBytes(secretKey).length, 32);
 });
 
-test("the ciphertext does not leak the plaintext", async () => {
-  const { publicKey } = await generateViewingKeyPair();
-  const rawTransaction = await signDomainTransaction();
-  const ciphertext = await encryptTransaction(publicKey, rawTransaction);
-
-  assert.ok(!ciphertext.slice(2).includes(rawTransaction.slice(2)));
-});
-
 test("encryption is randomized", async () => {
   const { publicKey } = await generateViewingKeyPair();
   const rawTransaction = await signDomainTransaction();

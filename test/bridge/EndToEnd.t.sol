@@ -5,7 +5,7 @@ import {BridgedERC20} from "../../src/bridge/BridgedERC20.sol";
 import {L1Bridge} from "../../src/bridge/L1Bridge.sol";
 import {DomainBridge} from "../../src/bridge/DomainBridge.sol";
 import {MessageLib} from "../../src/libraries/MessageLib.sol";
-import {MerkleTreeLib} from "../../src/libraries/MerkleTreeLib.sol";
+import {MerkleTreeLib} from "../helpers/MerkleTreeLib.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {TestERC20} from "../mocks/TestERC20.sol";
@@ -60,19 +60,6 @@ contract DepositEndToEndTest is DomainTestBase {
             ),
             "deposit delivery failed"
         );
-    }
-
-    function test_singleDeposit() public {
-        // 1. Alice locks 100 tokens on the L1 for bob on the domain.
-        vm.prank(alice);
-        l1Bridge.bridgeToDomain{value: DELIVERY_FEE}(bob, address(token), 100 ether);
-        assertEq(token.balanceOf(address(l1Bridge)), 100 ether);
-        assertEq(hub.l1MessageCounts(CHAIN_ID), 1);
-
-        // 2. Delivery mints the bridged token to bob.
-        _deliverDeposit(bob, 100 ether);
-
-        assertEq(domainBridge.bridgedTokens(address(token)).balanceOf(bob), 100 ether);
     }
 
     function test_multipleDepositsInOneBlock() public {

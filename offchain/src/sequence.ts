@@ -1,27 +1,42 @@
 import {
   createPublicClient,
   createWalletClient,
-  defineChain,
   http,
   keccak256,
+  parseAbi,
   parseEventLogs,
   type Address,
   type Hex,
+  type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { loadArtifact } from "./artifacts.js";
+import { fetchL1Chain } from "./chain.js";
 import { encryptTransaction } from "./encryption.js";
-import { domainFeeCaps, domainGasFee, readDomainGasPrice } from "./transaction-policy.js";
+
+const HUB_SEQUENCING_ABI = parseAbi([
+  "function DOMAIN_GAS_PRICE() view returns (uint256)",
+  "function sequenceToDomain(uint64 domainChainId, bytes rlpTx) payable",
+  "function viewingKeys(uint64 domainChainId) view returns (bytes)",
+  "event DomainTransactionSequenced(uint64 indexed domainChainId, bytes rlpTx, uint256 fee)",
+]);
 
 /**
- * Submits a domain transaction through the L1.
- *
- * In a fully L1-sequenced domain there is no domain mempool: a transaction is a normal signed domain
- * transaction whose raw bytes are handed to `DomainHub.sequenceToDomain` on the L1. The hub
- * forwards the fee to the fee recipient and emits the transaction; the domain's execution client
- * picks it up (ordered by L1 block + log index), decodes it, and executes it if the fee covers its
- * gas limit at the hub's `DOMAIN_GAS_PRICE`. Nothing is charged on the domain.
+ * Fee fields of a domain transaction. Nothing is charged for it on the domain, but the signed
+ * transaction must still pass ordinary EIP-1559 validity checks.
  */
+export function domainFeeCaps(baseFeePerGas: bigint): { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } {
+  return { maxFeePerGas: baseFeePerGas > 0n ? baseFeePerGas * 2n : 1n, maxPriorityFeePerGas: 0n };
+}
+
+/**
+ * The hub's price of one unit of domain gas, in wei of the L1 native token. A sequencing or
+ * message call buys `fee / price` gas: a sequenced transaction executes only if that covers its
+ * gas limit, and a message delivery runs with exactly that much.
+ */
+export async function readDomainGasPrice(l1: PublicClient, hub: Address): Promise<bigint> {
+  return l1.readContract({ address: hub, abi: HUB_SEQUENCING_ABI, functionName: "DOMAIN_GAS_PRICE" });
+}
+
 export interface SequenceConfig {
   /** L1 RPC endpoint where the hub lives. */
   l1RpcUrl: string;
@@ -44,11 +59,9 @@ export interface SequenceConfig {
   /** If set, the sender's current domain nonce is read from this domain RPC. */
   domainRpcUrl?: string;
   /**
-   * Domain viewing public key (65-byte uncompressed P-256 point, as printed by
-   * `generateViewingKeyPair`). When set, `sequenceToDomain` is passed the HPKE ciphertext
-   * of the signed domain transaction instead of the transaction itself; the domain execution
-   * client decrypts it before executing as normal. When omitted, the key the domain
-   * published on the hub at registration is used; plaintext only if the hub holds none.
+   * Domain viewing public key (65-byte uncompressed P-256 point). The signed transaction is
+   * HPKE-encrypted to it before sequencing. When omitted, the key the domain published on the
+   * hub is used; the transaction is sequenced in plaintext only if the hub holds none.
    */
   viewingKey?: Hex;
 }
@@ -66,6 +79,14 @@ export interface SequenceResult {
   event: { domainChainId: bigint; fee: bigint } | null;
 }
 
+/**
+ * Submits a domain transaction through the L1. A domain has no mempool: a transaction is a
+ * normal signed domain transaction whose (encrypted) raw bytes are handed to
+ * `DomainHub.sequenceToDomain` with a fee of `gas * DOMAIN_GAS_PRICE`, which buys exactly the
+ * transaction's gas limit; nothing is charged on the domain. The hub forwards the fee to the fee
+ * recipient and emits the payload; the domain client decrypts and executes it in the domain block
+ * derived from that L1 block.
+ */
 export async function sequenceTransaction(config: SequenceConfig): Promise<SequenceResult> {
   const {
     l1RpcUrl,
@@ -81,21 +102,10 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
   } = config;
 
   const sender = privateKeyToAccount(senderKey);
-
-  // Build L1 clients before signing so the embedded transaction can use
-  // fee fields valid for the current L1 execution environment.
-  const probe = createPublicClient({ transport: http(l1RpcUrl) });
-  const l1ChainId = await probe.getChainId();
-  const l1Chain = defineChain({
-    id: l1ChainId,
-    name: `l1-${l1ChainId}`,
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: { default: { http: [l1RpcUrl] } },
-  });
-  const publicClient = createPublicClient({ chain: l1Chain, transport: http(l1RpcUrl) });
+  const l1Chain = await fetchL1Chain(l1RpcUrl);
+  const l1 = createPublicClient({ chain: l1Chain, transport: http(l1RpcUrl) });
   const wallet = createWalletClient({ account: sender, chain: l1Chain, transport: http(l1RpcUrl) });
 
-  // Resolve the domain nonce: explicit, or read from a domain RPC if one is available.
   let nonce = config.nonce;
   if (nonce === undefined) {
     if (!domainRpcUrl) throw new Error("sequence: provide `nonce` or `domainRpcUrl` to look it up");
@@ -103,13 +113,9 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
     nonce = await domain.getTransactionCount({ address: sender.address });
   }
 
-  const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
-  const feeCaps = domainFeeCaps(latestBlock.baseFeePerGas ?? (await publicClient.getGasPrice()));
+  const latestBlock = await l1.getBlock({ blockTag: "latest" });
   // The fee never buys more than one L1 block of gas, so a larger limit could never execute.
   if (gas > latestBlock.gasLimit) throw new Error(`sequence: gas ${gas} exceeds the L1 block gas limit ${latestBlock.gasLimit}`);
-
-  // Build + sign a standard domain transaction. Its gas is paid for on the L1
-  // rather than debited from domain state.
   const rawTransaction = await sender.signTransaction({
     type: "eip1559",
     chainId: Number(domainChainId),
@@ -118,24 +124,20 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
     data,
     value,
     gas,
-    ...feeCaps,
+    ...domainFeeCaps(latestBlock.baseFeePerGas ?? (await l1.getGasPrice())),
   });
   const domainTxHash = keccak256(rawTransaction);
 
-  // The hub forwards `rlpTx` as opaque bytes: when the domain has a viewing key, what it
-  // records is the HPKE ciphertext of the signed transaction. Without an explicit key, use
-  // the one the domain published on the hub.
-  const hubArt = loadArtifact("DomainHub.sol", "DomainHub");
   let encryptionKey = viewingKey;
   if (!encryptionKey) {
     let published: Hex;
     try {
-      published = (await publicClient.readContract({
+      published = await l1.readContract({
         address: hub,
-        abi: hubArt.abi,
+        abi: HUB_SEQUENCING_ABI,
         functionName: "viewingKeys",
         args: [domainChainId],
-      })) as Hex;
+      });
     } catch (error) {
       // Never downgrade to plaintext silently: if the hub cannot be read, the caller must
       // say explicitly what key (if any) to use.
@@ -144,32 +146,21 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
           `(${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
       );
     }
-    if (published && published !== "0x") encryptionKey = published;
+    if (published !== "0x") encryptionKey = published;
   }
   const rlpTx = encryptionKey ? await encryptTransaction(encryptionKey, rawTransaction) : rawTransaction;
 
-  // Submit it through the hub on the L1 with the fee that buys its gas limit.
-  const fee = domainGasFee(gas, await readDomainGasPrice(publicClient, hub));
+  const fee = gas * (await readDomainGasPrice(l1, hub));
   const l1TxHash = await wallet.writeContract({
     address: hub,
-    abi: hubArt.abi,
+    abi: HUB_SEQUENCING_ABI,
     functionName: "sequenceToDomain",
     args: [domainChainId, rlpTx],
     value: fee,
   });
-  const receipt = await publicClient.waitForTransactionReceipt({ hash: l1TxHash });
-
-  // Decode the DomainTransactionSequenced event from the receipt to confirm it fired.
-  const [log] = parseEventLogs({
-    abi: hubArt.abi,
-    eventName: "DomainTransactionSequenced",
-    logs: receipt.logs,
-  });
-  const args = log?.args as { domainChainId?: bigint; fee?: bigint } | undefined;
-  const event =
-    args && args.domainChainId !== undefined && args.fee !== undefined
-      ? { domainChainId: args.domainChainId, fee: args.fee }
-      : null;
+  const receipt = await l1.waitForTransactionReceipt({ hash: l1TxHash });
+  const [log] = parseEventLogs({ abi: HUB_SEQUENCING_ABI, eventName: "DomainTransactionSequenced", logs: receipt.logs });
+  const event = log ? { domainChainId: log.args.domainChainId, fee: log.args.fee } : null;
 
   return { l1TxHash, domainTxHash, rawTransaction, fee, event };
 }

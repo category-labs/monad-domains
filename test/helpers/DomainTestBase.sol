@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
-import {MerkleTreeLib} from "../../src/libraries/MerkleTreeLib.sol";
+import {MerkleTreeLib} from "./MerkleTreeLib.sol";
 
 /// @notice Shared protocol steps for tests: registering a domain on the hub and attesting
 /// state transitions the way validators do, on the domain's checkpoint schedule. A batch of

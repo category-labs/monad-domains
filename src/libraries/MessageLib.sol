@@ -2,8 +2,7 @@
 pragma solidity ^0.8.24;
 
 /// @notice Canonical encoding of cross-domain messages and of the token bridge payload
-/// carried inside them. Single source of truth shared by both bridges, the hub and spoke,
-/// and the off-chain prover.
+/// carried inside them, shared by the hub, the spoke and both bridges.
 library MessageLib {
     /// @notice An authenticated domain-origin message. The source spoke assigns origin and nonce.
     /// The hub proves this envelope and assigns a separate destination delivery nonce when forwarding.
