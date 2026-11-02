@@ -33,9 +33,12 @@ export {
   encodeTransfer,
   hashDomainMessage,
   hashMessage,
+  isEncryptedDomainMessage,
+  MessageKind,
   type DomainMessage,
   type Message,
   type MessageContext,
+  type MessagePlaintext,
 } from "./message.js";
 export { root, getProof, verify } from "./merkle.js";
 export {

@@ -208,7 +208,13 @@ contract DomainHub is IDomainHub, EIP712 {
     {
         require(message.sourceChainId != message.destinationChainId, "DomainHub: same domain");
         require(_configs[message.sourceChainId].registered, "DomainHub: source not registered");
-        require(message.to != address(0), "DomainHub: zero target");
+        bool encrypted = message.kind == MessageLib.MessageKind.Encrypted;
+        if (encrypted) {
+            require(message.to == address(0), "DomainHub: encrypted message with target");
+            require(message.destinationChainId != block.chainid, "DomainHub: encrypted L1 callback");
+        } else {
+            require(message.to != address(0), "DomainHub: zero target");
+        }
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         require(!relayedDomainMessages[message.sourceChainId][messageHash], "DomainHub: message already relayed");
         require(domainAnchors[message.sourceChainId][anchor], "DomainHub: unknown anchor");
@@ -217,9 +223,13 @@ contract DomainHub is IDomainHub, EIP712 {
 
         if (message.destinationChainId != block.chainid) {
             require(_configs[message.destinationChainId].registered, "DomainHub: destination not registered");
-            uint256 deliveryNonce = _sendL1Message(
-                message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
-            );
+            uint256 deliveryNonce = encrypted
+                ? _sendEncryptedL1Message(
+                    message.destinationChainId, message.sourceChainId, message.from, message.data, msg.value
+                )
+                : _sendL1Message(
+                    message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
+                );
             emit DomainMessageRouted(messageHash, message.sourceChainId, message.destinationChainId, deliveryNonce);
             return true; // Queued atomically; destination execution happens asynchronously.
         }
@@ -310,11 +320,21 @@ contract DomainHub is IDomainHub, EIP712 {
 
     function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable {
         require(_configs[domainChainId].registered, "DomainHub: domain not registered");
-        require(msg.value >= minDeliveryFee(ciphertext.length), "DomainHub: delivery fee too low");
-        _buyGas(domainChainId, msg.value);
-        uint256 nonce = l1MessageCounts[domainChainId]++;
-        emit EncryptedL1MessageRecorded(
-            domainChainId, SafeCast.toUint64(block.chainid), msg.sender, ciphertext, nonce, msg.value
-        );
+        _sendEncryptedL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, ciphertext, msg.value);
+    }
+
+    /// @dev `_sendL1Message` for a ciphertext the destination client opens into the target and
+    /// payload; draws from the same delivery nonces.
+    function _sendEncryptedL1Message(
+        uint64 domainChainId,
+        uint64 sourceChainId,
+        address from,
+        bytes memory ciphertext,
+        uint256 fee
+    ) internal returns (uint256 nonce) {
+        require(fee >= minDeliveryFee(ciphertext.length), "DomainHub: delivery fee too low");
+        _buyGas(domainChainId, fee);
+        nonce = l1MessageCounts[domainChainId]++;
+        emit EncryptedL1MessageRecorded(domainChainId, sourceChainId, from, ciphertext, nonce, fee);
     }
 }

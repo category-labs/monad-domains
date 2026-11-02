@@ -471,8 +471,9 @@ contract DomainMessagingTest is DomainTestBase {
     // ---------------------------------------------------------------------
 
     function test_sendDomainMessage_recordsIdByNonceAndEmitsPreimage() public {
-        MessageLib.DomainMessage memory message =
-            MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, 0, hex"cafe");
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage(
+            MessageLib.MessageKind.Plain, CHAIN_ID, uint64(block.chainid), alice, bob, 0, hex"cafe"
+        );
         bytes32 expectedHash = MessageLib.hashDomainMessage(message, block.chainid, address(hub));
 
         vm.expectEmit(address(spoke));
@@ -495,8 +496,9 @@ contract DomainMessagingTest is DomainTestBase {
         // Each id is the hash of its envelope, keyed by nonce; an unrecorded nonce reads zero.
         bytes32[] memory ids = _batchLeaves(spoke, 0, 5);
         for (uint256 i = 0; i < 5; i++) {
-            MessageLib.DomainMessage memory message =
-                MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, i, abi.encodePacked(i));
+            MessageLib.DomainMessage memory message = MessageLib.DomainMessage(
+                MessageLib.MessageKind.Plain, CHAIN_ID, uint64(block.chainid), alice, bob, i, abi.encodePacked(i)
+            );
             assertEq(ids[i], MessageLib.hashDomainMessage(message, block.chainid, address(hub)));
         }
         assertEq(spoke.domainMessageIds(5), bytes32(0));

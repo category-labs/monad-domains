@@ -12,7 +12,8 @@
     "sequence": "tsx src/sequence-cli.ts",
     "checkpoint": "tsx src/checkpoint-cli.ts",
     "viewing-key": "tsx src/viewing-key-cli.ts",
-    "e2e": "tsx e2e/e2e-cli.ts"
+    "e2e": "tsx e2e/e2e-cli.ts",
+    "e2e:routing": "tsx e2e/e2e-routing-cli.ts"
   },
   "dependencies": {
     "@hpke/core": "^1.9.0",

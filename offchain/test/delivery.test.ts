@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type Address, type Hex, type PublicClient } from "viem";
-import { hashDomainMessage, type DomainMessage } from "../src/message.js";
+import { hashDomainMessage, MessageKind, type DomainMessage } from "../src/message.js";
 import { domainMessageDeliveryStatus } from "../src/prover.js";
 
 const hub = "0x0000000000000000000000000000000000001234" as Address;
 const context = { l1ChainId: 1n, hub };
-const message: DomainMessage = { sourceChainId: 7777n, destinationChainId: 1n,
+const message: DomainMessage = { kind: MessageKind.Plain, sourceChainId: 7777n, destinationChainId: 1n,
   from: hub, to: hub, sourceNonce: 0n, data: "0x" };
 const messageHash = hashDomainMessage(message, context);
 
