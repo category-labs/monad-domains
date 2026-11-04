@@ -62,7 +62,16 @@ StateTransition(
 
 ## Encryption
 
-Sequenced transactions are the only thing the protocol encrypts, and derivation is the only place anything is decrypted. L1 to domain messages are plaintext: the hub's L1 side is public and authenticates the sender, so an application that needs to hide a message seals its own data. The client does not derive `EncryptedL1MessageRecorded` events.
+Two kinds of payload are sealed to a domain's viewing key: the transactions sequenced to it, and the messages other domains send it. Derivation is the only place either is opened.
+
+| Payload | Encrypted |
+| --- | --- |
+| Sequenced transaction | Yes, by its sender, as below |
+| L1 to domain message | No: the sending L1 contract runs in public, and the hub authenticates it |
+| Domain to L1 message | No: its recipient runs in public |
+| Domain to domain message | Yes, whole, caller included, by the source domain's spoke under the destination's key |
+
+A domain to domain message travels as a domain to L1 message and then an L1 to domain one. The hub will authenticate its envelope against the source domain's anchor without reading it and re-emit it as an `EncryptedL1MessageRecorded` event, and the destination's client will open it and deliver it as a system transaction, as it does an `L1MessageRecorded` event. That sealing is not specified yet, so this version of the client does not derive `EncryptedL1MessageRecorded` events, and messages between domains are plaintext until it is. L1 accounts send plaintext messages only: a message recorded by `sendEncryptedL1Message` is never delivered.
 
 **Profile.** A fixed RFC 9180 Base-mode suite, identical on both sides:
 
