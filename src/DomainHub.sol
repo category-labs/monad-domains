@@ -15,6 +15,7 @@ contract DomainHub is IDomainHub, EIP712 {
     error QuorumExceedsValidators();
     error ZeroFeeRecipient();
     error ZeroCheckpointInterval();
+    error AttestationTimeoutBelowTwoIntervals();
     error InvalidViewingKey();
     error ZeroValidator();
     error DuplicateValidator();
@@ -35,6 +36,8 @@ contract DomainHub is IDomainHub, EIP712 {
     error RetryOnDestinationDomain();
     error NotFailedMessage();
     error RetryFailed();
+    error SequencingFeeTooLow();
+    error DomainAttestationStalled();
     error DomainBlockGasLimitExceeded();
     error FeeTransferFailed();
     error DeliveryFeeTooLow();
@@ -55,21 +58,30 @@ contract DomainHub is IDomainHub, EIP712 {
     uint256 public constant DELIVERY_GAS_PER_BYTE = 48;
     /// @notice Most gas each domain may sell per L1 block, across sequencing and messages.
     uint256 public constant DOMAIN_BLOCK_GAS_LIMIT = 150_000_000;
+    /// @notice Gas any transaction needs to execute at all: the least a sequencing call must buy.
+    uint256 public constant TRANSACTION_BASE_GAS = 21_000;
 
     /// @notice Gas sold for a domain's current L1 block.
-    struct BlockGas {
+    struct BlockGasSales {
         /// @dev L1 block `gasSold` counts; any earlier block means nothing is sold yet in this one.
         uint64 blockNumber;
         /// @dev Domain gas bought by the fees paid in `blockNumber`.
-        uint192 gasSold;
+        uint128 gasSold;
+        /// @dev L1 block of the first sale since the domain's last quorum, or zero while every
+        /// sale so far has been followed by one.
+        uint64 backlogSince;
     }
 
     struct DomainConfig {
+        // The first slot holds what every sale reads.
         bool registered;
-        /// @dev Attested block numbers must be multiples of this interval.
-        uint64 checkpointInterval;
         /// @dev Receives every fee paid for the domain.
         address feeRecipient;
+        /// @dev L1 blocks a backlog of sales may stay open without a quorum before the domain
+        /// stops selling gas.
+        uint64 attestationTimeout;
+        /// @dev Attested block numbers must be multiples of this interval.
+        uint64 checkpointInterval;
         /// @dev Distinct validator signatures required to advance the state.
         uint256 quorum;
         address[] validators;
@@ -81,7 +93,7 @@ contract DomainHub is IDomainHub, EIP712 {
     /// @dev Registration of each domain, by chain id.
     mapping(uint64 => DomainConfig) internal _configs;
     /// @notice Gas each domain has sold in the current L1 block, against `DOMAIN_BLOCK_GAS_LIMIT`.
-    mapping(uint64 => BlockGas) public blockGas;
+    mapping(uint64 => BlockGasSales) public blockGasSales;
     /// @notice Latest attested state root of each domain.
     mapping(uint64 => bytes32) public stateRoots;
     /// @notice Next delivery nonce of each destination domain, shared by plaintext, encrypted
@@ -115,7 +127,8 @@ contract DomainHub is IDomainHub, EIP712 {
         uint256 quorum,
         address feeRecipient,
         bytes calldata viewingKey,
-        uint64 checkpointInterval
+        uint64 checkpointInterval,
+        uint64 attestationTimeout
     ) external {
         if (domainChainId == block.chainid) revert L1ChainIdNotAllowed();
         DomainConfig storage config = _configs[domainChainId];
@@ -124,12 +137,14 @@ contract DomainHub is IDomainHub, EIP712 {
         if (quorum > validators.length) revert QuorumExceedsValidators();
         if (feeRecipient == address(0)) revert ZeroFeeRecipient();
         if (checkpointInterval == 0) revert ZeroCheckpointInterval();
+        if (attestationTimeout < 2 * uint256(checkpointInterval)) revert AttestationTimeoutBelowTwoIntervals();
         if (viewingKey.length != 0 && (viewingKey.length != VIEWING_KEY_LENGTH || viewingKey[0] != 0x04)) {
             revert InvalidViewingKey();
         }
 
         config.registered = true;
         config.checkpointInterval = checkpointInterval;
+        config.attestationTimeout = attestationTimeout;
         config.feeRecipient = feeRecipient;
         config.quorum = quorum;
         config.viewingKey = viewingKey;
@@ -163,6 +178,10 @@ contract DomainHub is IDomainHub, EIP712 {
 
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64) {
         return _configs[domainChainId].checkpointInterval;
+    }
+
+    function attestationTimeouts(uint64 domainChainId) external view returns (uint64) {
+        return _configs[domainChainId].attestationTimeout;
     }
 
     function viewingKeys(uint64 domainChainId) external view returns (bytes memory) {
@@ -222,6 +241,7 @@ contract DomainHub is IDomainHub, EIP712 {
             stateRoots[domainChainId] = newStateRoot;
             if (domainAnchor != bytes32(0)) domainAnchors[domainChainId][domainAnchor] = true;
             domainBlockNumbers[domainChainId] = domainBlockNumber;
+            blockGasSales[domainChainId].backlogSince = 0;
             emit DomainStateUpdated(domainChainId, nonce, domainBlockNumber, newStateRoot, domainAnchor);
         }
     }
@@ -287,22 +307,41 @@ contract DomainHub is IDomainHub, EIP712 {
     // Domain transactions: sequenced on the L1
     // ---------------------------------------------------------------------
 
+    function minSequencingFee() public pure returns (uint256) {
+        return TRANSACTION_BASE_GAS * DOMAIN_GAS_PRICE;
+    }
+
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable {
         if (!_configs[domainChainId].registered) revert DomainNotRegistered();
+        if (msg.value < minSequencingFee()) revert SequencingFeeTooLow();
         _buyGas(domainChainId, msg.value);
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
     }
 
+    // ---------------------------------------------------------------------
+    // Gas sales: every paying call, bounded per L1 block and by attestation
+    // ---------------------------------------------------------------------
+
+    /// @notice Whether the hub still sells gas to `domainChainId` as far as attestation goes:
+    /// nothing was sold since its validators last reached quorum, or the first sale since is at
+    /// most `attestationTimeout` blocks old. False for an unregistered domain.
+    function isDomainLive(uint64 domainChainId) public view returns (bool) {
+        DomainConfig storage config = _configs[domainChainId];
+        uint64 since = blockGasSales[domainChainId].backlogSince;
+        return config.registered && (since == 0 || block.number - since <= config.attestationTimeout);
+    }
+
     /// @dev Counts the gas `fee` buys against the domain's budget for this L1 block and pays
-    /// the fee to the domain's fee recipient, who must accept it.
+    /// the fee to the domain's fee recipient, who must accept it. The first sale after a quorum
+    /// opens the domain's attestation backlog; once that backlog has waited more than
+    /// `attestationTimeout` blocks for the next quorum, nothing more is sold.
     function _buyGas(uint64 domainChainId, uint256 fee) internal {
-        BlockGas storage budget = blockGas[domainChainId];
-        uint256 sold = budget.blockNumber == block.number ? budget.gasSold : 0;
-        sold += fee / DOMAIN_GAS_PRICE;
+        if (!isDomainLive(domainChainId)) revert DomainAttestationStalled();
+        BlockGasSales memory domainSales = blockGasSales[domainChainId];
+        uint256 sold = (domainSales.blockNumber == block.number ? domainSales.gasSold : 0) + fee / DOMAIN_GAS_PRICE;
         if (sold > DOMAIN_BLOCK_GAS_LIMIT) revert DomainBlockGasLimitExceeded();
-        budget.blockNumber = uint64(block.number);
-        budget.gasSold = uint192(sold);
-        if (fee == 0) return;
+        if (domainSales.backlogSince == 0) domainSales.backlogSince = uint64(block.number);
+        blockGasSales[domainChainId] = BlockGasSales(uint64(block.number), uint128(sold), domainSales.backlogSince);
         (bool success,) = _configs[domainChainId].feeRecipient.call{value: fee}("");
         if (!success) revert FeeTransferFailed();
     }

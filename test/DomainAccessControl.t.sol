@@ -257,7 +257,7 @@ contract DomainAccessControlTest is DomainTestBase {
     }
 
     function testFuzz_onlyThePolicyOwnerSetsLogReaders(address stranger, bool allowed) public {
-        vm.assume(stranger != policyOwner);
+        vm.assume(stranger != policyOwner && stranger != alice);
         vm.prank(policyOwner);
         spoke.setLogReader(token, alice, true);
         vm.startPrank(stranger);
