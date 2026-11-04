@@ -13,6 +13,9 @@ import {MerkleTreeLib} from "./MerkleTreeLib.sol";
 abstract contract DomainTestBase is Test {
     /// @dev Attested L1 heights must be multiples of this.
     uint64 internal constant CHECKPOINT_INTERVAL = 10;
+    /// @dev Far beyond any block these tests roll to; backpressure is exercised in
+    /// DomainLiveness.t.sol with its own timeouts.
+    uint64 internal constant ATTESTATION_TIMEOUT = 100 * CHECKPOINT_INTERVAL;
 
     /// @dev `domainMessageCount` as of the last attestation per domain: the start of the
     /// next batch. Mirrors what a validator reads from the state at the previous checkpoint.
@@ -58,9 +61,11 @@ abstract contract DomainTestBase is Test {
     // ---------------------------------------------------------------------
 
     /// @dev Registers `chainId` with the validators behind `keys`, the test contract as fee
-    /// recipient, no viewing key and the shared checkpoint interval.
+    /// recipient, no viewing key and the shared checkpoint interval and attestation timeout.
     function _registerDomain(DomainHub hub, uint64 chainId, uint256[] memory keys, uint256 quorum) internal {
-        hub.registerDomain(chainId, _addresses(keys), quorum, address(this), "", CHECKPOINT_INTERVAL);
+        hub.registerDomain(
+            chainId, _addresses(keys), quorum, address(this), "", CHECKPOINT_INTERVAL, ATTESTATION_TIMEOUT
+        );
     }
 
     /// @dev Single validator, quorum 1.
