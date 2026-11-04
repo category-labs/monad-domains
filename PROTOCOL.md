@@ -114,7 +114,7 @@ A dropped transaction leaves nothing in the block. Stateful failures (bad nonce,
 | data | `relayL1Message(sourceChainId, from, to, data, nonce)` |
 | signature | the L1 system sender's key, which is public by design, with RFC 6979 nonces, so the sender recovers to `SYSTEM_RELAYER` and every client derives the same bytes |
 
-**Header.** A domain block is `[header, [transactions, [], []]]` in RLP, the shape of an Ethereum block body. Its header holds only what derivation produces. Like an Ethereum header, it has no chain ID: the domain's comes from the client's configuration. A derived block's id is `keccak256(rlp(header))` of this header, known before execution, as an L1 block's consensus ID is; each block names its parent's, so derived blocks form a chain on their own, on any L1 branch.
+**Header.** A domain block is a header and its transactions, in order. Only the header is hashed, and its `transactions_root` commits to the transactions, so how a client stores blocks is its own. The header holds only what derivation produces. Like an Ethereum header, it has no chain ID: the domain's comes from the client's configuration. A derived block's id is `keccak256(rlp(header))` of this header, known before execution, as an L1 block's consensus ID is; each block names its parent's, so derived blocks form a chain on their own, on any L1 branch.
 
 | Field | Value |
 | --- | --- |
