@@ -23,6 +23,12 @@ export interface SetupConfig {
   /** Attested L1 heights must be multiples of this many blocks. Default 5. */
   checkpointInterval?: bigint;
   /**
+   * L1 blocks a backlog of sales (sequencing, messages, domain-bound relays) may stay open without
+   * a validator quorum before the hub stops selling the domain gas; at least twice
+   * `checkpointInterval`. Default 1000.
+   */
+  attestationTimeout?: bigint;
+  /**
    * Key of the domain account whose first two (sequenced) transactions create the spoke and bridge.
    * Defaults to `adminKey` — the same account works because L1 and domain nonces are independent, so
    * on a fresh domain the admin's domain nonces are 0 and 1. If overridden, the account MUST have
@@ -64,7 +70,7 @@ export interface SetupResult {
  *
  * Order:
  *   L1:  deploy/reuse DomainHub -> registerDomain (validators, quorum, fee recipient,
- *        viewing key, checkpoint interval)
+ *        viewing key, checkpoint interval, attestation timeout)
  *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
  *   -    precompute domain spoke = CREATE(seed, 0), domainBridge = CREATE(seed, 1)
  *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx)   [nonce 0]
@@ -82,6 +88,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     allowedToken,
     domainGas = 5_000_000n,
     checkpointInterval = 5n,
+    attestationTimeout = 1_000n,
     viewingKey,
   } = config;
 
@@ -90,6 +97,9 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     throw new Error("setup: quorum must be in [1, validators.length]");
   }
   if (checkpointInterval <= 0n) throw new Error("setup: checkpointInterval must be positive");
+  if (attestationTimeout < 2n * checkpointInterval) {
+    throw new Error("setup: attestationTimeout must be at least twice checkpointInterval");
+  }
 
   const admin = privateKeyToAccount(adminKey);
   const seed = privateKeyToAccount(config.seedDeployerKey ?? adminKey);
@@ -117,8 +127,8 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const domainBridgeArt = loadArtifact("DomainBridge.sol", "DomainBridge");
 
   // 1. Deploy/reuse the hub and register the domain: validator set + quorum, the fee
-  // recipient, the viewing public key senders read back from the hub, and the checkpoint
-  // interval attested heights must follow.
+  // recipient, the viewing public key senders read back from the hub, the checkpoint
+  // interval attested heights must follow, and how long sales may go unattested.
   const hub = config.existingHub ?? await deployedAddress(
     await wallet.deployContract({ abi: hubArt.abi, bytecode: hubArt.bytecode }),
   );
@@ -135,12 +145,15 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
       address: hub,
       abi: hubArt.abi,
       functionName: "registerDomain",
-      args: [domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval],
+      args: [
+        domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval, attestationTimeout,
+      ],
     }),
   );
   console.log(
     `  registered chain ${domainChainId} (quorum ${quorum} of ${validators.length}, fee recipient ${feeRecipient}, ` +
-      `checkpoint interval ${checkpointInterval}, viewing key ${viewingKey ? "published" : "none"})`,
+      `checkpoint interval ${checkpointInterval}, attestation timeout ${attestationTimeout}, ` +
+      `viewing key ${viewingKey ? "published" : "none"})`,
   );
 
   // 2. Deploy the L1 bridge (admin becomes owner).

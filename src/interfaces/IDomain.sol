@@ -89,6 +89,11 @@ interface IDomainHub {
     /// domain-bound relay attaching less MUST revert.
     function minDeliveryFee(uint256 dataLength) external pure returns (uint256);
 
+    /// @notice Smallest fee a transaction is sequenced with: the price of `TRANSACTION_BASE_GAS`,
+    /// the gas any transaction needs to execute at all. A sequencing call attaching less MUST
+    /// revert, so no sale is work the domain can never execute.
+    function minSequencingFee() external pure returns (uint256);
+
     /// @notice Most gas a domain's sequenced transactions and deliveries may buy per L1 block
     /// in total; a call that would sell more MUST revert, so the work a domain block carries
     /// is bounded whatever its senders pay.
@@ -96,18 +101,21 @@ interface IDomainHub {
 
     /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
     /// validator signatures required to advance the state, the recipient of sequencing fees,
-    /// the viewing public key senders encrypt to (65-byte uncompressed P-256 point, or empty)
-    /// and the checkpoint interval attested block numbers must be multiples of. MUST reject
-    /// the L1 chain id, an already registered chain id, a zero quorum, a quorum exceeding the
-    /// validator count, zero or duplicate validators, a zero fee recipient, a zero interval
-    /// and a viewing key that is neither empty nor a 65-byte `0x04`-prefixed point.
+    /// the viewing public key senders encrypt to (65-byte uncompressed P-256 point, or empty),
+    /// the checkpoint interval attested block numbers must be multiples of and the attestation
+    /// timeout: the L1 blocks a backlog of sales may stay open without a quorum before the
+    /// domain stops selling gas (see `isDomainLive`). MUST reject the L1 chain id, an already registered chain id, a
+    /// zero quorum, a quorum exceeding the validator count, zero or duplicate validators, a
+    /// zero fee recipient, a zero interval, a timeout below twice the interval and a viewing
+    /// key that is neither empty nor a 65-byte `0x04`-prefixed point.
     function registerDomain(
         uint64 domainChainId,
         address[] calldata validators,
         uint256 quorum,
         address feeRecipient,
         bytes calldata viewingKey,
-        uint64 checkpointInterval
+        uint64 checkpointInterval,
+        uint64 attestationTimeout
     ) external;
 
     function isDomainRegistered(uint64 domainChainId) external view returns (bool);
@@ -115,6 +123,7 @@ interface IDomainHub {
     function quorums(uint64 domainChainId) external view returns (uint256);
     function feeRecipients(uint64 domainChainId) external view returns (address);
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64);
+    function attestationTimeouts(uint64 domainChainId) external view returns (uint64);
     /// @notice The registered viewing public key, or empty bytes.
     function viewingKeys(uint64 domainChainId) external view returns (bytes memory);
 
@@ -166,6 +175,11 @@ interface IDomainHub {
     /// @notice True if `anchor` was attested as the root of a batch of messages sent from
     /// `domainChainId` (both L1 callbacks and messages to other domains).
     function domainAnchors(uint64 domainChainId, bytes32 anchor) external view returns (bool);
+
+    // --- Backpressure ---
+
+    /// @notice True while the hub sells gas to the domain as far as attestation goes.
+    function isDomainLive(uint64 domainChainId) external view returns (bool);
 
     // --- Delivery of domain messages ---
 
