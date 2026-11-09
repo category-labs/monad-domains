@@ -7,12 +7,14 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 /// restricted to the DomainBridge that deployed it.
 /// L1_TOKEN is the counterpart L1 token address, only for metadata purposes.
 contract BridgedERC20 is ERC20 {
+    error NotBridge();
+
     address public immutable BRIDGE;
     address public immutable L1_TOKEN;
     uint8 internal immutable _TOKEN_DECIMALS;
 
     modifier onlyBridge() {
-        require(msg.sender == BRIDGE, "BridgedERC20: not bridge");
+        if (msg.sender != BRIDGE) revert NotBridge();
         _;
     }
 

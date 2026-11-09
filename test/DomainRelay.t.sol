@@ -105,7 +105,7 @@ contract DomainRelayTest is DomainTestBase {
         leaves[1] = bytes32(uint256(42));
         bytes32 root = MerkleTreeLib.root(leaves);
         _anchor(CHAIN_A, root);
-        vm.expectRevert("DomainHub: message already relayed");
+        vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
         hub.relayDomainMessage(message, root, MerkleTreeLib.getProof(leaves, 0));
         assertEq(receiver.calls(), 1);
     }
@@ -128,10 +128,10 @@ contract DomainRelayTest is DomainTestBase {
         MessageLib.DomainMessage memory message = _message(0);
         message.sourceChainId = CHAIN_B;
         _anchor(CHAIN_A, _hash(message));
-        vm.expectRevert("DomainHub: unknown anchor");
+        vm.expectRevert(DomainHub.UnknownAnchor.selector);
         _relay(message);
         message.sourceChainId = 9999;
-        vm.expectRevert("DomainHub: source not registered");
+        vm.expectRevert(DomainHub.SourceNotRegistered.selector);
         _relay(message);
         assertEq(receiver.calls(), 0);
     }
@@ -159,9 +159,9 @@ contract DomainRelayTest is DomainTestBase {
         assertFalse(_relay(message));
         assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
         assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
-        vm.expectRevert("DomainHub: message already relayed");
+        vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
         _relay(message);
-        vm.expectRevert("DomainHub: retry failed");
+        vm.expectRevert(DomainHub.RetryFailed.selector);
         hub.retryDomainMessage(message);
         assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
         receiver.setFailure(false);
@@ -171,23 +171,23 @@ contract DomainRelayTest is DomainTestBase {
         hub.retryDomainMessage(message);
         assertEq(receiver.calls(), 1);
         assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
-        vm.expectRevert("DomainHub: not a failed message");
+        vm.expectRevert(DomainHub.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
     }
 
     function test_retryRequiresExactAuthenticatedMessageAndDomain() public {
         MessageLib.DomainMessage memory message = _message(0);
-        vm.expectRevert("DomainHub: not a failed message");
+        vm.expectRevert(DomainHub.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
         _anchor(CHAIN_A, _hash(message));
         receiver.setFailure(true);
         assertFalse(_relay(message));
         message.sourceChainId = CHAIN_B;
-        vm.expectRevert("DomainHub: not a failed message");
+        vm.expectRevert(DomainHub.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
         message.sourceChainId = CHAIN_A;
         message.data = hex"ffff";
-        vm.expectRevert("DomainHub: not a failed message");
+        vm.expectRevert(DomainHub.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
     }
 
@@ -221,9 +221,9 @@ contract DomainRelayTest is DomainTestBase {
         assertTrue(_relay(message));
         assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
         assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
-        vm.expectRevert("DomainHub: message already relayed");
+        vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
         _relay(message);
-        vm.expectRevert("DomainHub: not a failed message");
+        vm.expectRevert(DomainHub.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
     }
 

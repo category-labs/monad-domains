@@ -18,6 +18,17 @@ import {MessageLib} from "../libraries/MessageLib.sol";
 /// deposits: `onDomainMessage` never consults the allowlist, so already-locked
 /// collateral can always be withdrawn and the owner can never freeze user funds.
 contract L1Bridge is Ownable, IDomainMessageReceiver {
+    error ZeroBridge();
+    error BridgeAlreadyRegistered();
+    error CounterpartNotRegistered();
+    error TokenNotAllowed();
+    error ZeroRecipient();
+    error ZeroAmount();
+    error FeeOnTransferTokenNotSupported();
+    error NotHub();
+    error WrongDomain();
+    error NotDomainBridge();
+
     using SafeERC20 for IERC20;
 
     IDomainHub public immutable HUB;
@@ -43,8 +54,8 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
 
     /// @notice Sets the counterpart bridge. One-shot: cannot be changed once set.
     function registerDomainBridge(address bridge) external onlyOwner {
-        require(bridge != address(0), "L1Bridge: zero bridge");
-        require(domainBridge == address(0), "L1Bridge: already registered");
+        if (bridge == address(0)) revert ZeroBridge();
+        if (domainBridge != address(0)) revert BridgeAlreadyRegistered();
         domainBridge = bridge;
         emit DomainBridgeRegistered(bridge);
     }
@@ -62,19 +73,16 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
     /// delivery fee forwarded to the hub; it must buy enough gas for the mint.
     function bridgeToDomain(address recipient, address token, uint256 amount) external payable {
         address counterpart = domainBridge;
-        require(counterpart != address(0), "L1Bridge: counterpart not registered");
-        require(allowedTokens[token], "L1Bridge: token not allowed");
-        require(recipient != address(0), "L1Bridge: zero recipient");
-        require(amount > 0, "L1Bridge: zero amount");
+        if (counterpart == address(0)) revert CounterpartNotRegistered();
+        if (!allowedTokens[token]) revert TokenNotAllowed();
+        if (recipient == address(0)) revert ZeroRecipient();
+        if (amount == 0) revert ZeroAmount();
 
         // The locked amount must equal the messaged amount, or withdrawals would be
         // undercollateralized - reject fee-on-transfer tokens.
         uint256 balanceBefore = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        require(
-            IERC20(token).balanceOf(address(this)) - balanceBefore == amount,
-            "L1Bridge: fee-on-transfer token not supported"
-        );
+        if (IERC20(token).balanceOf(address(this)) - balanceBefore != amount) revert FeeOnTransferTokenNotSupported();
 
         HUB.sendL1Message{value: msg.value}(
             DOMAIN_CHAIN_ID, counterpart, MessageLib.encodeTransfer(recipient, token, amount)
@@ -86,11 +94,11 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
     /// verifies inclusion and prevents replay; the bridge authorizes its source and releases
     /// collateral. Reverting leaves the message retryable at the hub.
     function onDomainMessage(uint64 domainChainId, address from, bytes calldata data) external {
-        require(msg.sender == address(HUB), "L1Bridge: not hub");
-        require(domainChainId == DOMAIN_CHAIN_ID, "L1Bridge: wrong domain");
+        if (msg.sender != address(HUB)) revert NotHub();
+        if (domainChainId != DOMAIN_CHAIN_ID) revert WrongDomain();
         address counterpart = domainBridge;
-        require(counterpart != address(0), "L1Bridge: counterpart not registered");
-        require(from == counterpart, "L1Bridge: not from domain bridge");
+        if (counterpart == address(0)) revert CounterpartNotRegistered();
+        if (from != counterpart) revert NotDomainBridge();
 
         (address recipient, address token, uint256 amount) = MessageLib.decodeTransfer(data);
         IERC20(token).safeTransfer(recipient, amount);

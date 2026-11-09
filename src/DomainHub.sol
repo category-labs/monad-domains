@@ -9,6 +9,36 @@ import {IDomainHub, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 
 contract DomainHub is IDomainHub, EIP712 {
+    error L1ChainIdNotAllowed();
+    error DomainAlreadyRegistered();
+    error ZeroQuorum();
+    error QuorumExceedsValidators();
+    error ZeroFeeRecipient();
+    error ZeroCheckpointInterval();
+    error InvalidViewingKey();
+    error ZeroValidator();
+    error DuplicateValidator();
+    error DomainNotRegistered();
+    error StaleBlockNumber();
+    error BlockNumberNotInPast();
+    error BlockNumberOffSchedule();
+    error NotValidator();
+    error AlreadyVoted();
+    error SameDomain();
+    error SourceNotRegistered();
+    error ZeroTarget();
+    error MessageAlreadyRelayed();
+    error UnknownAnchor();
+    error InvalidProof();
+    error DestinationNotRegistered();
+    error UnexpectedL1CallbackFee();
+    error RetryOnDestinationDomain();
+    error NotFailedMessage();
+    error RetryFailed();
+    error DomainBlockGasLimitExceeded();
+    error FeeTransferFailed();
+    error DeliveryFeeTooLow();
+
     /// @notice EIP-712 type of the digest a validator signs to approve a state transition.
     bytes32 public constant STATE_TRANSITION_TYPEHASH = keccak256(
         "StateTransition(uint64 domainChainId,uint256 stateNonce,uint64 domainBlockNumber,bytes32 newStateRoot,bytes32 domainAnchor)"
@@ -87,17 +117,16 @@ contract DomainHub is IDomainHub, EIP712 {
         bytes calldata viewingKey,
         uint64 checkpointInterval
     ) external {
-        require(domainChainId != block.chainid, "DomainHub: cannot register L1 chain id");
+        if (domainChainId == block.chainid) revert L1ChainIdNotAllowed();
         DomainConfig storage config = _configs[domainChainId];
-        require(!config.registered, "DomainHub: already registered");
-        require(quorum > 0, "DomainHub: zero quorum");
-        require(quorum <= validators.length, "DomainHub: quorum exceeds validators");
-        require(feeRecipient != address(0), "DomainHub: zero fee recipient");
-        require(checkpointInterval > 0, "DomainHub: zero checkpoint interval");
-        require(
-            viewingKey.length == 0 || (viewingKey.length == VIEWING_KEY_LENGTH && viewingKey[0] == 0x04),
-            "DomainHub: invalid viewing key"
-        );
+        if (config.registered) revert DomainAlreadyRegistered();
+        if (quorum == 0) revert ZeroQuorum();
+        if (quorum > validators.length) revert QuorumExceedsValidators();
+        if (feeRecipient == address(0)) revert ZeroFeeRecipient();
+        if (checkpointInterval == 0) revert ZeroCheckpointInterval();
+        if (viewingKey.length != 0 && (viewingKey.length != VIEWING_KEY_LENGTH || viewingKey[0] != 0x04)) {
+            revert InvalidViewingKey();
+        }
 
         config.registered = true;
         config.checkpointInterval = checkpointInterval;
@@ -106,8 +135,8 @@ contract DomainHub is IDomainHub, EIP712 {
         config.viewingKey = viewingKey;
         for (uint256 i = 0; i < validators.length; i++) {
             address validator = validators[i];
-            require(validator != address(0), "DomainHub: zero validator");
-            require(!config.isValidator[validator], "DomainHub: duplicate validator");
+            if (validator == address(0)) revert ZeroValidator();
+            if (config.isValidator[validator]) revert DuplicateValidator();
             config.isValidator[validator] = true;
             config.validators.push(validator);
         }
@@ -172,15 +201,15 @@ contract DomainHub is IDomainHub, EIP712 {
         bytes calldata signature
     ) external {
         DomainConfig storage config = _configs[domainChainId];
-        require(config.registered, "DomainHub: domain not registered");
-        require(domainBlockNumber > domainBlockNumbers[domainChainId], "DomainHub: stale block number");
-        require(uint256(domainBlockNumber) < block.number, "DomainHub: block number not in the past");
-        require(domainBlockNumber % config.checkpointInterval == 0, "DomainHub: block number off schedule");
+        if (!config.registered) revert DomainNotRegistered();
+        if (domainBlockNumber <= domainBlockNumbers[domainChainId]) revert StaleBlockNumber();
+        if (uint256(domainBlockNumber) >= block.number) revert BlockNumberNotInPast();
+        if (domainBlockNumber % config.checkpointInterval != 0) revert BlockNumberOffSchedule();
 
         bytes32 digest = stateTransitionDigest(domainChainId, domainBlockNumber, newStateRoot, domainAnchor);
         address signer = ECDSA.recover(digest, signature);
-        require(config.isValidator[signer], "DomainHub: not a validator");
-        require(!hasVotedFor[digest][signer], "DomainHub: already voted");
+        if (!config.isValidator[signer]) revert NotValidator();
+        if (hasVotedFor[digest][signer]) revert AlreadyVoted();
 
         hasVotedFor[digest][signer] = true;
         uint256 votes = ++stateVotes[digest];
@@ -206,17 +235,17 @@ contract DomainHub is IDomainHub, EIP712 {
         payable
         returns (bool success)
     {
-        require(message.sourceChainId != message.destinationChainId, "DomainHub: same domain");
-        require(_configs[message.sourceChainId].registered, "DomainHub: source not registered");
-        require(message.to != address(0), "DomainHub: zero target");
+        if (message.sourceChainId == message.destinationChainId) revert SameDomain();
+        if (!_configs[message.sourceChainId].registered) revert SourceNotRegistered();
+        if (message.to == address(0)) revert ZeroTarget();
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
-        require(!relayedDomainMessages[message.sourceChainId][messageHash], "DomainHub: message already relayed");
-        require(domainAnchors[message.sourceChainId][anchor], "DomainHub: unknown anchor");
-        require(MerkleProof.verifyCalldata(proof, anchor, messageHash), "DomainHub: invalid proof");
+        if (relayedDomainMessages[message.sourceChainId][messageHash]) revert MessageAlreadyRelayed();
+        if (!domainAnchors[message.sourceChainId][anchor]) revert UnknownAnchor();
+        if (!MerkleProof.verifyCalldata(proof, anchor, messageHash)) revert InvalidProof();
         relayedDomainMessages[message.sourceChainId][messageHash] = true;
 
         if (message.destinationChainId != block.chainid) {
-            require(_configs[message.destinationChainId].registered, "DomainHub: destination not registered");
+            if (!_configs[message.destinationChainId].registered) revert DestinationNotRegistered();
             uint256 deliveryNonce = _sendL1Message(
                 message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
             );
@@ -224,7 +253,7 @@ contract DomainHub is IDomainHub, EIP712 {
             return true; // Queued atomically; destination execution happens asynchronously.
         }
 
-        require(msg.value == 0, "DomainHub: fee on L1 callback");
+        if (msg.value != 0) revert UnexpectedL1CallbackFee();
         (success,) = message.to
             .call(
                 abi.encodeCall(
@@ -238,9 +267,9 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     function retryDomainMessage(MessageLib.DomainMessage calldata message) external {
-        require(message.destinationChainId == block.chainid, "DomainHub: retry on destination domain");
+        if (message.destinationChainId != block.chainid) revert RetryOnDestinationDomain();
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
-        require(failedDomainMessages[message.sourceChainId][messageHash], "DomainHub: not a failed message");
+        if (!failedDomainMessages[message.sourceChainId][messageHash]) revert NotFailedMessage();
         delete failedDomainMessages[message.sourceChainId][messageHash];
         (bool success,) = message.to
             .call(
@@ -248,7 +277,7 @@ contract DomainHub is IDomainHub, EIP712 {
                     IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
                 )
             );
-        require(success, "DomainHub: retry failed");
+        if (!success) revert RetryFailed();
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, true
         );
@@ -259,7 +288,7 @@ contract DomainHub is IDomainHub, EIP712 {
     // ---------------------------------------------------------------------
 
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable {
-        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
+        if (!_configs[domainChainId].registered) revert DomainNotRegistered();
         _buyGas(domainChainId, msg.value);
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
     }
@@ -270,12 +299,12 @@ contract DomainHub is IDomainHub, EIP712 {
         BlockGas storage budget = blockGas[domainChainId];
         uint256 sold = budget.blockNumber == block.number ? budget.gasSold : 0;
         sold += fee / DOMAIN_GAS_PRICE;
-        require(sold <= DOMAIN_BLOCK_GAS_LIMIT, "DomainHub: domain block gas limit exceeded");
+        if (sold > DOMAIN_BLOCK_GAS_LIMIT) revert DomainBlockGasLimitExceeded();
         budget.blockNumber = uint64(block.number);
         budget.gasSold = uint192(sold);
         if (fee == 0) return;
         (bool success,) = _configs[domainChainId].feeRecipient.call{value: fee}("");
-        require(success, "DomainHub: fee transfer failed");
+        if (!success) revert FeeTransferFailed();
     }
 
     // ---------------------------------------------------------------------
@@ -287,7 +316,7 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable {
-        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
+        if (!_configs[domainChainId].registered) revert DomainNotRegistered();
         _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data, msg.value);
     }
 
@@ -301,7 +330,7 @@ contract DomainHub is IDomainHub, EIP712 {
         bytes memory data,
         uint256 fee
     ) internal returns (uint256 nonce) {
-        require(fee >= minDeliveryFee(data.length), "DomainHub: delivery fee too low");
+        if (fee < minDeliveryFee(data.length)) revert DeliveryFeeTooLow();
         _buyGas(domainChainId, fee);
         nonce = l1MessageCounts[domainChainId]++;
         bytes32 messageHash = MessageLib.hashMessage(MessageLib.Message(sourceChainId, from, to, data, nonce));
@@ -309,8 +338,8 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable {
-        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
-        require(msg.value >= minDeliveryFee(ciphertext.length), "DomainHub: delivery fee too low");
+        if (!_configs[domainChainId].registered) revert DomainNotRegistered();
+        if (msg.value < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow();
         _buyGas(domainChainId, msg.value);
         uint256 nonce = l1MessageCounts[domainChainId]++;
         emit EncryptedL1MessageRecorded(
