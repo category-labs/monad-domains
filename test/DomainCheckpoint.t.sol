@@ -49,20 +49,20 @@ contract DomainCheckpointTest is DomainTestBase {
 
     function test_rejectsUnregisteredDomain() public {
         bytes memory sig = _signTransition(hub, 9999, 10, bytes32(0), bytes32(0), K1);
-        vm.expectRevert("DomainHub: domain not registered");
+        vm.expectRevert(DomainHub.DomainNotRegistered.selector);
         hub.submitStateSignature(9999, 10, bytes32(0), bytes32(0), sig);
     }
 
     function test_rejectsNonValidator() public {
         bytes memory sig = _sig(10, bytes32(0), bytes32(0), STRANGER_KEY);
-        vm.expectRevert("DomainHub: not a validator");
+        vm.expectRevert(DomainHub.NotValidator.selector);
         hub.submitStateSignature(CHAIN_ID, 10, bytes32(0), bytes32(0), sig);
     }
 
     function test_rejectsDoubleVote() public {
         _submit(10, bytes32(0), bytes32(0), K1);
         bytes memory sig = _sig(10, bytes32(0), bytes32(0), K1);
-        vm.expectRevert("DomainHub: already voted");
+        vm.expectRevert(DomainHub.AlreadyVoted.selector);
         hub.submitStateSignature(CHAIN_ID, 10, bytes32(0), bytes32(0), sig);
     }
 
@@ -105,7 +105,7 @@ contract DomainCheckpointTest is DomainTestBase {
         assertEq(hub.stateNonces(CHAIN_ID), 1);
 
         // Under the new nonce the old signature recovers to a non-validator.
-        vm.expectRevert("DomainHub: not a validator");
+        vm.expectRevert(DomainHub.NotValidator.selector);
         hub.submitStateSignature(CHAIN_ID, 20, bytes32(0), bytes32(0), staleSig);
     }
 
@@ -115,14 +115,14 @@ contract DomainCheckpointTest is DomainTestBase {
 
     function test_rejectsOffScheduleBlockNumber() public {
         bytes memory sig = _sig(15, bytes32(0), bytes32(0), K1);
-        vm.expectRevert("DomainHub: block number off schedule");
+        vm.expectRevert(DomainHub.BlockNumberOffSchedule.selector);
         hub.submitStateSignature(CHAIN_ID, 15, bytes32(0), bytes32(0), sig);
     }
 
     function test_rejectsBlockNumberNotInThePast() public {
         vm.roll(20);
         bytes memory sig = _sig(20, bytes32(0), bytes32(0), K1);
-        vm.expectRevert("DomainHub: block number not in the past");
+        vm.expectRevert(DomainHub.BlockNumberNotInPast.selector);
         hub.submitStateSignature(CHAIN_ID, 20, bytes32(0), bytes32(0), sig);
 
         // One L1 block later the height is in the past; finality is the validators' concern.
@@ -144,10 +144,10 @@ contract DomainCheckpointTest is DomainTestBase {
 
         // At or below the committed height is stale.
         bytes memory sig = _sig(50, bytes32(0), bytes32(0), K1);
-        vm.expectRevert("DomainHub: stale block number");
+        vm.expectRevert(DomainHub.StaleBlockNumber.selector);
         hub.submitStateSignature(CHAIN_ID, 50, bytes32(0), bytes32(0), sig);
         sig = _sig(40, bytes32(0), bytes32(0), K1);
-        vm.expectRevert("DomainHub: stale block number");
+        vm.expectRevert(DomainHub.StaleBlockNumber.selector);
         hub.submitStateSignature(CHAIN_ID, 40, bytes32(0), bytes32(0), sig);
     }
 

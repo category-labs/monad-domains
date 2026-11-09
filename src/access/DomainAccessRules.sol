@@ -7,6 +7,10 @@ import {IDomainAccessControl, IDomainAccessPolicy} from "../interfaces/IDomainAc
 /// target's policy owner on `SPOKE`. A selector without a rule is open. Approved readers of a
 /// (target, selector) pass every rule.
 contract DomainAccessRules is IDomainAccessPolicy {
+    error NotPolicyOwner();
+    error ZeroSpoke();
+    error NoSubjectArguments();
+
     enum AccessMode {
         // Every caller is allowed.
         Open,
@@ -36,12 +40,12 @@ contract DomainAccessRules is IDomainAccessPolicy {
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = SPOKE.policyOwners(target);
-        require(policyOwner != address(0) && msg.sender == policyOwner, "DomainAccessRules: not policy owner");
+        if (policyOwner == address(0) || msg.sender != policyOwner) revert NotPolicyOwner();
         _;
     }
 
     constructor(IDomainAccessControl spoke) {
-        require(address(spoke) != address(0), "DomainAccessRules: zero spoke");
+        if (address(spoke) == address(0)) revert ZeroSpoke();
         SPOKE = spoke;
     }
 
@@ -49,7 +53,7 @@ contract DomainAccessRules is IDomainAccessPolicy {
         external
         onlyPolicyOwner(target)
     {
-        require(mode != AccessMode.SubjectMatch || subjectArguments != 0, "DomainAccessRules: no subject arguments");
+        if (mode == AccessMode.SubjectMatch && subjectArguments == 0) revert NoSubjectArguments();
         uint16 subjects = mode == AccessMode.SubjectMatch ? subjectArguments : 0;
         accessControl[target][selector] = AccessRule(mode, subjects);
         emit AccessControlSet(target, selector, mode, subjects);

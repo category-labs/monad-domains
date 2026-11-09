@@ -62,13 +62,13 @@ contract DomainBridgeTest is DomainTestBase {
     }
 
     function test_onDomainMessage_onlySpoke() public {
-        vm.expectRevert("DomainBridge: not spoke");
+        vm.expectRevert(DomainBridge.NotSpoke.selector);
         bridge.onDomainMessage(uint64(block.chainid), L1_BRIDGE, MessageLib.encodeTransfer(bob, L1_TOKEN, 100 ether));
     }
 
     function test_onDomainMessage_rejectsForgedFrom() public {
         vm.prank(address(spoke));
-        vm.expectRevert("DomainBridge: not from L1 bridge");
+        vm.expectRevert(DomainBridge.NotL1Bridge.selector);
         bridge.onDomainMessage(
             uint64(block.chainid), makeAddr("attacker"), MessageLib.encodeTransfer(bob, L1_TOKEN, 100 ether)
         );
@@ -83,7 +83,7 @@ contract DomainBridgeTest is DomainTestBase {
     }
 
     function test_constructor_rejectsZeroL1Bridge() public {
-        vm.expectRevert("DomainBridge: zero L1 bridge");
+        vm.expectRevert(DomainBridge.ZeroL1Bridge.selector);
         new DomainBridge(spoke, address(0));
     }
 
@@ -127,21 +127,21 @@ contract DomainBridgeTest is DomainTestBase {
 
     function test_bridgeToL1_rejectsUnknownToken() public {
         vm.prank(bob);
-        vm.expectRevert("DomainBridge: unknown token");
+        vm.expectRevert(DomainBridge.UnknownToken.selector);
         bridge.bridgeToL1(bob, makeAddr("neverBridged"), 1 ether);
     }
 
     function test_bridgeToL1_rejectsZeroRecipient() public {
         _depositedToken();
         vm.prank(bob);
-        vm.expectRevert("DomainBridge: zero recipient");
+        vm.expectRevert(DomainBridge.ZeroRecipient.selector);
         bridge.bridgeToL1(address(0), L1_TOKEN, 1 ether);
     }
 
     function test_bridgeToL1_rejectsZeroAmount() public {
         _depositedToken();
         vm.prank(bob);
-        vm.expectRevert("DomainBridge: zero amount");
+        vm.expectRevert(DomainBridge.ZeroAmount.selector);
         bridge.bridgeToL1(bob, L1_TOKEN, 0);
     }
 

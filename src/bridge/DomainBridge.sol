@@ -10,6 +10,14 @@ import {BridgedERC20} from "./BridgedERC20.sol";
 /// are delivered by the protocol: the spoke invokes `onDomainMessage` and the bridge mints
 /// the corresponding bridged token. Exactly-once delivery is the protocol's guarantee.
 contract DomainBridge is IDomainMessageReceiver {
+    error ZeroL1Bridge();
+    error NotSpoke();
+    error NotFromL1();
+    error NotL1Bridge();
+    error ZeroRecipient();
+    error ZeroAmount();
+    error UnknownToken();
+
     IDomainSpoke public immutable SPOKE;
 
     /// @notice Counterpart L1Bridge - the only accepted message sender.
@@ -23,7 +31,7 @@ contract DomainBridge is IDomainMessageReceiver {
     event WithdrawalInitiated(address indexed sender, address recipient, address indexed l1Token, uint256 amount);
 
     constructor(IDomainSpoke spoke, address l1Bridge) {
-        require(l1Bridge != address(0), "DomainBridge: zero L1 bridge");
+        if (l1Bridge == address(0)) revert ZeroL1Bridge();
         SPOKE = spoke;
         L1_BRIDGE = l1Bridge;
     }
@@ -33,9 +41,9 @@ contract DomainBridge is IDomainMessageReceiver {
     /// use. Only the spoke may deliver, and only messages the counterpart L1Bridge sent count -
     /// anyone can send arbitrary payloads through the hub.
     function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
-        require(msg.sender == address(SPOKE), "DomainBridge: not spoke");
-        require(sourceChainId == SPOKE.L1_CHAIN_ID(), "DomainBridge: not from L1");
-        require(from == L1_BRIDGE, "DomainBridge: not from L1 bridge");
+        if (msg.sender != address(SPOKE)) revert NotSpoke();
+        if (sourceChainId != SPOKE.L1_CHAIN_ID()) revert NotFromL1();
+        if (from != L1_BRIDGE) revert NotL1Bridge();
 
         (address recipient, address l1Token, uint256 amount) = MessageLib.decodeTransfer(data);
         BridgedERC20 token = bridgedTokens[l1Token];
@@ -50,10 +58,10 @@ contract DomainBridge is IDomainMessageReceiver {
     /// message to the counterpart L1Bridge, which releases the locked L1 tokens to
     /// `recipient` once the message is proven there.
     function bridgeToL1(address recipient, address l1Token, uint256 amount) external {
-        require(recipient != address(0), "DomainBridge: zero recipient");
-        require(amount > 0, "DomainBridge: zero amount");
+        if (recipient == address(0)) revert ZeroRecipient();
+        if (amount == 0) revert ZeroAmount();
         BridgedERC20 token = bridgedTokens[l1Token];
-        require(address(token) != address(0), "DomainBridge: unknown token");
+        if (address(token) == address(0)) revert UnknownToken();
 
         // Burn before messaging: the withdrawal message must never overstate what was
         // actually destroyed on the domain.
