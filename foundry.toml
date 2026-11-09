@@ -2,6 +2,7 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+network = "monad"
 
 [invariant]
 runs = 64
