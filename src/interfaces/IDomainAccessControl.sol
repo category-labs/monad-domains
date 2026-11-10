@@ -22,6 +22,10 @@ interface IDomainAccessControl is IDomainAccessPolicy {
     /// @notice A zero `policy` opens the contract to every caller.
     event AccessPolicySet(address indexed target, address indexed policy);
     event LogReaderSet(address indexed target, address indexed reader, bool allowed);
+    event PolicyOwnershipTransferStarted(
+        address indexed target, address indexed previousOwner, address indexed newOwner
+    );
+    event PolicyOwnershipTransferred(address indexed target, address indexed previousOwner, address indexed newOwner);
 
     /// @notice Deploy using CREATE and assign a nonzero owner of the new contract's access policy.
     /// @param initCode Creation bytecode including ABI-encoded constructor arguments.
@@ -30,6 +34,20 @@ interface IDomainAccessControl is IDomainAccessPolicy {
 
     /// @notice Who may name each deployed contract's access policy.
     function policyOwners(address target) external view returns (address);
+
+    /// @notice Nominate the next policy owner of `target`, replacing any pending nomination.
+    /// @dev Only the current owner may nominate; its authority continues until acceptance.
+    /// @param target Registered contract whose policy ownership is being transferred.
+    /// @param newOwner Account that must accept the transfer, or zero to cancel it.
+    function transferPolicyOwnership(address target, address newOwner) external;
+
+    /// @notice Accept a pending policy ownership transfer as the nominated owner.
+    /// @dev Clears the nomination and preserves the installed policy, rules and explicit reader grants.
+    /// @param target Registered contract whose pending policy ownership the caller accepts.
+    function acceptPolicyOwnership(address target) external;
+
+    /// @notice Nominated owner of `target`, or zero when no transfer is pending.
+    function pendingPolicyOwners(address target) external view returns (address);
 
     /// @notice Policy-owner-only. Name the contract that decides calls into `target`, or the
     /// zero address to admit every caller. A nonzero policy must have code. Verify a policy
