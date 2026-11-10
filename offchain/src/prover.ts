@@ -147,6 +147,8 @@ export async function fetchEncryptedL1Messages(
     ...range,
   });
 
+  // Each ciphertext is bound to this hub, this domain and the sender the hub recorded.
+  const context = { l1ChainId: BigInt(await client.getChainId()), hub, domainChainId };
   const messages: RecordedMessage[] = [];
   const undecryptable: UndecryptableMessage[] = [];
   for (const log of logs) {
@@ -155,7 +157,7 @@ export async function fetchEncryptedL1Messages(
       throw new Error("prover: incomplete event log");
     }
     try {
-      const { to, data } = await decryptMessage(viewingSecretKey, ciphertext);
+      const { to, data } = await decryptMessage(viewingSecretKey, context, from, ciphertext);
       const message: Message = { sourceChainId, from, to, data, nonce };
       messages.push({
         message,

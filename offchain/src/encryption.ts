@@ -1,9 +1,13 @@
 import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
-import { bytesToHex, getAddress, hexToBytes, type Address, type Hex } from "viem";
+import { bytesToHex, encodePacked, getAddress, hexToBytes, type Address, type Hex } from "viem";
 
 /**
  * HPKE (RFC 9180, Base mode) encryption of domain transactions and L1 -> domain messages to a
  * domain's viewing key. Ciphertext format: `enc[65] || AEAD(0x01 || plaintext)`.
+ *
+ * Every ciphertext is bound to where it is valid, so one copied from L1 calldata opens nowhere
+ * else: the `info` string names the payload type, and the associated data names the L1 chain,
+ * the hub and the domain — plus, for a message, the L1 account that sends it.
  */
 
 const suite = new CipherSuite({
@@ -12,8 +16,9 @@ const suite = new CipherSuite({
   aead: new Aes128Gcm(),
 });
 
-/** Fixed profile identifier; decryption must use the same value. */
-const INFO = new TextEncoder().encode("private-domain-hpke-rfc9180-v1");
+/** Profile identifiers, one per payload type; decryption must use the same value. */
+const TRANSACTION_INFO = new TextEncoder().encode("private-domain-hpke-rfc9180-v1/transaction");
+const MESSAGE_INFO = new TextEncoder().encode("private-domain-hpke-rfc9180-v1/message");
 
 /** Uncompressed P-256 SEC1 point, as RFC 9180 serializes public and encapsulated keys. */
 const PUBLIC_KEY_SIZE = 65;
@@ -40,6 +45,35 @@ export class EncryptionError extends Error {
   }
 }
 
+/** Where a ciphertext is valid: the hub that records it and the domain it is addressed to. */
+export interface EncryptionContext {
+  /** Chain id of the L1 the hub lives on. */
+  l1ChainId: bigint;
+  /** The DomainHub address on the L1. */
+  hub: Address;
+  /** Chain id of the destination domain. */
+  domainChainId: bigint;
+}
+
+/**
+ * The HPKE associated data, which the execution client must rebuild byte for byte. Fixed-width
+ * fields, concatenated with no padding or length prefixes (Solidity `abi.encodePacked`):
+ *
+ *   transaction: l1ChainId (uint64, big-endian) || hub (20 bytes) || domainChainId (uint64, big-endian)
+ *   message:     the same 36 bytes || from (20 bytes)
+ *
+ * `from` is the `msg.sender` of `sendEncryptedL1Message`, which the hub emits. A transaction
+ * binds no sender: whoever pays for `sequenceToDomain` need not be its signer.
+ */
+function associatedData(context: EncryptionContext, from?: Address): Uint8Array {
+  const { l1ChainId, hub, domainChainId } = context;
+  return hexToBytes(
+    from === undefined
+      ? encodePacked(["uint64", "address", "uint64"], [l1ChainId, hub, domainChainId])
+      : encodePacked(["uint64", "address", "uint64", "address"], [l1ChainId, hub, domainChainId, from]),
+  );
+}
+
 /**
  * The domain viewing keypair. Distinct from any signing key: it grants the ability to read
  * sequenced transactions and encrypted messages.
@@ -61,7 +95,12 @@ export async function generateViewingKeyPair(): Promise<ViewingKeyPair> {
 }
 
 /** Encrypts `0x01 || plaintext` to the viewing key and returns `enc[65] || aead_output`. */
-async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array): Promise<Hex> {
+async function encrypt(
+  viewingPublicKey: Hex,
+  info: Uint8Array,
+  aad: Uint8Array,
+  plaintext: Uint8Array,
+): Promise<Hex> {
   const publicKeyBytes = hexToBytes(viewingPublicKey);
   if (publicKeyBytes.length !== PUBLIC_KEY_SIZE || publicKeyBytes[0] !== 0x04) {
     throw new EncryptionError("viewing public key must be a 65-byte uncompressed P-256 point");
@@ -78,7 +117,7 @@ async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array): Promise<He
   framed.set(plaintext, 1);
 
   try {
-    const { enc, ct } = await suite.seal({ recipientPublicKey, info: INFO }, framed);
+    const { enc, ct } = await suite.seal({ recipientPublicKey, info }, framed, aad);
 
     const ciphertext = new Uint8Array(enc.byteLength + ct.byteLength);
     ciphertext.set(new Uint8Array(enc), 0);
@@ -94,7 +133,12 @@ async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array): Promise<He
  * The caller must wipe the returned buffer once done with it. Throws on any failure; the
  * public wrappers collapse every cause into one opaque error.
  */
-async function decrypt(viewingSecretKey: Hex, ciphertext: Hex): Promise<Uint8Array> {
+async function decrypt(
+  viewingSecretKey: Hex,
+  info: Uint8Array,
+  aad: Uint8Array,
+  ciphertext: Hex,
+): Promise<Uint8Array> {
   const secretKeyBytes = hexToBytes(viewingSecretKey);
   const ciphertextBytes = hexToBytes(ciphertext);
 
@@ -112,9 +156,10 @@ async function decrypt(viewingSecretKey: Hex, ciphertext: Hex): Promise<Uint8Arr
       {
         recipientKey,
         enc: ciphertextBytes.subarray(0, PUBLIC_KEY_SIZE),
-        info: INFO,
+        info,
       },
       ciphertextBytes.subarray(PUBLIC_KEY_SIZE),
+      aad,
     ),
   );
 
@@ -133,11 +178,16 @@ async function decrypt(viewingSecretKey: Hex, ciphertext: Hex): Promise<Uint8Arr
  * Encrypts one signed domain transaction to the domain viewing key.
  *
  * @param viewingPublicKey The domain's 65-byte uncompressed P-256 public key.
+ * @param context          The L1 chain, hub and domain the ciphertext will be sequenced to.
  * @param rawTransaction   A signed transaction, as `signTransaction` returns it.
  * @returns The `rlpTx` argument to pass to `sequenceToDomain`: `enc[65] || AEAD(0x01 || rawTransaction)`.
  */
-export async function encryptTransaction(viewingPublicKey: Hex, rawTransaction: Hex): Promise<Hex> {
-  return encrypt(viewingPublicKey, hexToBytes(rawTransaction));
+export async function encryptTransaction(
+  viewingPublicKey: Hex,
+  context: EncryptionContext,
+  rawTransaction: Hex,
+): Promise<Hex> {
+  return encrypt(viewingPublicKey, TRANSACTION_INFO, associatedData(context), hexToBytes(rawTransaction));
 }
 
 /**
@@ -146,11 +196,16 @@ export async function encryptTransaction(viewingPublicKey: Hex, rawTransaction: 
  * Provided for tests and local tooling; in production this runs inside the domain
  * execution client, which is the only holder of the viewing secret key.
  *
- * @throws {EncryptionError} Always `decryption failed`, whatever went wrong.
+ * @throws {EncryptionError} Always `decryption failed`, whatever went wrong — including a
+ *         ciphertext made for another hub, domain or entry point.
  */
-export async function decryptTransaction(viewingSecretKey: Hex, ciphertext: Hex): Promise<Hex> {
+export async function decryptTransaction(
+  viewingSecretKey: Hex,
+  context: EncryptionContext,
+  ciphertext: Hex,
+): Promise<Hex> {
   try {
-    const plaintext = await decrypt(viewingSecretKey, ciphertext);
+    const plaintext = await decrypt(viewingSecretKey, TRANSACTION_INFO, associatedData(context), ciphertext);
     const rawTransaction = bytesToHex(plaintext);
     plaintext.fill(0);
     return rawTransaction;
@@ -166,22 +221,33 @@ export async function decryptTransaction(viewingSecretKey: Hex, ciphertext: Hex)
  * domain target and the payload.
  *
  * @param viewingPublicKey The domain's 65-byte uncompressed P-256 public key.
+ * @param context          The L1 chain, hub and domain the ciphertext will be sent to.
+ * @param from             The L1 account that will call `sendEncryptedL1Message` — a contract's
+ *                         own address if a contract makes the call. Sent from any other
+ *                         account, the ciphertext does not open and the message is dropped.
  * @param to               The domain target the client will deliver to.
  * @param data             The message payload, as `sendL1Message` would carry it.
  * @returns The `ciphertext` argument to pass to `sendEncryptedL1Message`:
  *          `enc[65] || AEAD(0x01 || to[20] || data)`.
  */
-export async function encryptMessage(viewingPublicKey: Hex, to: Address, data: Hex): Promise<Hex> {
+export async function encryptMessage(
+  viewingPublicKey: Hex,
+  context: EncryptionContext,
+  from: Address,
+  to: Address,
+  data: Hex,
+): Promise<Hex> {
   const dataBytes = hexToBytes(data);
   const plaintext = new Uint8Array(ADDRESS_SIZE + dataBytes.length);
   plaintext.set(hexToBytes(getAddress(to)), 0);
   plaintext.set(dataBytes, ADDRESS_SIZE);
-  return encrypt(viewingPublicKey, plaintext);
+  return encrypt(viewingPublicKey, MESSAGE_INFO, associatedData(context, from), plaintext);
 }
 
 /**
  * Authenticates and decrypts one ciphertext produced by {@link encryptMessage}, recovering
- * the `(to, data)` the client packages into the `relayL1Message` system transaction.
+ * the `(to, data)` the client packages into the `relayL1Message` system transaction. `from` is
+ * the sender the hub recorded in `EncryptedL1MessageRecorded`.
  *
  * Provided for tests and local tooling; in production this runs inside the domain
  * execution client.
@@ -191,10 +257,12 @@ export async function encryptMessage(viewingPublicKey: Hex, to: Address, data: H
  */
 export async function decryptMessage(
   viewingSecretKey: Hex,
+  context: EncryptionContext,
+  from: Address,
   ciphertext: Hex,
 ): Promise<{ to: Address; data: Hex }> {
   try {
-    const plaintext = await decrypt(viewingSecretKey, ciphertext);
+    const plaintext = await decrypt(viewingSecretKey, MESSAGE_INFO, associatedData(context, from), ciphertext);
     if (plaintext.length < ADDRESS_SIZE) {
       plaintext.fill(0);
       throw new Error("plaintext too short for a message");

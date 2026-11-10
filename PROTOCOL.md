@@ -71,13 +71,17 @@ Every byte a domain executes reaches the L1 as HPKE ciphertext sealed to the dom
 | KEM | DHKEM(P-256, HKDF-SHA256) |
 | KDF | HKDF-SHA256 |
 | AEAD | AES-128-GCM |
-| info | the ASCII string `private-domain-hpke-rfc9180-v1` |
-| Associated data | empty |
+| info | `private-domain-hpke-rfc9180-v1/transaction` for a sequenced transaction, `private-domain-hpke-rfc9180-v1/message` for an encrypted message (ASCII) |
+| Associated data | `l1ChainId \|\| hub \|\| domainChainId`, followed by `from` for an encrypted message |
 
 There are two types of encryptions:
 
 - A sequenced transaction: the signed transaction bytes, including any EIP-2718 type prefix, with no extra RLP wrapper.
 - An encrypted L1 to domain message: the 20-byte target address followed by the payload.
+
+**Associated data.** Ciphertexts sit in public L1 calldata, where anyone can copy one and hand it to the hub again. The info string and the associated data tie each ciphertext to the hub call it was made for, so a copy fails to open anywhere else. The associated data is the fields concatenated with no padding or length prefixes: each chain ID as 8 bytes big-endian, each address as 20 bytes. `l1ChainId` is the chain the hub is deployed on, `domainChainId` is the argument of the hub call, and `from` is the `msg.sender` of `sendEncryptedL1Message`, which the hub emits. A sequenced transaction binds no sender, because the account that pays to sequence it need not be its signer.
+
+For L1 chain 20143, hub `0x5FbDB2315678afecb367f032d93F642f64180aa3` and domain 85679, the associated data of a transaction is `0x0000000000004eaf5fbdb2315678afecb367f032d93f642f64180aa30000000000014eaf`. A message sent by `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` appends `70997970c51812dc3a010c7d01b50e0d17dc79c8`.
 
 ## Decryption and execution
 
@@ -86,10 +90,10 @@ Decryption happens inside the execution client, once per L1 block, as the first 
 For each L1 block the client, per served domain:
 
 1. Scans the block's L1 transactions for calls to the hub's `sequenceToDomain` addressed to one of its domains.
-2. Opens each payload with the domain's secret key: deserializes the encapsulated key, runs HPKE open with the fixed info string and empty associated data, verifies the AEAD tag, then checks and strips the frame byte. A payload that fails any of these is dropped with a warning. A plaintext payload is dropped too.
+2. Opens each payload with the domain's secret key: deserializes the encapsulated key, runs HPKE open with the transaction info string and the associated data built from its own L1 chain ID, the hub address and the call's domain ID, verifies the AEAD tag, then checks and strips the frame byte. A payload that fails any of these is dropped with a warning. A plaintext payload is dropped too.
 3. RLP-decodes the signed transaction, recovers its sender, and requires the signed chain ID to equal the domain ID, zero value, and a gas limit within the L1 envelope. A transaction whose recovered sender is the reserved system relayer is dropped.
 4. Executes the ordinary L1 block against root state.
-5. Scans the hub's receipts for message events of its domains and opens the encrypted ones the same way, recovering target and payload. An undecryptable message is dropped and its nonce is never delivered.
+5. Scans the hub's receipts for message events of its domains and opens the encrypted ones the same way, with the message info string and the event's `from` appended to the associated data, recovering target and payload. An undecryptable message is dropped and its nonce is never delivered.
 6. Executes the sequenced transactions, then the system delivery transactions, as one gasless domain block against the domain state at the parent L1 height.
 7. Commits the domain state deltas, transactions and receipts alongside the L1 block. If L1 execution fails, the staged domain changes are discarded with it.
 
