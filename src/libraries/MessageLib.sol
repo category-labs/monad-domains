@@ -80,6 +80,17 @@ library MessageLib {
         return abi.encode(recipient, l1Token, amount);
     }
 
+    /// @notice Encodes the payload of the hub's viewing key message to a spoke: the domain a
+    /// key belongs to and the key.
+    function encodeViewingKey(uint64 domainChainId, bytes32 viewingKey) internal pure returns (bytes memory) {
+        return abi.encode(domainChainId, viewingKey);
+    }
+
+    /// @notice Decodes a payload produced by `encodeViewingKey`.
+    function decodeViewingKey(bytes memory data) internal pure returns (uint64 domainChainId, bytes32 viewingKey) {
+        (domainChainId, viewingKey) = abi.decode(data, (uint64, bytes32));
+    }
+
     /// @notice Decodes a token bridge payload produced by `encodeTransfer`.
     function decodeTransfer(bytes calldata data)
         internal
