@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { keccak256, toHex, type Address, type Hex } from "viem";
-import { encodeTransfer, hashDomainMessage, hashMessage, MessageKind, type DomainMessage, type Message } from "../src/message.js";
+import { decodePlaintext, encodePlaintext, encodeTransfer, hashDomainMessage, hashMessage, MessageKind, type DomainMessage, type Message } from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
 import { proveMessage, type RecordedMessage } from "../src/prover.js";
 import { stateTransitionDigest } from "../src/checkpoint.js";
@@ -154,9 +154,18 @@ test("hashDomainMessage matches MessageLib.hashDomainMessage", () => {
     ...plain,
     kind: MessageKind.Encrypted,
     destinationChainId: 8888n,
+    from: toHex(0, { size: 20 }) as Address,
     to: toHex(0, { size: 20 }) as Address,
     salt: toHex(0, { size: 32 }),
     data: "0x04c0ffee",
   };
-  assert.equal(hashDomainMessage(encrypted, VECTOR_CONTEXT), "0x6e7ce29d3db30ea54207c472ce955dc9d98943a6ad508ff5b704e939ad55e963");
+  assert.equal(hashDomainMessage(encrypted, VECTOR_CONTEXT), "0x18d50d21546cb7d9b2b9b6698d478e5ff665f8f5b6e07c32bd3eaff0179ad661");
+});
+
+/** Plaintext vector: a message from 0x1000 to 0x2000 carrying 0x1234. */
+test("encodePlaintext matches MessageLib.encodePlaintext", () => {
+  const plaintext = { from: toHex(0x1000, { size: 20 }) as Address, to: toHex(0x2000, { size: 20 }) as Address, data: "0x1234" as Hex };
+  const encoded = encodePlaintext(plaintext);
+  assert.equal(keccak256(encoded), "0x7a9c9eb956b730e4846f08c2553b355ef73f56830298acb60d4666b3b5f8b0ef");
+  assert.deepEqual(decodePlaintext(encoded), plaintext);
 });

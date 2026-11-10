@@ -1,9 +1,10 @@
 import { Aes128Gcm, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/core";
-import { bytesToHex, encodeAbiParameters, getAddress, hexToBytes, type Address, type Hex } from "viem";
+import { bytesToHex, encodeAbiParameters, hexToBytes, type Hex } from "viem";
 
 /**
- * HPKE (RFC 9180, Base mode) encryption of domain transactions and L1 -> domain messages to a
- * domain's viewing key, with empty `info`. Ciphertext format: `enc[32] || AEAD(0x01 || plaintext)`.
+ * HPKE (RFC 9180, Base mode) encryption of domain transactions to a domain's viewing key, with
+ * empty `info`. Ciphertext format: `enc[32] || AEAD(0x01 || plaintext)`. Domain -> domain
+ * messages are sealed on chain by the encryption precompile.
  */
 
 const suite = new CipherSuite({
@@ -25,9 +26,6 @@ const TAG_SIZE = 16;
  * stripped only after the AEAD tag has verified.
  */
 const FRAME_VERSION = 0x01;
-
-/** An encrypted message plaintext (L1 -> domain or domain -> domain) is `to[20] || data`. */
-const ADDRESS_SIZE = 20;
 
 /**
  * Associated data of a sequenced transaction: `abi.encode("monad-transaction-encryption-v1",
@@ -168,56 +166,6 @@ export async function decryptTransaction(
   } catch {
     // One opaque error keeps parsing, key and authentication failures indistinguishable, so a
     // caller cannot use this function as a decryption oracle.
-    throw new EncryptionError("decryption failed");
-  }
-}
-
-/**
- * Encrypts one message to a domain's viewing key, hiding both the domain target and the
- * payload. The same ciphertext format serves `sendEncryptedL1Message` on the hub and
- * `sendEncryptedDomainMessage` on a source domain's spoke: either way the destination's
- * execution client is the only party that opens it. A message has no associated data.
- *
- * @param viewingPublicKey The destination domain's 32-byte X25519 public key, as published
- *                         by `hub.viewingKeys(domainChainId)`.
- * @param to               The domain target the client will deliver to.
- * @param data             The message payload, as `sendL1Message` would carry it.
- * @returns The `ciphertext` argument: `enc[32] || AEAD(0x01 || to[20] || data)`.
- */
-export async function encryptMessage(viewingPublicKey: Hex, to: Address, data: Hex): Promise<Hex> {
-  const dataBytes = hexToBytes(data);
-  const plaintext = new Uint8Array(ADDRESS_SIZE + dataBytes.length);
-  plaintext.set(hexToBytes(getAddress(to)), 0);
-  plaintext.set(dataBytes, ADDRESS_SIZE);
-  return encrypt(viewingPublicKey, plaintext);
-}
-
-/**
- * Authenticates and decrypts one ciphertext produced by {@link encryptMessage}, recovering
- * the `(to, data)` the client packages into the `relayL1Message` system transaction. The
- * message's origin (source chain and sender) travels in the clear on the hub's event.
- *
- * Provided for tests and local tooling; in production this runs inside the domain
- * execution client.
- *
- * @throws {EncryptionError} Always `decryption failed`, whatever went wrong — including a
- *         plaintext too short to carry a target address.
- */
-export async function decryptMessage(
-  viewingSecretKey: Hex,
-  ciphertext: Hex,
-): Promise<{ to: Address; data: Hex }> {
-  try {
-    const plaintext = await decrypt(viewingSecretKey, ciphertext);
-    if (plaintext.length < ADDRESS_SIZE) {
-      plaintext.fill(0);
-      throw new Error("plaintext too short for a message");
-    }
-    const to = getAddress(bytesToHex(plaintext.subarray(0, ADDRESS_SIZE)));
-    const data = bytesToHex(plaintext.subarray(ADDRESS_SIZE));
-    plaintext.fill(0);
-    return { to, data };
-  } catch {
     throw new EncryptionError("decryption failed");
   }
 }

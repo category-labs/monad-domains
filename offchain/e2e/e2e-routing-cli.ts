@@ -10,6 +10,7 @@ import {
   type Hex,
   type PublicClient,
   zeroAddress,
+  zeroHash,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadArtifact } from "../src/artifacts.js";
@@ -17,10 +18,8 @@ import { fetchL1Chain } from "../src/chain.js";
 import { setupDomain } from "../src/setup.js";
 import { readDomainGasPrice, sequenceTransaction } from "../src/sequence.js";
 import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI } from "../src/checkpoint.js";
-import { encryptMessage } from "../src/encryption.js";
 import {
   decodeDomainMessage,
-  generateMessageSalt,
   isEncryptedDomainMessage,
   MessageKind,
   type DomainMessage,
@@ -38,9 +37,11 @@ import {
 
 /**
  * End-to-end domain -> domain messaging against a fresh single-node devnet serving two
- * domains: set up both on one hub, deploy a receiver on B, record a plaintext message, a
- * ciphertext sealed to the wrong key and one sealed to B's key on spoke A in one batch, attest,
- * relay all three and check the hub's events and B's deliveries (the wrong-key one is skipped).
+ * domains: set up both on one hub, deploy a receiver on B, record two messages for B on spoke A
+ * in one batch, attest, relay both and check that the hub's events carry only ciphertext and
+ * that B delivers both to the receiver with alice as the sender.
+ *
+ * Needs a client that provides the encryption precompile and opens forwarded ciphertexts.
  *
  * Env: L1_RPC_URL (default http://localhost:8080), DOMAIN_A_CHAIN_ID (85679),
  * DOMAIN_B_CHAIN_ID (151215), VIEWING_KEY_A / VIEWING_KEY_B (required: the node's keys),
@@ -63,9 +64,8 @@ const VALIDATOR_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603
 const ALICE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" as Hex; // acct 2
 const DOMAIN_ACCESS_KEY = (process.env.DOMAIN_ACCESS_KEY ?? ADMIN_KEY) as Hex;
 
-const PAYLOAD_PLAIN = "0x01" as Hex;
-const PAYLOAD_UNDECRYPTABLE = "0x02" as Hex;
-const PAYLOAD_SECRET = "0x5ec2e7" as Hex;
+const PAYLOAD_FIRST = "0x01" as Hex;
+const PAYLOAD_SECOND = "0x5ec2e7" as Hex;
 // Gas each routed message's delivery on B is paid for.
 const DELIVERY_GAS = 500_000n;
 
@@ -205,37 +205,22 @@ async function main() {
   console.log(`  receiver ${receiver} on domain B`);
 
   // -------------------------------------------------------------------------
-  step("3. alice records three messages for B on spoke A");
+  step("3. alice records two messages for B on spoke A, sealed by A's encryption precompile");
   // -------------------------------------------------------------------------
-  // A sender reads the destination's viewing key from the hub, never from the destination.
+  // The hub publishes B's key; the precompile seals to it.
   const publishedKeyB = (await l1.readContract({ address: hub, abi: hubArt.abi, functionName: "viewingKeys", args: [DOMAIN_B] })) as Hex;
   if (publishedKeyB.toLowerCase() !== VIEWING_KEY_B.toLowerCase()) throw new Error(`hub publishes ${publishedKeyB} for B, expected VIEWING_KEY_B`);
-  const undecryptableCiphertext = await encryptMessage(VIEWING_KEY_A, receiver, PAYLOAD_UNDECRYPTABLE);
-  const secretCiphertext = await encryptMessage(publishedKeyB, receiver, PAYLOAD_SECRET);
 
-  const sends: { label: string; data: Hex; plaintext: MessagePlaintext; ciphertext?: Hex }[] = [
-    {
-      label: "sendDomainMessage(B, receiver, plain)",
-      data: encodeFunctionData({ abi: spokeArt.abi, functionName: "sendDomainMessage", args: [DOMAIN_B, receiver, PAYLOAD_PLAIN, generateMessageSalt()] }),
-      plaintext: { to: receiver, data: PAYLOAD_PLAIN },
-    },
-    {
-      label: "sendEncryptedDomainMessage(B, sealed to A's key: undecryptable for B)",
-      data: encodeFunctionData({ abi: spokeArt.abi, functionName: "sendEncryptedDomainMessage", args: [DOMAIN_B, undecryptableCiphertext] }),
-      plaintext: { to: receiver, data: PAYLOAD_UNDECRYPTABLE },
-      ciphertext: undecryptableCiphertext,
-    },
-    {
-      label: "sendEncryptedDomainMessage(B, sealed to B's key)",
-      data: encodeFunctionData({ abi: spokeArt.abi, functionName: "sendEncryptedDomainMessage", args: [DOMAIN_B, secretCiphertext] }),
-      plaintext: { to: receiver, data: PAYLOAD_SECRET },
-      ciphertext: secretCiphertext,
-    },
+  const sends: { label: string; plaintext: MessagePlaintext }[] = [
+    { label: "sendDomainMessage(B, receiver, 0x01)", plaintext: { from: alice.address, to: receiver, data: PAYLOAD_FIRST } },
+    { label: "sendDomainMessage(B, receiver, 0x5ec2e7)", plaintext: { from: alice.address, to: receiver, data: PAYLOAD_SECOND } },
   ];
-  const recorded: { message: DomainMessage; messageId: Hex; plaintext: MessagePlaintext; ciphertext?: Hex; blockNumber: bigint }[] = [];
+  const recorded: { message: DomainMessage; messageId: Hex; plaintext: MessagePlaintext; blockNumber: bigint }[] = [];
   for (const send of sends) {
     const seq = await sequenceTransaction({
-      l1RpcUrl: L1_RPC_URL, hub, domainChainId: DOMAIN_A, senderKey: ALICE_KEY, to: spokeA, data: send.data, gas: 300_000n,
+      l1RpcUrl: L1_RPC_URL, hub, domainChainId: DOMAIN_A, senderKey: ALICE_KEY, to: spokeA,
+      data: encodeFunctionData({ abi: spokeArt.abi, functionName: "sendDomainMessage", args: [DOMAIN_B, send.plaintext.to, send.plaintext.data, zeroHash] }), // a domain destination takes no salt
+      gas: 500_000n,
       nonce: await domainA.getTransactionCount({ address: alice.address }),
     });
     const receipt = await waitForDomainTx(domainA, seq.domainTxHash, send.label);
@@ -243,17 +228,13 @@ async function main() {
     const args = log?.args as { messageId?: Hex; message?: Hex } | undefined;
     if (!args?.messageId || !args.message) throw new Error(`${send.label}: no DomainMessageRecorded log in the domain receipt`);
     const message = decodeDomainMessage(args.message);
-    if (message.from.toLowerCase() !== alice.address.toLowerCase() || message.sourceChainId !== DOMAIN_A || message.destinationChainId !== DOMAIN_B) {
-      throw new Error(`${send.label}: unexpected envelope origin/destination`);
+    if (message.sourceChainId !== DOMAIN_A || message.destinationChainId !== DOMAIN_B) throw new Error(`${send.label}: unexpected envelope origin/destination`);
+    if (!isEncryptedDomainMessage(message) || message.from !== zeroAddress || message.to !== zeroAddress) {
+      throw new Error(`${send.label}: expected an Encrypted envelope naming nobody, got kind ${MessageKind[message.kind]} from ${message.from} to ${message.to}`);
     }
-    if (send.ciphertext) {
-      if (!isEncryptedDomainMessage(message) || message.to !== zeroAddress) throw new Error(`${send.label}: expected an Encrypted envelope with no target, got kind ${message.kind} to ${message.to}`);
-      if (message.data.toLowerCase() !== send.ciphertext.toLowerCase()) throw new Error(`${send.label}: envelope data is not the ciphertext`);
-    } else if (message.kind !== MessageKind.Plain || message.to.toLowerCase() !== receiver.toLowerCase() || message.data !== PAYLOAD_PLAIN) {
-      throw new Error(`${send.label}: plaintext envelope mismatch`);
-    }
-    recorded.push({ message, messageId: args.messageId, plaintext: send.plaintext, ciphertext: send.ciphertext, blockNumber: receipt.blockNumber });
-    console.log(`  recorded nonce ${message.sourceNonce} (kind ${MessageKind[message.kind]}, to ${message.to}, ${(message.data.length - 2) / 2} data bytes)`);
+    if (message.data === "0x") throw new Error(`${send.label}: envelope carries no ciphertext`);
+    recorded.push({ message, messageId: args.messageId, plaintext: send.plaintext, blockNumber: receipt.blockNumber });
+    console.log(`  recorded nonce ${message.sourceNonce} (kind ${MessageKind[message.kind]}, ${(message.data.length - 2) / 2}-byte ciphertext, no sender or target)`);
   }
 
   // -------------------------------------------------------------------------
@@ -272,7 +253,7 @@ async function main() {
   console.log(`  checkpoint ${checkpointHeight}: anchor ${checkpoint.anchor} (${attestation.submitted[0]})`);
 
   // -------------------------------------------------------------------------
-  step("5. relay all three through the hub: plaintext vs encrypted transport events");
+  step("5. relay both through the hub: ciphertext-only transport events");
   // -------------------------------------------------------------------------
   const located = await retry(
     "attested batch",
@@ -299,21 +280,16 @@ async function main() {
     const routedArgs = routed[0]?.args as { destinationChainId?: bigint; deliveryNonce?: bigint } | undefined;
     if (routed.length !== 1 || routedArgs?.destinationChainId !== DOMAIN_B || routedArgs.deliveryNonce === undefined) throw new Error("expected one DomainMessageRouted to B");
     deliveryNonces.push(routedArgs.deliveryNonce);
-    if (entry.ciphertext) {
-      if (plain.length !== 0 || sealed.length !== 1) throw new Error(`encrypted route emitted ${plain.length} plaintext and ${sealed.length} encrypted events`);
-      const args = sealed[0]!.args as { domainChainId: bigint; sourceChainId: bigint; from: Address; ciphertext: Hex; nonce: bigint };
-      if (args.domainChainId !== DOMAIN_B || args.sourceChainId !== DOMAIN_A || args.from.toLowerCase() !== alice.address.toLowerCase()) {
-        throw new Error("EncryptedL1MessageRecorded carries the wrong origin");
-      }
-      if (args.ciphertext.toLowerCase() !== entry.ciphertext.toLowerCase() || args.nonce !== routedArgs.deliveryNonce) throw new Error("EncryptedL1MessageRecorded payload mismatch");
-      console.log(`  delivery nonce ${args.nonce}: EncryptedL1MessageRecorded(B, A, alice, ${(args.ciphertext.length - 2) / 2}-byte ciphertext)`);
-    } else {
-      if (plain.length !== 1 || sealed.length !== 0) throw new Error(`plaintext route emitted ${plain.length} plaintext and ${sealed.length} encrypted events`);
-      console.log(`  delivery nonce ${routedArgs.deliveryNonce}: L1MessageRecorded(B, A, alice, receiver, plain)`);
+    if (plain.length !== 0 || sealed.length !== 1) throw new Error(`route emitted ${plain.length} plaintext and ${sealed.length} encrypted events`);
+    const args = sealed[0]!.args as { domainChainId: bigint; sourceChainId: bigint; sourceNonce: bigint; ciphertext: Hex; nonce: bigint };
+    if (args.domainChainId !== DOMAIN_B || args.sourceChainId !== DOMAIN_A || args.sourceNonce !== entry.message.sourceNonce) {
+      throw new Error("EncryptedL1MessageRecorded carries the wrong origin");
     }
+    if (args.ciphertext.toLowerCase() !== entry.message.data.toLowerCase() || args.nonce !== routedArgs.deliveryNonce) throw new Error("EncryptedL1MessageRecorded payload mismatch");
+    console.log(`  delivery nonce ${args.nonce}: EncryptedL1MessageRecorded(B, A, source nonce ${args.sourceNonce}, ${(args.ciphertext.length - 2) / 2}-byte ciphertext)`);
   }
 
-  // What an L1 observer learns about B's inbox: one plaintext target/payload, two ciphertexts.
+  // L1 view of B's inbox: two ciphertexts from domain A.
   // eth_getLogs can trail the receipt path by a few blocks, so poll until the last relay shows.
   const inbox = await retry(
     "hub events for B's inbox",
@@ -325,31 +301,31 @@ async function main() {
     },
     (view) => view.plaintext + view.encrypted >= recorded.length,
   );
-  if (inbox.plaintext !== 1 || inbox.encrypted !== 2) throw new Error(`L1 shows ${inbox.plaintext} plaintext and ${inbox.encrypted} encrypted deliveries for B`);
-  console.log(`  L1 view of B's inbox: ${inbox.plaintext} plaintext envelope, ${inbox.encrypted} ciphertexts (origin A / alice in the clear)`);
+  if (inbox.plaintext !== 0 || inbox.encrypted !== 2) throw new Error(`L1 shows ${inbox.plaintext} plaintext and ${inbox.encrypted} encrypted deliveries for B`);
+  console.log(`  L1 view of B's inbox: ${inbox.encrypted} ciphertexts, no plaintext envelope (only the source domain in the clear)`);
 
   // -------------------------------------------------------------------------
-  step("6. B's client delivers the plaintext and the properly sealed message, skips the other");
+  step("6. B's client opens both ciphertexts and delivers them to the receiver");
   // -------------------------------------------------------------------------
   const status = (index: number) =>
     routedMessageDeliveryStatus(domainB, recorded[index]!.message, spokeB, deliveryNonces[index]!, recorded[index]!.plaintext);
-  const secretStatus = await retry("delivery of the sealed message on B", () => status(2), (s) => s !== "pending", 120_000);
-  if (secretStatus !== "delivered") throw new Error(`sealed message ${secretStatus}`);
-  const plainStatus = await retry("delivery of the plaintext message on B", () => status(0), (s) => s !== "pending", 60_000);
-  if (plainStatus !== "delivered") throw new Error(`plaintext message ${plainStatus}`);
-  const undecryptableStatus = await status(1);
-  if (undecryptableStatus !== "pending") throw new Error(`the undecryptable message was ${undecryptableStatus}; the client must never deliver it`);
+  for (const index of [0, 1]) {
+    const result = await retry(`delivery of message ${index} on B`, () => status(index), (s) => s !== "pending", 120_000);
+    if (result !== "delivered") throw new Error(`message ${index} ${result}`);
+  }
   const nextNonce = (await domainB.readContract({ address: spokeB, abi: spokeArt.abi, functionName: "nextL1Nonce" })) as bigint;
-  if (nextNonce !== deliveryNonces[2]! + 1n) throw new Error(`spoke B nextL1Nonce is ${nextNonce}, expected ${deliveryNonces[2]! + 1n}`);
-  console.log(`  delivered nonces ${deliveryNonces[0]} and ${deliveryNonces[2]}; nonce ${deliveryNonces[1]} left as a gap (nextL1Nonce ${nextNonce})`);
+  if (nextNonce !== deliveryNonces[1]! + 1n) throw new Error(`spoke B nextL1Nonce is ${nextNonce}, expected ${deliveryNonces[1]! + 1n}`);
+  console.log(`  delivered nonces ${deliveryNonces[0]} and ${deliveryNonces[1]} (nextL1Nonce ${nextNonce})`);
 
   const read = (fn: string) => domainB.readContract({ address: receiver, abi: receiverArt.abi, functionName: fn });
   const [calls, source, sender, payload] = await Promise.all([read("calls"), read("source"), read("sender"), read("payload")]);
   if (calls !== 2n) throw new Error(`receiver saw ${calls} deliveries, expected 2`);
-  if (BigInt(source as bigint) !== DOMAIN_A || (sender as Address).toLowerCase() !== alice.address.toLowerCase()) throw new Error("receiver recorded the wrong origin");
-  if ((payload as Hex).toLowerCase() !== PAYLOAD_SECRET) throw new Error(`receiver's last payload is ${payload}, expected ${PAYLOAD_SECRET}`);
+  if (BigInt(source as bigint) !== DOMAIN_A || (sender as Address).toLowerCase() !== alice.address.toLowerCase()) {
+    throw new Error("receiver recorded the wrong origin: the sender must come out of the plaintext spoke A sealed");
+  }
+  if ((payload as Hex).toLowerCase() !== PAYLOAD_SECOND) throw new Error(`receiver's last payload is ${payload}, expected ${PAYLOAD_SECOND}`);
   console.log(`  receiver: ${calls} calls, last from domain ${source} / ${sender} with payload ${payload} (opened by B's client only)`);
-  console.log("\n✅ domain -> domain messaging complete: plaintext and encrypted routes delivered, undecryptable one skipped");
+  console.log("\n✅ domain -> domain messaging complete: both sealed routes delivered with the authenticated sender");
 }
 
 main().catch((error) => {

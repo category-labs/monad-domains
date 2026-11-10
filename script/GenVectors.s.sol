@@ -79,10 +79,15 @@ contract GenVectors is Script {
         console.logBytes32(MessageLib.hashDomainMessage(message, VECTOR_CHAIN_ID, address(hub)));
         message.kind = MessageLib.MessageKind.Encrypted;
         message.destinationChainId = 8888;
+        message.from = address(0);
         message.to = address(0);
         message.salt = bytes32(0);
         message.data = hex"04c0ffee";
         console.log("hashDomainMessage (encrypted)");
         console.logBytes32(MessageLib.hashDomainMessage(message, VECTOR_CHAIN_ID, address(hub)));
+
+        // Plaintext of an encrypted envelope.
+        console.log("keccak256(encodePlaintext(0x1000, 0x2000, 0x1234))");
+        console.logBytes32(keccak256(MessageLib.encodePlaintext(address(0x1000), address(0x2000), hex"1234")));
     }
 }

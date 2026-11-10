@@ -1,8 +1,8 @@
 import { parseAbiItem, type Address, type Hex, type PublicClient } from "viem";
 import { batchRoot, domainMessageCountAt, fetchDomainMessageIds } from "./checkpoint.js";
-import { decryptMessage } from "./encryption.js";
 import {
   decodeDomainMessage,
+  decodePlaintext,
   domainDeliveryEnvelope,
   hashDomainMessage,
   hashMessage,
@@ -18,7 +18,7 @@ export const L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
 );
 
 export const ENCRYPTED_L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
-  "event EncryptedL1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, bytes ciphertext, uint256 nonce, uint256 fee)",
+  "event EncryptedL1MessageRecorded(uint64 indexed domainChainId, uint64 indexed sourceChainId, uint256 sourceNonce, bytes ciphertext, uint256 nonce, uint256 fee)",
 );
 
 export const DOMAIN_MESSAGE_RECORDED_EVENT = parseAbiItem(
@@ -113,36 +113,48 @@ export async function fetchL1Messages(
   return sortByPosition(logs.map(toRecorded));
 }
 
-/** An encrypted message event whose ciphertext the viewing key could not open. */
+/** A forwarded message event whose ciphertext could not be opened. */
 export interface UndecryptableMessage {
   nonce: bigint;
   blockNumber: bigint;
   logIndex: number;
 }
 
+/** One forwarded encrypted domain message, as the hub's event carries it. */
+export interface SealedMessage {
+  sourceChainId: bigint;
+  destinationChainId: bigint;
+  sourceNonce: bigint;
+  /** `encodePlaintext(from, to, data)` sealed by the source spoke. */
+  ciphertext: Hex;
+}
+
 /**
- * Fetches all encrypted L1 -> domain messages recorded for `domainChainId` in the
- * block range and decrypts them with the domain viewing secret key, in recording order.
- * The event's `sourceChainId`/`from` are the authenticated origin: the L1 caller of
- * `sendEncryptedL1Message`, or the source domain and sender of a forwarded
- * `sendEncryptedDomainMessage`; the decrypted envelope carries them through.
- * A decrypted message is returned in the exact shape the plaintext stream yields — its
- * `messageHash` is the plaintext hash the spoke derives at delivery — so
- * `l1MessageDeliveryStatus` works on it unchanged.
+ * Opens a forwarded ciphertext as the destination client does. Resolves to the plaintext and
+ * throws when the ciphertext cannot be opened.
+ */
+export type MessageOpener = (sealed: SealedMessage) => Promise<Hex>;
+
+/**
+ * Fetches all encrypted domain -> domain messages forwarded to `domainChainId` in the block
+ * range and opens them with `open`, in recording order. `sourceChainId` comes from the event,
+ * the sender and target from the plaintext. An opened message has the shape of the plaintext
+ * stream, with the `messageHash` the spoke derives at delivery, so `l1MessageDeliveryStatus`
+ * works on it unchanged.
  *
  * The protocol's full derivation stream is the nonce-ordered union of this stream and
  * `fetchL1Messages`: both draw from one per-domain nonce sequence.
  *
- * A ciphertext that fails to decrypt still consumed its nonce on the hub, so it is surfaced
+ * A ciphertext that fails to open still consumed its nonce on the hub, so it is surfaced
  * under `undecryptable` rather than dropped; the client never delivers that nonce, and the
- * spoke accepts the gap (delivery nonces are strictly increasing rather than gapless).
+ * spoke accepts the gap.
  */
 export async function fetchEncryptedL1Messages(
   client: PublicClient,
   domainChainId: bigint,
   range: { fromBlock: bigint; toBlock: bigint },
   hub: Address,
-  viewingSecretKey: Hex,
+  open: MessageOpener,
 ): Promise<{ messages: RecordedMessage[]; undecryptable: UndecryptableMessage[] }> {
   const logs = await client.getLogs({
     address: hub,
@@ -154,12 +166,13 @@ export async function fetchEncryptedL1Messages(
   const messages: RecordedMessage[] = [];
   const undecryptable: UndecryptableMessage[] = [];
   for (const log of logs) {
-    const { sourceChainId, from, ciphertext, nonce } = log.args;
-    if (sourceChainId === undefined || !from || ciphertext === undefined || nonce === undefined) {
+    const { sourceChainId, sourceNonce, ciphertext, nonce } = log.args;
+    if (sourceChainId === undefined || sourceNonce === undefined || ciphertext === undefined || nonce === undefined) {
       throw new Error("prover: incomplete event log");
     }
     try {
-      const { to, data } = await decryptMessage(viewingSecretKey, ciphertext);
+      const sealed: SealedMessage = { sourceChainId, destinationChainId: domainChainId, sourceNonce, ciphertext };
+      const { from, to, data } = decodePlaintext(await open(sealed));
       const message: Message = { sourceChainId, from, to, data, nonce };
       messages.push({
         message,
@@ -411,7 +424,7 @@ export async function l1MessageDeliveryStatus(
 /**
  * Execution status of a forwarded domain message on its destination spoke, which the caller
  * configures locally. Read `deliveryNonce` from the hub's `DomainMessageRouted` event. An
- * encrypted envelope is tracked by the plaintext it seals, which its sender supplies.
+ * encrypted envelope is tracked by the plaintext it seals, which the caller supplies.
  */
 export async function routedMessageDeliveryStatus(
   client: PublicClient,

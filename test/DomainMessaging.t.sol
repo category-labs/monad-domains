@@ -5,6 +5,7 @@ import {IDomainMessageReceiver, IDomainHub, IDomainSpoke} from "../src/interface
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
+import {MockDomainEncryption} from "./mocks/MockDomainEncryption.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 /// @notice Exercises the messaging layer directly: the hub (L1) and spoke (domain). The test
@@ -21,6 +22,7 @@ contract DomainMessagingTest is DomainTestBase {
 
     DomainHub internal hub;
     DomainSpoke internal spoke;
+    MockDomainEncryption internal precompile;
 
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
@@ -31,6 +33,7 @@ contract DomainMessagingTest is DomainTestBase {
         hub = new DomainHub();
         _registerDomain(hub, CHAIN_ID, _keys(K1, K2, K3), 2);
         spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
+        precompile = _installEncryptionPrecompile();
         vm.deal(alice, 100 ether);
     }
 
@@ -231,17 +234,6 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(address(hub).balance, 0);
     }
 
-    function test_sendEncryptedL1Message_forwardsFeeAndRecordsIt() public {
-        _register(4444, feeRecipient, "", 1);
-
-        vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(4444, uint64(block.chainid), alice, hex"c0ffee", 0, 0.02 ether);
-        vm.prank(alice);
-        hub.sendEncryptedL1Message{value: 0.02 ether}(4444, hex"c0ffee");
-
-        assertEq(feeRecipient.balance, 0.02 ether);
-    }
-
     function test_sendL1Message_revertsIfFeeRecipientRejectsFee() public {
         _register(4444, address(new RejectingFeeRecipient()), "", 1);
 
@@ -258,61 +250,11 @@ contract DomainMessagingTest is DomainTestBase {
         vm.prank(alice);
         vm.expectRevert(DomainHub.DeliveryFeeTooLow.selector);
         hub.sendL1Message{value: minimum - 1}(CHAIN_ID, bob, data);
-        vm.prank(alice);
-        vm.expectRevert(DomainHub.DeliveryFeeTooLow.selector);
-        hub.sendEncryptedL1Message{value: minimum - 1}(CHAIN_ID, data);
         assertEq(hub.l1MessageCounts(CHAIN_ID), 0);
 
         vm.prank(alice);
         hub.sendL1Message{value: minimum}(CHAIN_ID, bob, data);
-        vm.prank(alice);
-        hub.sendEncryptedL1Message{value: minimum}(CHAIN_ID, data);
-        assertEq(hub.l1MessageCounts(CHAIN_ID), 2);
-    }
-
-    function test_sendEncryptedL1Message_rejectsUnregisteredDomain() public {
-        vm.expectRevert(DomainHub.DomainNotRegistered.selector);
-        hub.sendEncryptedL1Message(9999, hex"01");
-    }
-
-    function test_sendEncryptedL1Message_emitsCiphertextAndSender() public {
-        // The hub treats the ciphertext as opaque bytes; any payload is recordable.
-        bytes memory ciphertext = hex"c0ffee";
-
-        vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, ciphertext, 0, DELIVERY_FEE);
-        vm.prank(alice);
-        hub.sendEncryptedL1Message{value: DELIVERY_FEE}(CHAIN_ID, ciphertext);
-
         assertEq(hub.l1MessageCounts(CHAIN_ID), 1);
-    }
-
-    function test_sendEncryptedL1Message_sharesNonceSequenceWithPlaintext() public {
-        // Plaintext and encrypted messages interleave in one gapless per-domain ordering,
-        // matching the spoke's in-order delivery requirement.
-        vm.prank(alice);
-        hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"01"); // nonce 0
-
-        vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(CHAIN_ID, uint64(block.chainid), alice, hex"02", 1, DELIVERY_FEE);
-        vm.prank(alice);
-        hub.sendEncryptedL1Message{value: DELIVERY_FEE}(CHAIN_ID, hex"02"); // nonce 1
-
-        vm.expectEmit(address(hub));
-        emit IDomainHub.L1MessageRecorded(
-            CHAIN_ID,
-            uint64(block.chainid),
-            alice,
-            bob,
-            hex"03",
-            2,
-            DELIVERY_FEE,
-            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"03", 2))
-        );
-        vm.prank(alice);
-        hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"03"); // nonce 2
-
-        assertEq(hub.l1MessageCounts(CHAIN_ID), 3);
     }
 
     // ---------------------------------------------------------------------
@@ -470,7 +412,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     // ---------------------------------------------------------------------
-    // Domain -> L1
+    // Domain -> L1 or domain
     // ---------------------------------------------------------------------
 
     function test_sendDomainMessage_recordsIdByNonceAndEmitsPreimage() public {
@@ -512,6 +454,46 @@ contract DomainMessagingTest is DomainTestBase {
             assertEq(ids[i], MessageLib.hashDomainMessage(message, block.chainid, address(hub)));
         }
         assertEq(spoke.domainMessageIds(5), bytes32(0));
+    }
+
+    function test_sendDomainMessage_sealsDomainBoundMessagesThroughThePrecompile() public {
+        precompile.setViewingKey(8888, "viewing key of 8888");
+        // No sender, target or salt; the data is (alice, bob, 0xcafe) sealed by this spoke for
+        // 8888 under nonce 0, as the mock seals it.
+        bytes memory ciphertext =
+            abi.encode(address(spoke), uint64(8888), uint256(0), MessageLib.encodePlaintext(alice, bob, hex"cafe"));
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage(
+            MessageLib.MessageKind.Encrypted, CHAIN_ID, 8888, address(0), address(0), 0, bytes32(0), ciphertext
+        );
+        bytes32 expectedHash = MessageLib.hashDomainMessage(message, block.chainid, address(hub));
+
+        vm.expectEmit(address(spoke));
+        emit IDomainSpoke.DomainMessageRecorded(expectedHash, abi.encode(message));
+        vm.prank(alice);
+        bytes32 messageId = spoke.sendDomainMessage(8888, bob, hex"cafe", TEST_SALT);
+
+        assertEq(messageId, expectedHash);
+        assertEq(spoke.domainMessageIds(0), expectedHash);
+        assertEq(precompile.seals(), 1);
+        assertEq(spoke.ENCRYPTION_PRECOMPILE(), address(precompile));
+    }
+
+    function test_sendDomainMessage_requiresSaltOnlyForTheL1() public {
+        precompile.setViewingKey(8888, "viewing key of 8888");
+        vm.startPrank(alice);
+        vm.expectRevert(DomainSpoke.ZeroSalt.selector);
+        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"cafe", bytes32(0));
+        spoke.sendDomainMessage(8888, bob, hex"cafe", bytes32(0));
+        vm.stopPrank();
+        assertEq(spoke.domainMessageCount(), 1);
+    }
+
+    function test_sendDomainMessage_rejectsDestinationWithoutViewingKey() public {
+        vm.prank(alice);
+        vm.expectRevert("MockDomainEncryption: unknown viewing key");
+        spoke.sendDomainMessage(8888, bob, hex"cafe", TEST_SALT);
+        assertEq(spoke.domainMessageCount(), 0);
+        assertEq(precompile.seals(), 0);
     }
 
     // ---------------------------------------------------------------------

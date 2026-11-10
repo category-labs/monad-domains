@@ -10,9 +10,7 @@ export { loadArtifact, type Artifact } from "./artifacts.js";
 export { fetchL1Chain } from "./chain.js";
 export {
   EncryptionError,
-  decryptMessage,
   decryptTransaction,
-  encryptMessage,
   encryptTransaction,
   generateViewingKeyPair,
   type ViewingKeyPair,
@@ -28,9 +26,11 @@ export {
   DOMAIN_MESSAGE_PARAMS,
   generateMessageSalt,
   decodeDomainMessage,
+  decodePlaintext,
   decodeTransfer,
   domainDeliveryEnvelope,
   encodeDomainMessage,
+  encodePlaintext,
   encodeTransfer,
   hashDomainMessage,
   hashMessage,
@@ -64,7 +64,9 @@ export {
   type L1DeliveryStatus,
   type DomainDeliveryStatus,
   type RecordedMessage,
+  type MessageOpener,
   type MessageProof,
+  type SealedMessage,
   type UndecryptableMessage,
 } from "./prover.js";
 export {

@@ -10,11 +10,14 @@ import {
   type Hex,
 } from "viem";
 
-/** `MessageLib.MessageKind`: what a domain-origin envelope carries. Encoded as `uint8`. */
+/** `MessageLib.MessageKind`: the shape of a domain-origin envelope. Encoded as `uint8`. */
 export enum MessageKind {
-  /** `to` is the target, `data` its payload, both readable on the L1. */
+  /** The destination is the L1: `to` and `data` are the target and payload, readable there. */
   Plain = 0,
-  /** `to` and `salt` are zero and `data` is `to[20] || data` sealed to the destination's viewing key. */
+  /**
+   * The destination is another domain: `from`, `to` and `salt` are zero and `data` is
+   * `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
+   */
   Encrypted = 1,
 }
 
@@ -67,25 +70,39 @@ export function decodeDomainMessage(data: Hex): DomainMessage {
   return message;
 }
 
-/** True for an envelope recorded by `sendEncryptedDomainMessage`. */
+/** True for an envelope sealed for another domain. */
 export function isEncryptedDomainMessage(message: DomainMessage): boolean {
   return message.kind === MessageKind.Encrypted;
 }
 
-/** What an encrypted envelope seals: the arguments its sender gave `encryptMessage`. */
+/** What an encrypted envelope seals. Mirrors the arguments of `MessageLib.encodePlaintext`. */
 export interface MessagePlaintext {
+  from: Address;
   to: Address;
   data: Hex;
 }
 
+const PLAINTEXT_PARAMS = parseAbiParameters("address from, address to, bytes data");
+
+/** Mirrors `MessageLib.encodePlaintext`. */
+export function encodePlaintext(plaintext: MessagePlaintext): Hex {
+  return encodeAbiParameters(PLAINTEXT_PARAMS, [plaintext.from, plaintext.to, plaintext.data]);
+}
+
+/** Mirrors `MessageLib.decodePlaintext`. */
+export function decodePlaintext(plaintext: Hex): MessagePlaintext {
+  const [from, to, data] = decodeAbiParameters(PLAINTEXT_PARAMS, plaintext);
+  return { from, to, data };
+}
+
 /**
  * Direct application delivery, using the nonce assigned by the destination queue. An
- * encrypted envelope is delivered as the plaintext its sender sealed, so the sender supplies it.
+ * encrypted envelope is delivered as the plaintext it seals, which the caller supplies.
  */
 export function domainDeliveryEnvelope(message: DomainMessage, deliveryNonce: bigint, plaintext?: MessagePlaintext): Message {
   if (isEncryptedDomainMessage(message)) {
-    if (!plaintext) throw new Error("routing: encrypted envelope needs its plaintext (to, data)");
-    return { sourceChainId: message.sourceChainId, from: message.from,
+    if (!plaintext) throw new Error("routing: encrypted envelope needs its plaintext (from, to, data)");
+    return { sourceChainId: message.sourceChainId, from: plaintext.from,
       to: plaintext.to, data: plaintext.data, nonce: deliveryNonce };
   }
   return { sourceChainId: message.sourceChainId, from: message.from,

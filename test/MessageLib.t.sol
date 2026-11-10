@@ -8,6 +8,9 @@ import {MessageLib} from "../src/libraries/MessageLib.sol";
 /// TypeScript mirror against (printed by `script/GenVectors.s.sol`), so a change to either
 /// implementation fails a test.
 contract MessageLibTest is Test {
+    bytes32 internal constant ENCRYPTED_VECTOR = 0x18d50d21546cb7d9b2b9b6698d478e5ff665f8f5b6e07c32bd3eaff0179ad661;
+    bytes32 internal constant PLAINTEXT_VECTOR = 0x7a9c9eb956b730e4846f08c2553b355ef73f56830298acb60d4666b3b5f8b0ef;
+
     function test_hashMessage_matchesConformanceVector() public pure {
         MessageLib.Message memory message = MessageLib.Message({
             sourceChainId: 1,
@@ -37,13 +40,22 @@ contract MessageLibTest is Test {
 
         message.kind = MessageLib.MessageKind.Encrypted;
         message.destinationChainId = 8888;
+        message.from = address(0);
         message.to = address(0);
         message.salt = bytes32(0);
         message.data = hex"04c0ffee";
         assertEq(
-            MessageLib.hashDomainMessage(message, 31337, 0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3),
-            0x6e7ce29d3db30ea54207c472ce955dc9d98943a6ad508ff5b704e939ad55e963
+            MessageLib.hashDomainMessage(message, 31337, 0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3), ENCRYPTED_VECTOR
         );
+    }
+
+    function test_plaintext_matchesConformanceVector() public pure {
+        bytes memory plaintext = MessageLib.encodePlaintext(address(0x1000), address(0x2000), hex"1234");
+        assertEq(keccak256(plaintext), PLAINTEXT_VECTOR);
+        (address from, address to, bytes memory data) = MessageLib.decodePlaintext(plaintext);
+        assertEq(from, address(0x1000));
+        assertEq(to, address(0x2000));
+        assertEq(data, hex"1234");
     }
 
     function testFuzz_hashDomainMessage_bindsKind(address to, bytes memory data) public pure {

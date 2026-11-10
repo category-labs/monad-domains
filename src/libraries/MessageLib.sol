@@ -4,9 +4,9 @@ pragma solidity ^0.8.24;
 /// @notice Canonical encoding of cross-domain messages and of the token bridge payload
 /// carried inside them, shared by the hub, the spoke and both bridges.
 library MessageLib {
-    /// @notice `Plain`: `to` and `data` are the target and payload. `Encrypted`: `to` and
-    /// `salt` are zero and `data` is `to[20] || data` sealed to the destination domain's viewing
-    /// key, so the destination must be a domain.
+    /// @notice `Plain`: an L1-bound envelope; `to` and `data` are the target and payload.
+    /// `Encrypted`: a domain-bound envelope; `from`, `to` and `salt` are zero and `data` is
+    /// `encodePlaintext(from, to, data)` sealed to the destination's viewing key.
     enum MessageKind {
         Plain,
         Encrypted
@@ -14,7 +14,7 @@ library MessageLib {
 
     /// @notice An authenticated domain-origin message. The source spoke assigns origin and nonce.
     /// The hub proves this envelope and assigns a separate destination delivery nonce when forwarding.
-    /// The destination selects L1 execution or domain forwarding; `kind` selects the delivery path.
+    /// The destination selects L1 execution or domain forwarding; `kind` names the envelope's shape.
     struct DomainMessage {
         MessageKind kind;
         uint64 sourceChainId;
@@ -46,6 +46,21 @@ library MessageLib {
                 keccak256(message.data)
             )
         );
+    }
+
+    /// @notice What an `Encrypted` envelope seals: the authenticated sender, the target and its
+    /// payload.
+    function encodePlaintext(address from, address to, bytes memory data) internal pure returns (bytes memory) {
+        return abi.encode(from, to, data);
+    }
+
+    /// @notice Decodes a plaintext produced by `encodePlaintext`.
+    function decodePlaintext(bytes memory plaintext)
+        internal
+        pure
+        returns (address from, address to, bytes memory data)
+    {
+        (from, to, data) = abi.decode(plaintext, (address, address, bytes));
     }
 
     /// @notice Shared delivery envelope for L1-origin and forwarded domain messages.

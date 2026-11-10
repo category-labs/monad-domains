@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, StdStorage, stdStorage} from "forge-std/Test.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
+import {DOMAIN_ENCRYPTION_PRECOMPILE} from "../../src/interfaces/IDomainEncryption.sol";
+import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {MerkleTreeLib} from "./MerkleTreeLib.sol";
+import {MockDomainEncryption} from "../mocks/MockDomainEncryption.sol";
 
 /// @notice Shared protocol steps for tests: registering a domain on the hub and attesting
 /// state transitions the way validators do, on the domain's checkpoint schedule. A batch of
 /// domain-origin messages is everything recorded since the last attestation; its root is the
 /// anchor carried by the next attestation.
 abstract contract DomainTestBase is Test {
+    using stdStorage for StdStorage;
+
     /// @dev Attested L1 heights must be multiples of this.
     uint64 internal constant CHECKPOINT_INTERVAL = 10;
     bytes32 internal constant TEST_SALT = bytes32(uint256(1));
@@ -221,5 +226,54 @@ abstract contract DomainTestBase is Test {
 
     function _attestBatch(DomainHub hub, DomainSpoke spoke, uint256 key) internal returns (bytes32 anchor) {
         return _attestBatch(hub, spoke, _keys(key));
+    }
+
+    // ---------------------------------------------------------------------
+    // Forwarded encrypted messages
+    // ---------------------------------------------------------------------
+
+    /// @dev The envelope `sourceChainId`'s spoke records for `ciphertext` sealed to
+    /// `destinationChainId` under `sourceNonce`, with its ID written into the hub's storage as
+    /// an attested anchor of the source. Relaying it with an empty proof makes the hub record
+    /// an encrypted message, which it takes from no other call. The source must be registered.
+    function _attestedSealedMessage(
+        DomainHub hub,
+        uint64 sourceChainId,
+        uint64 destinationChainId,
+        uint256 sourceNonce,
+        bytes memory ciphertext
+    ) internal returns (MessageLib.DomainMessage memory message, bytes32 anchor) {
+        message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Encrypted,
+            sourceChainId: sourceChainId,
+            destinationChainId: destinationChainId,
+            from: address(0),
+            to: address(0),
+            sourceNonce: sourceNonce,
+            salt: bytes32(0),
+            data: ciphertext
+        });
+        anchor = MessageLib.hashDomainMessage(message, block.chainid, address(hub));
+        stdstore.target(address(hub)).sig(hub.domainAnchors.selector).with_key(uint256(sourceChainId)).with_key(anchor)
+            .checked_write(true);
+    }
+
+    // ---------------------------------------------------------------------
+    // Encryption precompile
+    // ---------------------------------------------------------------------
+
+    /// @dev Etches the encryption precompile mock at its address; register destination keys
+    /// with `setViewingKey`.
+    function _installEncryptionPrecompile() internal returns (MockDomainEncryption precompile) {
+        vm.etch(DOMAIN_ENCRYPTION_PRECOMPILE, address(new MockDomainEncryption()).code);
+        vm.label(DOMAIN_ENCRYPTION_PRECOMPILE, "DomainEncryption");
+        return MockDomainEncryption(DOMAIN_ENCRYPTION_PRECOMPILE);
+    }
+
+    /// @dev Opens a mock ciphertext into the delivery's sender, target and payload, as the
+    /// destination client would.
+    function _openMessage(bytes memory ciphertext) internal pure returns (address from, address to, bytes memory data) {
+        (,,, bytes memory plaintext) = MockDomainEncryption(DOMAIN_ENCRYPTION_PRECOMPILE).openMessage(ciphertext);
+        return MessageLib.decodePlaintext(plaintext);
     }
 }
