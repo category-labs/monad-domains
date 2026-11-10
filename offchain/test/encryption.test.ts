@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bytesToHex, concat, hexToBytes, parseTransaction, type Hex } from "viem";
+import { bytesToHex, hexToBytes, parseTransaction, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { Aes128Gcm, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/core";
 import {
   EncryptionError,
-  decryptMessage,
   decryptTransaction,
-  encryptMessage,
   encryptTransaction,
   generateViewingKeyPair,
 } from "../src/encryption.js";
@@ -164,67 +161,4 @@ test("the wire format matches the domain encryption profile", async () => {
     await decryptTransaction(viewingSecretKeyFromPem(CLIENT_KEY_PEM), CLIENT_DOMAIN, CLIENT_PAYLOAD),
     "0x02c0",
   );
-});
-
-// ---------------------------------------------------------------------------
-// L1 -> domain messages: the ciphertext built here is the `ciphertext` argument of
-// `sendEncryptedL1Message`, sealing `to[20] || data`.
-// ---------------------------------------------------------------------------
-
-const MESSAGE_DATA = "0xa9059cbb000000000000000000000000000000000000000000000000000000000000002a" as Hex;
-
-test("message round trip preserves target and payload", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
-
-  const ciphertext = await encryptMessage(publicKey, TO, MESSAGE_DATA);
-  const { to, data } = await decryptMessage(secretKey, ciphertext);
-  assert.equal(to, TO); // returned checksummed, as viem addresses are
-  assert.equal(data, MESSAGE_DATA);
-});
-
-test("message round trip preserves an empty payload", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
-
-  const { to, data } = await decryptMessage(
-    secretKey,
-    await encryptMessage(publicKey, TO, "0x"),
-  );
-  assert.equal(to, TO);
-  assert.equal(data, "0x");
-});
-
-test("message wire format is enc[32] || AEAD(0x01 || to[20] || data)", async () => {
-  const { publicKey } = await generateViewingKeyPair();
-  const ciphertext = hexToBytes(await encryptMessage(publicKey, TO, MESSAGE_DATA));
-
-  // 32-byte encapsulated key, then the AEAD output (16-byte tag) over the version-framed
-  // `to[20] || data` plaintext.
-  assert.equal(ciphertext.length, 32 + 1 + 20 + hexToBytes(MESSAGE_DATA).length + 16);
-});
-
-test("a tampered message ciphertext fails to authenticate", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
-  const ciphertext = hexToBytes(await encryptMessage(publicKey, TO, MESSAGE_DATA));
-
-  const corrupted = Uint8Array.from(ciphertext);
-  corrupted[70] = (corrupted[70] ?? 0) ^ 0x01;
-  await expectDecryptionFailure(decryptMessage(secretKey, bytesToHex(corrupted)));
-});
-
-test("a plaintext shorter than an address is rejected as a message", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
-
-  // Sealed with the profile directly: authenticates fine, but 4 bytes cannot frame a 20-byte
-  // target. The failure is the same opaque error as an authentication failure.
-  const suite = new CipherSuite({
-    kem: new DhkemX25519HkdfSha256(),
-    kdf: new HkdfSha256(),
-    aead: new Aes128Gcm(),
-  });
-  const { enc, ct } = await suite.seal(
-    { recipientPublicKey: await suite.kem.deserializePublicKey(hexToBytes(publicKey)) },
-    hexToBytes("0x01deadbeef"),
-  );
-  const ciphertext = concat([new Uint8Array(enc), new Uint8Array(ct)]);
-  await expectDecryptionFailure(decryptMessage(secretKey, bytesToHex(ciphertext)));
 });

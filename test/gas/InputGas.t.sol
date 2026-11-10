@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {console} from "forge-std/console.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
+import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 
 /// @dev Two storage reads, to tell whether storage is priced by page (MIP-8).
@@ -22,6 +23,8 @@ contract PageProbe {
 /// `GAS,<scenario>,<payload bytes or periods>,<gas>`.
 contract InputGasTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
+    /// @dev The domain forwarded encrypted messages come from.
+    uint64 internal constant SOURCE_CHAIN_ID = 5555;
     uint256 internal constant KEY = 0xA11CE;
     uint256 internal constant KEY_2 = 0xB0B;
 
@@ -38,6 +41,7 @@ contract InputGasTest is DomainTestBase {
         hub.registerDomain(
             CHAIN_ID, _addresses(_keys(KEY, KEY_2)), 1, feeRecipient, "", CHECKPOINT_INTERVAL, MAX_UNATTESTED_PERIODS
         );
+        _registerDomain(hub, SOURCE_CHAIN_ID, KEY);
         vm.deal(alice, 1_000_000 ether);
         vm.deal(feeRecipient, 1 ether);
     }
@@ -226,15 +230,18 @@ contract InputGasTest is DomainTestBase {
         }
     }
 
-    function test_gas_encryptedMessage_sameBlock() public pagePriced {
+    /// @dev An encrypted message another domain sealed, proven against its anchor and recorded.
+    function test_gas_forwardedMessage_sameBlock() public pagePriced {
         _steadyState();
         uint256[] memory sizes = _messageSizes();
         for (uint256 i = 1; i < sizes.length; i++) {
-            bytes memory arguments = abi.encode(CHAIN_ID, _bytes(sizes[i], i + 1));
+            (MessageLib.DomainMessage memory forwarded, bytes32 anchor) =
+                _attestedSealedMessage(hub, SOURCE_CHAIN_ID, CHAIN_ID, i, _bytes(sizes[i], i + 1));
+            bytes memory arguments = abi.encode(forwarded, anchor, new bytes32[](0));
             _log(
-                "encrypted/same-block",
+                "forwarded/same-block",
                 sizes[i],
-                _send(DomainHub.sendEncryptedL1Message.selector, arguments, _deliveryGas(sizes[i]), false)
+                _send(DomainHub.relayDomainMessage.selector, arguments, _deliveryGas(sizes[i]), false)
             );
         }
     }
