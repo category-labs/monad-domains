@@ -6,6 +6,23 @@ import {IDomainAccessPolicy} from "./interfaces/IDomainAccessControl.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 
 contract DomainSpoke is IDomainSpoke {
+    error NotPolicyOwner();
+    error NotPendingPolicyOwner();
+    error NotSystemRelayer();
+    error ZeroHub();
+    error DomainIsL1();
+    error L1ChainIdTooLarge();
+    error ZeroPolicyOwner();
+    error DeploymentFailed();
+    error PolicyHasNoCode();
+    error InvalidSelfPolicy();
+    error InvalidSource();
+    error OutOfOrderNonce();
+    error NotFailedMessage();
+    error RetryFailed();
+    error SameDomain();
+    error ZeroTarget();
+
     /// @notice Reserved sender of protocol-injected system transactions.
     address public constant SYSTEM_RELAYER = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
 
@@ -45,19 +62,19 @@ contract DomainSpoke is IDomainSpoke {
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
-        require(policyOwner != address(0) && msg.sender == policyOwner, "DomainSpoke: not policy owner");
+        if (policyOwner == address(0) || msg.sender != policyOwner) revert NotPolicyOwner();
         _;
     }
 
     modifier onlySystem() {
-        require(msg.sender == SYSTEM_RELAYER, "DomainSpoke: not system relayer");
+        if (msg.sender != SYSTEM_RELAYER) revert NotSystemRelayer();
         _;
     }
 
     constructor(uint64 domainChainId, uint256 l1ChainId, address hub) {
-        require(hub != address(0), "DomainSpoke: zero hub");
-        require(domainChainId != l1ChainId, "DomainSpoke: domain is L1");
-        require(l1ChainId <= type(uint64).max, "DomainSpoke: L1 chain id too large");
+        if (hub == address(0)) revert ZeroHub();
+        if (domainChainId == l1ChainId) revert DomainIsL1();
+        if (l1ChainId > type(uint64).max) revert L1ChainIdTooLarge();
         DOMAIN_CHAIN_ID = domainChainId;
         L1_CHAIN_ID = uint64(l1ChainId);
         HUB = hub;
@@ -68,12 +85,12 @@ contract DomainSpoke is IDomainSpoke {
     // ---------------------------------------------------------------------
 
     function deployContract(bytes calldata initCode, address policyOwner) external returns (address deployed) {
-        require(policyOwner != address(0), "DomainSpoke: zero policy owner");
+        if (policyOwner == address(0)) revert ZeroPolicyOwner();
         bytes memory code = initCode;
         assembly ("memory-safe") {
             deployed := create(0, add(code, 32), mload(code))
         }
-        require(deployed != address(0) && deployed.code.length != 0, "DomainSpoke: deployment failed");
+        if (deployed == address(0) || deployed.code.length == 0) revert DeploymentFailed();
         policyOwners[deployed] = policyOwner;
         emit ContractDeployed(deployed, msg.sender, policyOwner);
     }
@@ -93,7 +110,7 @@ contract DomainSpoke is IDomainSpoke {
     /// @param target Registered contract whose pending policy ownership the caller accepts.
     function acceptPolicyOwnership(address target) external {
         address pendingOwner = pendingPolicyOwners[target];
-        require(pendingOwner != address(0) && msg.sender == pendingOwner, "DomainSpoke: not pending policy owner");
+        if (pendingOwner == address(0) || msg.sender != pendingOwner) revert NotPendingPolicyOwner();
         address previousOwner = policyOwners[target];
         delete pendingPolicyOwners[target];
         policyOwners[target] = pendingOwner;
@@ -101,8 +118,8 @@ contract DomainSpoke is IDomainSpoke {
     }
 
     function setAccessPolicy(address target, address policy) external onlyPolicyOwner(target) {
-        require(policy == address(0) || policy.code.length != 0, "DomainSpoke: policy has no code");
-        require(policy != address(this), "DomainSpoke: spoke cannot be its own policy");
+        if (policy != address(0) && policy.code.length == 0) revert PolicyHasNoCode();
+        if (policy == address(this)) revert InvalidSelfPolicy();
         accessPolicies[target] = policy;
         emit AccessPolicySet(target, policy);
     }
@@ -137,8 +154,8 @@ contract DomainSpoke is IDomainSpoke {
         external
         onlySystem
     {
-        require(sourceChainId != DOMAIN_CHAIN_ID, "DomainSpoke: invalid source");
-        require(nonce >= nextL1Nonce, "DomainSpoke: out-of-order nonce");
+        if (sourceChainId == DOMAIN_CHAIN_ID) revert InvalidSource();
+        if (nonce < nextL1Nonce) revert OutOfOrderNonce();
         nextL1Nonce = nonce + 1;
         MessageLib.Message memory message = MessageLib.Message(sourceChainId, from, to, data, nonce);
         bytes32 messageHash = MessageLib.hashMessage(message);
@@ -149,9 +166,9 @@ contract DomainSpoke is IDomainSpoke {
 
     function retryL1Message(MessageLib.Message calldata message) external {
         bytes32 messageHash = MessageLib.hashMessage(message);
-        require(failedL1Messages[messageHash], "DomainSpoke: not a failed message");
+        if (!failedL1Messages[messageHash]) revert NotFailedMessage();
         delete failedL1Messages[messageHash];
-        require(message.to.code.length != 0 && _callReceiver(message, 0), "DomainSpoke: retry failed");
+        if (message.to.code.length == 0 || !_callReceiver(message, 0)) revert RetryFailed();
         emit L1MessageRelayed(messageHash, message.sourceChainId, message.from, message.to, message.nonce, true);
     }
 
@@ -176,8 +193,8 @@ contract DomainSpoke is IDomainSpoke {
         external
         returns (bytes32 messageId)
     {
-        require(destinationChainId != DOMAIN_CHAIN_ID, "DomainSpoke: same domain");
-        require(to != address(0), "DomainSpoke: zero target");
+        if (destinationChainId == DOMAIN_CHAIN_ID) revert SameDomain();
+        if (to == address(0)) revert ZeroTarget();
         uint256 sourceNonce = domainMessageCount++;
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
             sourceChainId: DOMAIN_CHAIN_ID,

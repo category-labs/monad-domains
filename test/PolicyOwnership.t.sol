@@ -49,15 +49,15 @@ contract PolicyOwnershipTest is Test {
 
     function _assertCannotAdminister(address caller) internal {
         vm.startPrank(caller);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.transferPolicyOwnership(target, address(0));
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.setAccessPolicy(target, address(0));
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.setLogReader(target, outsider, true);
-        vm.expectRevert("DomainAccessRules: not policy owner");
+        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
         rules.setAccessControl(target, IERC20.balanceOf.selector, DomainAccessRules.AccessMode.Open, 0);
-        vm.expectRevert("DomainAccessRules: not policy owner");
+        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
         rules.setReaderAllowed(target, IERC20.balanceOf.selector, outsider, true);
         vm.stopPrank();
     }
@@ -75,7 +75,7 @@ contract PolicyOwnershipTest is Test {
         vm.assume(caller != owner);
         _nominate(nextOwner);
         vm.prank(caller);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.transferPolicyOwnership(target, nominee);
         assertEq(spoke.policyOwners(target), owner);
         assertEq(spoke.pendingPolicyOwners(target), nextOwner);
@@ -84,10 +84,10 @@ contract PolicyOwnershipTest is Test {
     function test_unregisteredTargetRejectsNominationAndAcceptance() public {
         address unregistered = address(new TestERC20());
         vm.prank(owner);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.transferPolicyOwnership(unregistered, nextOwner);
         vm.prank(nextOwner);
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         spoke.acceptPolicyOwnership(unregistered);
         assertEq(spoke.policyOwners(unregistered), address(0));
         assertEq(spoke.pendingPolicyOwners(unregistered), address(0));
@@ -112,7 +112,7 @@ contract PolicyOwnershipTest is Test {
         vm.assume(caller != nextOwner);
         _nominate(nextOwner);
         vm.prank(caller);
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         spoke.acceptPolicyOwnership(target);
         assertEq(spoke.policyOwners(target), owner);
         assertEq(spoke.pendingPolicyOwners(target), nextOwner);
@@ -163,7 +163,7 @@ contract PolicyOwnershipTest is Test {
         _nominate(outsider);
         assertEq(spoke.policyOwners(target), owner);
         assertEq(spoke.pendingPolicyOwners(target), outsider);
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         _accept(nextOwner);
         _accept(outsider);
         assertEq(spoke.policyOwners(target), outsider);
@@ -177,7 +177,7 @@ contract PolicyOwnershipTest is Test {
         _nominate(address(0));
         assertEq(spoke.policyOwners(target), owner);
         assertEq(spoke.pendingPolicyOwners(target), address(0));
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         _accept(nextOwner);
         _nominate(outsider);
         _accept(outsider);
@@ -185,10 +185,10 @@ contract PolicyOwnershipTest is Test {
     }
 
     function test_acceptanceRequiresAnActiveNonzeroNomination() public {
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         _accept(nextOwner);
         _nominate(address(0));
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         _accept(address(0));
         assertEq(spoke.policyOwners(target), owner);
     }
@@ -196,7 +196,7 @@ contract PolicyOwnershipTest is Test {
     function test_completedTransferCannotBeAcceptedAgain() public {
         _nominate(nextOwner);
         _accept(nextOwner);
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         _accept(nextOwner);
         vm.prank(nextOwner);
         spoke.transferPolicyOwnership(target, outsider);
@@ -211,7 +211,7 @@ contract PolicyOwnershipTest is Test {
         vm.prank(reader);
         spoke.transferPolicyOwnership(otherTarget, outsider);
         vm.prank(nextOwner);
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         spoke.acceptPolicyOwnership(otherTarget);
         _accept(nextOwner);
         assertEq(spoke.policyOwners(target), nextOwner);
@@ -226,7 +226,7 @@ contract PolicyOwnershipTest is Test {
     function test_contractNomineeAcceptsThroughItsOwnCall() public {
         PolicyOwnerReceiver receiver = new PolicyOwnerReceiver();
         _nominate(address(receiver));
-        vm.expectRevert("DomainSpoke: not pending policy owner");
+        vm.expectRevert(DomainSpoke.NotPendingPolicyOwner.selector);
         spoke.acceptPolicyOwnership(target);
         receiver.accept(spoke, target);
         assertEq(spoke.policyOwners(target), address(receiver));

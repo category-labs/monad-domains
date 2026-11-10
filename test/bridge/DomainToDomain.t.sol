@@ -140,7 +140,7 @@ contract DomainToDomainTest is DomainTestBase {
         (MessageLib.DomainMessage memory message, bytes32 anchor) =
             _initiateWithdrawFromA(alice, address(router), AMOUNT);
         l1BridgeB.setTokenAllowed(address(token), false);
-        vm.expectRevert("L1Bridge: token not allowed");
+        vm.expectRevert(L1Bridge.TokenNotAllowed.selector);
         router.relay{value: DELIVERY_FEE}(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
         assertFalse(hub.relayedDomainMessages(CHAIN_A, _hash(message)));
         assertEq(token.balanceOf(address(l1BridgeA)), AMOUNT);

@@ -48,29 +48,29 @@ contract DomainMessagingTest is DomainTestBase {
     // ---------------------------------------------------------------------
 
     function test_register_rejectsL1ChainId() public {
-        vm.expectRevert("DomainHub: cannot register L1 chain id");
+        vm.expectRevert(DomainHub.L1ChainIdNotAllowed.selector);
         _register(uint64(block.chainid), feeRecipient, "", 1);
     }
 
     function test_register_rejectsDuplicate() public {
-        vm.expectRevert("DomainHub: already registered");
+        vm.expectRevert(DomainHub.DomainAlreadyRegistered.selector);
         _register(CHAIN_ID, feeRecipient, "", 1);
     }
 
     function test_register_rejectsZeroQuorum() public {
-        vm.expectRevert("DomainHub: zero quorum");
+        vm.expectRevert(DomainHub.ZeroQuorum.selector);
         hub.registerDomain(4444, _validators(), 0, feeRecipient, "", 1);
     }
 
     function test_register_rejectsQuorumAboveValidatorCount() public {
-        vm.expectRevert("DomainHub: quorum exceeds validators");
+        vm.expectRevert(DomainHub.QuorumExceedsValidators.selector);
         hub.registerDomain(4444, _validators(), 4, feeRecipient, "", 1);
     }
 
     function test_register_rejectsZeroValidator() public {
         address[] memory validators = new address[](1);
         validators[0] = address(0);
-        vm.expectRevert("DomainHub: zero validator");
+        vm.expectRevert(DomainHub.ZeroValidator.selector);
         hub.registerDomain(4444, validators, 1, feeRecipient, "", 1);
     }
 
@@ -78,29 +78,29 @@ contract DomainMessagingTest is DomainTestBase {
         address[] memory validators = new address[](2);
         validators[0] = vm.addr(K1);
         validators[1] = vm.addr(K1);
-        vm.expectRevert("DomainHub: duplicate validator");
+        vm.expectRevert(DomainHub.DuplicateValidator.selector);
         hub.registerDomain(4444, validators, 1, feeRecipient, "", 1);
     }
 
     function test_register_rejectsZeroFeeRecipient() public {
-        vm.expectRevert("DomainHub: zero fee recipient");
+        vm.expectRevert(DomainHub.ZeroFeeRecipient.selector);
         _register(4444, address(0), "", 1);
     }
 
     function test_register_rejectsZeroCheckpointInterval() public {
-        vm.expectRevert("DomainHub: zero checkpoint interval");
+        vm.expectRevert(DomainHub.ZeroCheckpointInterval.selector);
         _register(4444, feeRecipient, "", 0);
     }
 
     function test_register_rejectsMalformedViewingKey() public {
         // Wrong length.
-        vm.expectRevert("DomainHub: invalid viewing key");
+        vm.expectRevert(DomainHub.InvalidViewingKey.selector);
         _register(4444, feeRecipient, hex"04c0ffee", 1);
 
         // Right length, not an uncompressed-point prefix.
         bytes memory compressedPrefix = VIEWING_KEY;
         compressedPrefix[0] = 0x02;
-        vm.expectRevert("DomainHub: invalid viewing key");
+        vm.expectRevert(DomainHub.InvalidViewingKey.selector);
         _register(4444, feeRecipient, compressedPrefix, 1);
     }
 
@@ -136,7 +136,7 @@ contract DomainMessagingTest is DomainTestBase {
     // ---------------------------------------------------------------------
 
     function test_sendL1Message_rejectsUnregisteredDomain() public {
-        vm.expectRevert("DomainHub: domain not registered");
+        vm.expectRevert(DomainHub.DomainNotRegistered.selector);
         hub.sendL1Message(9999, bob, hex"01");
     }
 
@@ -243,7 +243,7 @@ contract DomainMessagingTest is DomainTestBase {
         _register(4444, address(new RejectingFeeRecipient()), "", 1);
 
         vm.prank(alice);
-        vm.expectRevert("DomainHub: fee transfer failed");
+        vm.expectRevert(DomainHub.FeeTransferFailed.selector);
         hub.sendL1Message{value: DELIVERY_FEE}(4444, bob, hex"01");
     }
 
@@ -253,10 +253,10 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(minimum, (200_000 + 48 * 300) * hub.DOMAIN_GAS_PRICE());
 
         vm.prank(alice);
-        vm.expectRevert("DomainHub: delivery fee too low");
+        vm.expectRevert(DomainHub.DeliveryFeeTooLow.selector);
         hub.sendL1Message{value: minimum - 1}(CHAIN_ID, bob, data);
         vm.prank(alice);
-        vm.expectRevert("DomainHub: delivery fee too low");
+        vm.expectRevert(DomainHub.DeliveryFeeTooLow.selector);
         hub.sendEncryptedL1Message{value: minimum - 1}(CHAIN_ID, data);
         assertEq(hub.l1MessageCounts(CHAIN_ID), 0);
 
@@ -268,7 +268,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendEncryptedL1Message_rejectsUnregisteredDomain() public {
-        vm.expectRevert("DomainHub: domain not registered");
+        vm.expectRevert(DomainHub.DomainNotRegistered.selector);
         hub.sendEncryptedL1Message(9999, hex"01");
     }
 
@@ -317,11 +317,11 @@ contract DomainMessagingTest is DomainTestBase {
     // ---------------------------------------------------------------------
 
     function test_spokeConstructorRejectsInvalidBindings() public {
-        vm.expectRevert("DomainSpoke: zero hub");
+        vm.expectRevert(DomainSpoke.ZeroHub.selector);
         new DomainSpoke(CHAIN_ID, block.chainid, address(0));
-        vm.expectRevert("DomainSpoke: domain is L1");
+        vm.expectRevert(DomainSpoke.DomainIsL1.selector);
         new DomainSpoke(uint64(block.chainid), block.chainid, address(hub));
-        vm.expectRevert("DomainSpoke: L1 chain id too large");
+        vm.expectRevert(DomainSpoke.L1ChainIdTooLarge.selector);
         new DomainSpoke(CHAIN_ID, uint256(type(uint64).max) + 1, address(hub));
     }
 
@@ -331,7 +331,7 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_relayL1Message_onlySystemRelayer() public {
         vm.prank(stranger);
-        vm.expectRevert("DomainSpoke: not system relayer");
+        vm.expectRevert(DomainSpoke.NotSystemRelayer.selector);
         spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"01", 0);
     }
 
@@ -356,9 +356,9 @@ contract DomainMessagingTest is DomainTestBase {
 
         // Nonces are strictly increasing: a delivered nonce cannot be replayed and no earlier
         // nonce can be delivered afterwards.
-        vm.expectRevert("DomainSpoke: out-of-order nonce");
+        vm.expectRevert(DomainSpoke.OutOfOrderNonce.selector);
         spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"01", 3);
-        vm.expectRevert("DomainSpoke: out-of-order nonce");
+        vm.expectRevert(DomainSpoke.OutOfOrderNonce.selector);
         spoke.relayL1Message(uint64(block.chainid), alice, bob, hex"02", 1);
         vm.stopPrank();
     }
@@ -381,7 +381,7 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(spoke.nextL1Nonce(), 1);
 
         // Retry fails while the target still rejects; the failed mark is retained.
-        vm.expectRevert("DomainSpoke: retry failed");
+        vm.expectRevert(DomainSpoke.RetryFailed.selector);
         spoke.retryL1Message(message);
         assertTrue(spoke.failedL1Messages(messageHash));
 
@@ -397,7 +397,7 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(receiver.lastFrom(), alice);
 
         // A retried message cannot be replayed.
-        vm.expectRevert("DomainSpoke: not a failed message");
+        vm.expectRevert(DomainSpoke.NotFailedMessage.selector);
         spoke.retryL1Message(message);
     }
 
@@ -416,7 +416,7 @@ contract DomainMessagingTest is DomainTestBase {
 
         // The skipped nonce is consumed for good: it cannot be delivered afterwards.
         vm.prank(spoke.SYSTEM_RELAYER());
-        vm.expectRevert("DomainSpoke: out-of-order nonce");
+        vm.expectRevert(DomainSpoke.OutOfOrderNonce.selector);
         spoke.relayL1Message(uint64(block.chainid), alice, address(receiver), hex"03", 1);
     }
 
@@ -462,7 +462,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_retryL1Message_rejectsUnknownMessage() public {
-        vm.expectRevert("DomainSpoke: not a failed message");
+        vm.expectRevert(DomainSpoke.NotFailedMessage.selector);
         spoke.retryL1Message(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0));
     }
 
@@ -532,10 +532,10 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(blockNumber, block.number);
         assertEq(gasSold, cap);
         vm.prank(alice);
-        vm.expectRevert("DomainHub: domain block gas limit exceeded");
+        vm.expectRevert(DomainHub.DomainBlockGasLimitExceeded.selector);
         hub.sequenceToDomain{value: price}(CHAIN_ID, hex"c0ffee");
         vm.prank(alice);
-        vm.expectRevert("DomainHub: domain block gas limit exceeded");
+        vm.expectRevert(DomainHub.DomainBlockGasLimitExceeded.selector);
         hub.sendL1Message{value: 300_000 * price}(CHAIN_ID, bob, hex"01");
 
         // Other domains and later blocks have their own budgets.
@@ -549,7 +549,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sequenceToDomain_rejectsUnregisteredDomain() public {
-        vm.expectRevert("DomainHub: domain not registered");
+        vm.expectRevert(DomainHub.DomainNotRegistered.selector);
         hub.sequenceToDomain(9999, hex"01");
     }
 
@@ -558,7 +558,7 @@ contract DomainMessagingTest is DomainTestBase {
         _register(4444, rejecting, "", 1);
 
         vm.prank(alice);
-        vm.expectRevert("DomainHub: fee transfer failed");
+        vm.expectRevert(DomainHub.FeeTransferFailed.selector);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"01");
     }
 }

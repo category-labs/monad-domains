@@ -142,7 +142,7 @@ contract NativeRoutingTest is DomainTestBase {
         assertEq(hub.l1MessageCounts(B), 1);
         assertEq(receiver.calls(), 0);
         assertEq(l1Receiver.calls(), 1, "forwarding must not execute an L1 operation");
-        vm.expectRevert("DomainHub: retry on destination domain");
+        vm.expectRevert(DomainHub.RetryOnDestinationDomain.selector);
         hub.retryDomainMessage(remote);
         _deliver(MessageLib.Message(remote.sourceChainId, remote.from, remote.to, remote.data, 0));
         assertEq(receiver.calls(), 1);
@@ -152,15 +152,15 @@ contract NativeRoutingTest is DomainTestBase {
     function test_unknownDestinationDoesNotConsumeAuthenticatedMessage() public {
         MessageLib.DomainMessage memory message = _sendTo(1234, address(receiver), hex"");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
-        vm.expectRevert("DomainHub: destination not registered");
+        vm.expectRevert(DomainHub.DestinationNotRegistered.selector);
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(A, _id(message)));
     }
 
     function test_senderIdentityIsAssignedAndSameChainAndZeroTargetRejected() public {
-        vm.expectRevert("DomainSpoke: same domain");
+        vm.expectRevert(DomainSpoke.SameDomain.selector);
         spokeA.sendDomainMessage(A, address(receiver), hex"");
-        vm.expectRevert("DomainSpoke: zero target");
+        vm.expectRevert(DomainSpoke.ZeroTarget.selector);
         spokeA.sendDomainMessage(B, address(0), hex"");
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
         assertEq(message.from, alice);
@@ -171,18 +171,18 @@ contract NativeRoutingTest is DomainTestBase {
     function test_rejectsUnknownSourceDestinationAndSameChain() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
         message.sourceChainId = 1234;
-        vm.expectRevert("DomainHub: source not registered");
+        vm.expectRevert(DomainHub.SourceNotRegistered.selector);
         hub.relayDomainMessage(message, bytes32(0), new bytes32[](0));
         message.sourceChainId = A;
         message.destinationChainId = 1234;
-        vm.expectRevert("DomainHub: unknown anchor");
+        vm.expectRevert(DomainHub.UnknownAnchor.selector);
         hub.relayDomainMessage(message, bytes32(0), new bytes32[](0));
         message.destinationChainId = A;
-        vm.expectRevert("DomainHub: same domain");
+        vm.expectRevert(DomainHub.SameDomain.selector);
         hub.relayDomainMessage(message, bytes32(0), new bytes32[](0));
         message.destinationChainId = B;
         message.to = address(0);
-        vm.expectRevert("DomainHub: zero target");
+        vm.expectRevert(DomainHub.ZeroTarget.selector);
         hub.relayDomainMessage(message, bytes32(0), new bytes32[](0));
     }
 
@@ -216,7 +216,7 @@ contract NativeRoutingTest is DomainTestBase {
             receiver.setReject(fails);
             _deliver(envelopes[i]);
             if (!fails) initiallyDelivered++;
-            vm.expectRevert("DomainHub: message already relayed");
+            vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
             hub.relayDomainMessage(message, anchor, proof);
         }
         assertEq(receiver.calls(), initiallyDelivered);
@@ -242,7 +242,7 @@ contract NativeRoutingTest is DomainTestBase {
         if (field == 3) message.to = address(123);
         if (field == 4) message.sourceNonce++;
         if (field == 5) message.data = hex"abce";
-        vm.expectRevert("DomainHub: invalid proof");
+        vm.expectRevert(DomainHub.InvalidProof.selector);
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(message.sourceChainId, _id(message)));
         assertEq(hub.l1MessageCounts(B), 0);
@@ -256,10 +256,10 @@ contract NativeRoutingTest is DomainTestBase {
         _register(other, A);
         _register(other, B);
         _post(other, A, anchor);
-        vm.expectRevert("DomainHub: invalid proof");
+        vm.expectRevert(DomainHub.InvalidProof.selector);
         other.relayDomainMessage(message, anchor, new bytes32[](0));
         vm.chainId(2);
-        vm.expectRevert("DomainHub: invalid proof");
+        vm.expectRevert(DomainHub.InvalidProof.selector);
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
         vm.chainId(L1);
         hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0));
@@ -285,7 +285,7 @@ contract NativeRoutingTest is DomainTestBase {
         MessageLib.DomainMessage memory message = _sendTo(uint64(L1), address(receiver), hex"");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         vm.deal(address(this), 1 ether);
-        vm.expectRevert("DomainHub: fee on L1 callback");
+        vm.expectRevert(DomainHub.UnexpectedL1CallbackFee.selector);
         hub.relayDomainMessage{value: 1}(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(A, _id(message)));
     }
@@ -295,7 +295,7 @@ contract NativeRoutingTest is DomainTestBase {
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         uint256 minimum = hub.minDeliveryFee(2);
         vm.deal(address(this), 1 ether);
-        vm.expectRevert("DomainHub: delivery fee too low");
+        vm.expectRevert(DomainHub.DeliveryFeeTooLow.selector);
         hub.relayDomainMessage{value: minimum - 1}(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(A, _id(message)), "an underpaid relay consumes nothing");
         assertTrue(hub.relayDomainMessage{value: minimum}(message, anchor, new bytes32[](0)));
@@ -313,7 +313,7 @@ contract NativeRoutingTest is DomainTestBase {
         _deliver(envelope); // nonce 1 undecryptable, skipped by protocol
         assertEq(spokeB.nextL1Nonce(), 3);
         vm.prank(spokeB.SYSTEM_RELAYER());
-        vm.expectRevert("DomainSpoke: out-of-order nonce");
+        vm.expectRevert(DomainSpoke.OutOfOrderNonce.selector);
         spokeB.relayL1Message(envelope.sourceChainId, envelope.from, envelope.to, envelope.data, 2);
     }
 
@@ -361,7 +361,7 @@ contract NativeRoutingTest is DomainTestBase {
         spokeB.retryL1Message(failed);
         assertEq(receiver.calls(), 2);
         assertEq(receiver.payload(), hex"01");
-        vm.expectRevert("DomainHub: message already relayed");
+        vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
         hub.relayDomainMessage(first, _id(first), new bytes32[](0));
     }
 
@@ -376,7 +376,7 @@ contract NativeRoutingTest is DomainTestBase {
         if (field == 2) envelope.data = hex"abcd";
         if (field == 3) envelope.nonce++;
         if (field == 4) envelope.sourceChainId = C;
-        vm.expectRevert("DomainSpoke: not a failed message");
+        vm.expectRevert(DomainSpoke.NotFailedMessage.selector);
         spokeB.retryL1Message(envelope);
         assertTrue(spokeB.failedL1Messages(originalHash));
     }
@@ -395,7 +395,7 @@ contract NativeRoutingTest is DomainTestBase {
     function test_directAndPublicL1SendCannotForgeDomainOrigin() public {
         vm.expectRevert("Receiver: not spoke");
         receiver.onDomainMessage(A, alice, hex"");
-        vm.expectRevert("DomainSpoke: not system relayer");
+        vm.expectRevert(DomainSpoke.NotSystemRelayer.selector);
         spokeB.relayL1Message(A, alice, address(receiver), hex"", 0);
         // Even the same sender address on L1 cannot claim source domain A.
         vm.prank(alice);
@@ -432,7 +432,7 @@ contract NativeRoutingTest is DomainTestBase {
 
     function test_destinationRejectsLocalSource() public {
         vm.prank(spokeB.SYSTEM_RELAYER());
-        vm.expectRevert("DomainSpoke: invalid source");
+        vm.expectRevert(DomainSpoke.InvalidSource.selector);
         spokeB.relayL1Message(B, alice, address(receiver), hex"", 0);
         assertEq(spokeB.nextL1Nonce(), 0);
     }

@@ -33,14 +33,14 @@ contract BridgedERC20Test is Test {
 
     function test_mint_rejectsNonBridge() public {
         vm.prank(alice);
-        vm.expectRevert("BridgedERC20: not bridge");
+        vm.expectRevert(BridgedERC20.NotBridge.selector);
         token.mint(alice, 1);
     }
 
     function test_burn_rejectsNonBridge() public {
         token.mint(alice, 1);
         vm.prank(alice);
-        vm.expectRevert("BridgedERC20: not bridge");
+        vm.expectRevert(BridgedERC20.NotBridge.selector);
         token.burn(alice, 1);
     }
 }

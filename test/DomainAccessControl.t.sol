@@ -72,27 +72,27 @@ contract DomainAccessControlTest is DomainTestBase {
         assertEq(spoke.policyOwners(deployed), policyOwner);
         assertEq(DeploymentOwnershipExample(deployed).owner(), alice);
         assertEq(DeploymentOwnershipExample(deployed).constructorSender(), address(spoke));
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         vm.prank(alice);
         spoke.setAccessPolicy(deployed, denyAll);
     }
 
     function test_deploymentRejectsZeroPolicyOwnerBeforeCreatingContract() public {
         uint64 nonce = vm.getNonce(address(spoke));
-        vm.expectRevert("DomainSpoke: zero policy owner");
+        vm.expectRevert(DomainSpoke.ZeroPolicyOwner.selector);
         spoke.deployContract(type(TestERC20).creationCode, address(0));
         assertEq(vm.getNonce(address(spoke)), nonce);
     }
 
     function test_failedAndEmptyCodeDeploymentsRevertAndRestoreNonce() public {
         uint64 nonce = vm.getNonce(address(spoke));
-        vm.expectRevert("DomainSpoke: deployment failed");
+        vm.expectRevert(DomainSpoke.DeploymentFailed.selector);
         spoke.deployContract(hex"60006000fd", policyOwner); // constructor reverts
         assertEq(vm.getNonce(address(spoke)), nonce);
-        vm.expectRevert("DomainSpoke: deployment failed");
+        vm.expectRevert(DomainSpoke.DeploymentFailed.selector);
         spoke.deployContract(hex"", policyOwner);
         assertEq(vm.getNonce(address(spoke)), nonce);
-        vm.expectRevert("DomainSpoke: deployment failed");
+        vm.expectRevert(DomainSpoke.DeploymentFailed.selector);
         spoke.deployContract(hex"60006000f3", policyOwner); // constructor returns no runtime code
         assertEq(vm.getNonce(address(spoke)), nonce);
     }
@@ -105,7 +105,7 @@ contract DomainAccessControlTest is DomainTestBase {
         assertEq(spoke.policyOwners(other), bob);
         vm.prank(bob);
         spoke.setAccessPolicy(other, denyAll);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         vm.prank(bob);
         spoke.setAccessPolicy(token, denyAll);
         assertFalse(spoke.canCall(alice, other, _balance(alice)));
@@ -118,9 +118,9 @@ contract DomainAccessControlTest is DomainTestBase {
         vm.assume(stranger != policyOwner);
         _policy(token, denyAll);
         vm.startPrank(stranger);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.setAccessPolicy(token, allowAll);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.setAccessPolicy(token, address(0));
         vm.stopPrank();
         assertEq(spoke.accessPolicies(token), denyAll);
@@ -131,7 +131,7 @@ contract DomainAccessControlTest is DomainTestBase {
         address independent = address(new TestERC20());
         assertEq(spoke.policyOwners(independent), address(0));
         vm.prank(policyOwner);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.setAccessPolicy(independent, denyAll);
         assertTrue(spoke.canCall(bob, independent, _balance(alice)));
     }
@@ -145,9 +145,9 @@ contract DomainAccessControlTest is DomainTestBase {
 
     function test_policyMustBeAContractOtherThanTheSpoke() public {
         vm.startPrank(policyOwner);
-        vm.expectRevert("DomainSpoke: policy has no code");
+        vm.expectRevert(DomainSpoke.PolicyHasNoCode.selector);
         spoke.setAccessPolicy(token, outsider);
-        vm.expectRevert("DomainSpoke: spoke cannot be its own policy");
+        vm.expectRevert(DomainSpoke.InvalidSelfPolicy.selector);
         spoke.setAccessPolicy(token, address(spoke));
         spoke.setAccessPolicy(token, address(0));
         vm.stopPrank();
@@ -261,9 +261,9 @@ contract DomainAccessControlTest is DomainTestBase {
         vm.prank(policyOwner);
         spoke.setLogReader(token, alice, true);
         vm.startPrank(stranger);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.setLogReader(token, stranger, allowed);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.setLogReader(token, alice, allowed);
         vm.stopPrank();
         assertFalse(spoke.logReaders(token, stranger));
@@ -282,7 +282,7 @@ contract DomainAccessControlTest is DomainTestBase {
     function test_cannotSetLogReadersForAnIndependentlyDeployedTarget() public {
         address independent = address(new TestERC20());
         vm.prank(policyOwner);
-        vm.expectRevert("DomainSpoke: not policy owner");
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
         spoke.setLogReader(independent, alice, true);
     }
 
