@@ -22,6 +22,9 @@ contract DomainSpoke is IDomainSpoke {
     error OutOfOrderNonce();
     error NotFailedMessage();
     error RetryFailed();
+    error NotDelivery();
+    error NotFromHub();
+    error NoViewingKey();
     error InvalidCiphertext();
     error SameDomain();
     error ZeroTarget();
@@ -42,7 +45,8 @@ contract DomainSpoke is IDomainSpoke {
     address public immutable HUB;
 
     // Storage layout: the domain RPC reads `policyOwners` (slot 2) and `logReaders` (slot 6)
-    // directly from state, so these declarations must not be reordered.
+    // and the encryption precompile reads `viewingKeys` (slot 7) directly from state, so these
+    // declarations must not be reordered.
 
     /// @notice Number of domain-origin messages recorded so far; the nonce the next one gets.
     uint256 public domainMessageCount;
@@ -61,6 +65,8 @@ contract DomainSpoke is IDomainSpoke {
     /// @notice Accounts besides the policy owner that the domain RPC lets read every log of a
     /// contract.
     mapping(address target => mapping(address reader => bool allowed)) public logReaders;
+    /// @notice Viewing key of each other domain, as the hub last sent it.
+    mapping(uint64 domainChainId => bytes32 viewingKey) public viewingKeys;
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
@@ -184,6 +190,20 @@ contract DomainSpoke is IDomainSpoke {
     }
 
     // ---------------------------------------------------------------------
+    // Hub messages to this spoke
+    // ---------------------------------------------------------------------
+
+    /// @notice Stores a viewing key the hub sent. Reached only through this spoke's own
+    /// delivery of a message whose source is the L1 and whose sender is the hub.
+    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
+        if (msg.sender != address(this)) revert NotDelivery();
+        if (sourceChainId != L1_CHAIN_ID || from != HUB) revert NotFromHub();
+        (uint64 domainChainId, bytes32 viewingKey) = MessageLib.decodeViewingKey(data);
+        viewingKeys[domainChainId] = viewingKey;
+        emit ViewingKeySet(domainChainId, viewingKey);
+    }
+
+    // ---------------------------------------------------------------------
     // Domain-origin messaging (L1 execution or forwarding to another domain)
     // ---------------------------------------------------------------------
 
@@ -197,6 +217,7 @@ contract DomainSpoke is IDomainSpoke {
             if (salt == bytes32(0)) revert ZeroSalt();
             return _recordDomainMessage(MessageLib.MessageKind.Plain, destinationChainId, msg.sender, to, data, salt);
         }
+        if (viewingKeys[destinationChainId] == bytes32(0)) revert NoViewingKey();
         // The sender travels inside the sealed plaintext, so the envelope names nobody. The
         // ciphertext already hides the content, so the envelope carries no salt and `salt` is unused.
         bytes memory plaintext = MessageLib.encodePlaintext(msg.sender, to, data);

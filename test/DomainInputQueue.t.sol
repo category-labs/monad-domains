@@ -45,7 +45,7 @@ contract DomainInputQueueTest is DomainTestBase {
     function setUp() public {
         hub = _deployHub(address(this));
         vm.prevrandao(keccak256("prevrandao"));
-        _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
+        _registerKeyedDomain(hub, CHAIN_ID, VALIDATOR_KEY);
         _registerDomain(hub, SOURCE_CHAIN_ID, VALIDATOR_KEY);
         vm.deal(alice, 1_000_000 ether);
     }
@@ -56,7 +56,13 @@ contract DomainInputQueueTest is DomainTestBase {
 
     function _register(uint64 chainId, uint8 maxUnattestedPeriods) internal {
         hub.registerDomain(
-            chainId, _addresses(_keys(VALIDATOR_KEY)), 1, address(this), "", CHECKPOINT_INTERVAL, maxUnattestedPeriods
+            chainId,
+            _addresses(_keys(VALIDATOR_KEY)),
+            1,
+            address(this),
+            _viewingKey(chainId),
+            CHECKPOINT_INTERVAL,
+            maxUnattestedPeriods
         );
     }
 
@@ -746,7 +752,13 @@ contract DomainInputQueueTest is DomainTestBase {
         modelInterval = [1, 2, 3, 7, 10, 40][interval % 6];
         vm.roll(1 + seed % 40);
         hub.registerDomain(
-            MODEL_CHAIN_ID, _addresses(_keys(VALIDATOR_KEY)), 1, address(this), "", modelInterval, maxUnattestedPeriods
+            MODEL_CHAIN_ID,
+            _addresses(_keys(VALIDATOR_KEY)),
+            1,
+            address(this),
+            _viewingKey(MODEL_CHAIN_ID),
+            modelInterval,
+            maxUnattestedPeriods
         );
         modelBlocks.push(uint64(block.number));
         if (seed % 3 != 0) {

@@ -39,7 +39,13 @@ contract InputGasTest is DomainTestBase {
         vm.prevrandao(keccak256("prevrandao"));
         hub = _deployHub(address(this));
         hub.registerDomain(
-            CHAIN_ID, _addresses(_keys(KEY, KEY_2)), 1, feeRecipient, "", CHECKPOINT_INTERVAL, MAX_UNATTESTED_PERIODS
+            CHAIN_ID,
+            _addresses(_keys(KEY, KEY_2)),
+            1,
+            feeRecipient,
+            _viewingKey(CHAIN_ID),
+            CHECKPOINT_INTERVAL,
+            MAX_UNATTESTED_PERIODS
         );
         _registerDomain(hub, SOURCE_CHAIN_ID, KEY);
         vm.deal(alice, 1_000_000 ether);

@@ -4,9 +4,9 @@ pragma solidity ^0.8.24;
 // Address of the execution client's encryption precompile on every domain.
 address constant DOMAIN_ENCRYPTION_PRECOMPILE = 0x0000000000000000000000000000000000001a7e;
 
-/// @notice Encryption precompile of the domain execution client. It holds every registered
-/// domain's viewing public key and seals deterministically, so every replica computes the
-/// same ciphertext. Absent on the L1.
+/// @notice Encryption precompile of the domain execution client. It reads destination viewing
+/// keys from the spoke's `viewingKeys` and seals deterministically, so every replica computes
+/// the same ciphertext. Absent on the L1.
 interface IDomainEncryption {
     /// @notice Seals `plaintext` to `destinationChainId`'s viewing key, with the executing
     /// domain, the destination and `sequenceNumber` (the spoke's source nonce) as associated
