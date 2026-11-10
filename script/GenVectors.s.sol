@@ -89,5 +89,9 @@ contract GenVectors is Script {
         // Plaintext of an encrypted envelope.
         console.log("keccak256(encodePlaintext(0x1000, 0x2000, 0x1234))");
         console.logBytes32(keccak256(MessageLib.encodePlaintext(address(0x1000), address(0x2000), hex"1234")));
+
+        // Payload of the hub's viewing key message.
+        console.log("keccak256(encodeViewingKey(8888, 0x04c0ffee))");
+        console.logBytes32(keccak256(MessageLib.encodeViewingKey(8888, hex"04c0ffee")));
     }
 }

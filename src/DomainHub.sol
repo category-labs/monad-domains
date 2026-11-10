@@ -44,6 +44,7 @@ contract DomainHub is IDomainHub, EIP712 {
     error DomainBlockGasLimitExceeded();
     error DomainBlockSizeLimitExceeded();
     error FeeTransferFailed();
+    error NoViewingKey();
     error DeliveryFeeTooLow();
     error SequencingFeeTooLow();
     error SlotNumberProbeNotDeployed();
@@ -370,6 +371,22 @@ contract DomainHub is IDomainHub, EIP712 {
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable {
         (, uint256 config) =
             _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data, msg.value);
+        _payFee(config, msg.value);
+    }
+
+    function sendViewingKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable {
+        if (_queueConfig(domainChainId) == 0) revert DomainNotRegistered();
+        bytes memory viewingKey = _configs[keyChainId].viewingKey;
+        if (viewingKey.length == 0) revert NoViewingKey();
+        // The hub itself is the sender, which is how the spoke recognizes a key message.
+        (, uint256 config) = _sendL1Message(
+            domainChainId,
+            SafeCast.toUint64(block.chainid),
+            address(this),
+            spoke,
+            MessageLib.encodeViewingKey(keyChainId, viewingKey),
+            msg.value
+        );
         _payFee(config, msg.value);
     }
 

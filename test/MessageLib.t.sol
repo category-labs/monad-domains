@@ -4,11 +4,12 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 
-/// @notice Pins both message hashes to the vectors `offchain/test/conformance.test.ts` checks the
+/// @notice Pins the message hashes and payload encodings to the vectors `offchain/test/conformance.test.ts` checks the
 /// TypeScript mirror against (printed by `script/GenVectors.s.sol`), so a change to either
 /// implementation fails a test.
 contract MessageLibTest is Test {
     bytes32 internal constant ENCRYPTED_VECTOR = 0x18d50d21546cb7d9b2b9b6698d478e5ff665f8f5b6e07c32bd3eaff0179ad661;
+    bytes32 internal constant VIEWING_KEY_VECTOR = 0x0912c828ad711283db49eedb991a0dc7acf9ebc01645e1dc0fc238396f7842e9;
     bytes32 internal constant PLAINTEXT_VECTOR = 0x7a9c9eb956b730e4846f08c2553b355ef73f56830298acb60d4666b3b5f8b0ef;
 
     function test_hashMessage_matchesConformanceVector() public pure {
@@ -56,6 +57,14 @@ contract MessageLibTest is Test {
         assertEq(from, address(0x1000));
         assertEq(to, address(0x2000));
         assertEq(data, hex"1234");
+    }
+
+    function test_viewingKeyPayload_matchesConformanceVector() public pure {
+        bytes memory data = MessageLib.encodeViewingKey(8888, hex"04c0ffee");
+        assertEq(keccak256(data), VIEWING_KEY_VECTOR);
+        (uint64 domainChainId, bytes memory viewingKey) = MessageLib.decodeViewingKey(data);
+        assertEq(domainChainId, 8888);
+        assertEq(viewingKey, hex"04c0ffee");
     }
 
     function testFuzz_hashDomainMessage_bindsKind(address to, bytes memory data) public pure {

@@ -75,7 +75,10 @@ envelope's nonce. The envelope has kind `Encrypted`, names neither sender nor ta
 no salt: the ciphertext already hides its content, so `salt` is ignored for a domain destination
 and only an L1 destination needs one. The hub forwards the envelope as an
 `EncryptedL1MessageRecorded` delivery carrying only the ciphertext, which the destination client
-opens into `(from, to, data)` before deriving the system transaction.
+opens into `(from, to, data)` before deriving the system transaction. A
+spoke learns another domain's key through `hub.sendViewingKey(domainChainId, spoke, keyChainId)`,
+which anyone may call for the delivery fee: the hub records the key as an L1 message from itself
+and the spoke stores it only from such a delivery.
 Tracking such a message needs that plaintext (`encodePlaintext` / `decodePlaintext`; see
 `routedMessageDeliveryStatus` below). `npm run e2e:routing` (`e2e/e2e-routing-cli.ts`) runs the
 route against a fresh two-domain devnet whose client provides the precompile (needs

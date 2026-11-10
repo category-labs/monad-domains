@@ -76,7 +76,7 @@ Every byte a domain executes reaches the L1 as HPKE ciphertext sealed to the dom
 | KDF | HKDF-SHA256 |
 | AEAD | AES-128-GCM |
 | info | empty |
-| Associated data | `abi.encode("monad-transaction-encryption-v1", uint64 domainChainId)` for a sequenced transaction, empty for an encrypted message |
+| Associated data | `abi.encode("monad-transaction-encryption-v1", uint64 domainChainId)` for a sequenced transaction |
 
 There are two types of encryptions:
 

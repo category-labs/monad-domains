@@ -95,6 +95,19 @@ export function decodePlaintext(plaintext: Hex): MessagePlaintext {
   return { from, to, data };
 }
 
+const VIEWING_KEY_PARAMS = parseAbiParameters("uint64 domainChainId, bytes viewingKey");
+
+/** Mirrors `MessageLib.encodeViewingKey`: the payload of the hub's viewing key message to a spoke. */
+export function encodeViewingKey(domainChainId: bigint, viewingKey: Hex): Hex {
+  return encodeAbiParameters(VIEWING_KEY_PARAMS, [domainChainId, viewingKey]);
+}
+
+/** Mirrors `MessageLib.decodeViewingKey`. */
+export function decodeViewingKey(data: Hex): { domainChainId: bigint; viewingKey: Hex } {
+  const [domainChainId, viewingKey] = decodeAbiParameters(VIEWING_KEY_PARAMS, data);
+  return { domainChainId, viewingKey };
+}
+
 /**
  * Direct application delivery, using the nonce assigned by the destination queue. An
  * encrypted envelope is delivered as the plaintext it seals, which the caller supplies.

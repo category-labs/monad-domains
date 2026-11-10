@@ -4,6 +4,17 @@ pragma solidity ^0.8.24;
 import {IDomainAccessControl} from "./IDomainAccessControl.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
 
+/// @notice Shared hook for L1-origin and domain-origin messages. Authenticate msg.sender
+/// (the hub on L1, local spoke on a domain), sourceChainId and from together.
+/// @dev Do all the work or revert. Whoever relays, pays for or retries a delivery chooses the
+/// gas this call gets. A revert leaves the message retryable; returning normally consumes it
+/// for good. A receiver that carries on after a failed inner call (`try/catch`, an unchecked
+/// low-level call) can be given just enough gas to finish without that call, so it must
+/// first check that `gasleft()` covers it.
+interface IDomainMessageReceiver {
+    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external;
+}
+
 /// @notice L1-side hub of the domain messaging layer: the single L1 contract every domain connects
 /// through. It registers domains, sequences their transactions, records L1 -> domain messages, and
 /// stores the state roots and domain-origin message anchors each domain's validators attest.
@@ -229,6 +240,13 @@ interface IDomainHub {
     /// `minDeliveryFee(data.length)`.
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable;
 
+    /// @notice Sends `keyChainId`'s registered viewing key to `spoke` on `domainChainId` as an
+    /// L1 message from the hub itself, carrying `MessageLib.encodeViewingKey(keyChainId, key)`.
+    /// Anyone may call it; `msg.value` is the delivery fee. The spoke accepts the key only from
+    /// a delivery whose source is the L1 and whose sender is the hub. MUST reject an
+    /// unregistered `domainChainId` and a `keyChainId` without a viewing key.
+    function sendViewingKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable;
+
     /// @notice Number of deliveries recorded for `domainChainId`, L1 messages and forwarded
     /// encrypted domain messages alike; equals the nonce the next one will be assigned.
     function l1MessageCounts(uint64 domainChainId) external view returns (uint256);
@@ -258,10 +276,14 @@ interface IDomainHub {
 /// @notice Domain-side spoke, deployed in each domain's state. Mirror image of the hub: it
 /// records domain-origin messages by nonce and receives the L1 -> domain messages the domain
 /// client delivers as system transactions. It also holds the access-control configuration the
-/// domain client and RPC enforce.
-interface IDomainSpoke is IDomainAccessControl {
+/// domain client and RPC enforce, and the viewing keys of other domains the encryption
+/// precompile seals to.
+interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
     /// @notice Full encoded domain-origin envelope, whether addressed to L1 or another domain.
     event DomainMessageRecorded(bytes32 indexed messageId, bytes message);
+
+    /// @notice A viewing key of another domain was stored, from a hub message.
+    event ViewingKeySet(uint64 indexed domainChainId, bytes viewingKey);
 
     /// @notice Emitted for every protocol-delivered L1 -> domain message. `success` is the
     /// outcome of the target call; a failed delivery is retryable via `retryL1Message`.
@@ -285,6 +307,15 @@ interface IDomainSpoke is IDomainAccessControl {
 
     /// @notice The execution client's encryption precompile (`IDomainEncryption`).
     function ENCRYPTION_PRECOMPILE() external view returns (address);
+
+    // --- Viewing keys of other domains ---
+
+    /// @notice Viewing key of `domainChainId` as the hub last sent it, or empty. Set only by
+    /// `onDomainMessage` on a delivery this spoke makes to itself whose source is the L1 and
+    /// whose sender is the hub (`sendViewingKey` on the hub); any other caller or origin is
+    /// rejected. The encryption precompile reads this mapping to seal messages to
+    /// `domainChainId`.
+    function viewingKeys(uint64 domainChainId) external view returns (bytes memory);
 
     // --- Delivery of L1 messages (protocol system transactions) ---
 
@@ -332,15 +363,4 @@ interface IDomainSpoke is IDomainAccessControl {
     /// @notice Recorded message ID by source nonce. Never cleared, so an attested batch can
     /// always be rebuilt from state.
     function domainMessageIds(uint256 sourceNonce) external view returns (bytes32);
-}
-
-/// @notice Shared hook for L1-origin and domain-origin messages. Authenticate msg.sender
-/// (the hub on L1, local spoke on a domain), sourceChainId and from together.
-/// @dev Do all the work or revert. Whoever relays, pays for or retries a delivery chooses the
-/// gas this call gets. A revert leaves the message retryable; returning normally consumes it
-/// for good. A receiver that carries on after a failed inner call (`try/catch`, an unchecked
-/// low-level call) can be given just enough gas to finish without that call, so it must
-/// first check that `gasleft()` covers it.
-interface IDomainMessageReceiver {
-    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external;
 }

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { keccak256, toHex, type Address, type Hex } from "viem";
-import { decodePlaintext, encodePlaintext, encodeTransfer, hashDomainMessage, hashMessage, MessageKind, type DomainMessage, type Message } from "../src/message.js";
+import {
+  decodePlaintext, decodeViewingKey, encodePlaintext, encodeTransfer, encodeViewingKey, hashDomainMessage, hashMessage,
+  MessageKind, type DomainMessage, type Message,
+} from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
 import { proveMessage, type RecordedMessage } from "../src/prover.js";
 import { stateTransitionDigest } from "../src/checkpoint.js";
@@ -168,4 +171,10 @@ test("encodePlaintext matches MessageLib.encodePlaintext", () => {
   const encoded = encodePlaintext(plaintext);
   assert.equal(keccak256(encoded), "0x7a9c9eb956b730e4846f08c2553b355ef73f56830298acb60d4666b3b5f8b0ef");
   assert.deepEqual(decodePlaintext(encoded), plaintext);
+});
+
+test("encodeViewingKey matches MessageLib.encodeViewingKey", () => {
+  const data = encodeViewingKey(8888n, "0x04c0ffee");
+  assert.equal(keccak256(data), "0x0912c828ad711283db49eedb991a0dc7acf9ebc01645e1dc0fc238396f7842e9");
+  assert.deepEqual(decodeViewingKey(data), { domainChainId: 8888n, viewingKey: "0x04c0ffee" });
 });

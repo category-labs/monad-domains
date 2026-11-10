@@ -37,9 +37,9 @@ import {
 
 /**
  * End-to-end domain -> domain messaging against a fresh single-node devnet serving two
- * domains: set up both on one hub, deploy a receiver on B, record two messages for B on spoke A
- * in one batch, attest, relay both and check that the hub's events carry only ciphertext and
- * that B delivers both to the receiver with alice as the sender.
+ * domains: set up both on one hub, deploy a receiver on B, push B's viewing key to spoke A,
+ * record two messages for B on spoke A in one batch, attest, relay both and check that the hub's
+ * events carry only ciphertext and that B delivers both to the receiver with alice as the sender.
  *
  * Needs a client that provides the encryption precompile and opens forwarded ciphertexts.
  *
@@ -205,12 +205,29 @@ async function main() {
   console.log(`  receiver ${receiver} on domain B`);
 
   // -------------------------------------------------------------------------
-  step("3. alice records two messages for B on spoke A, sealed by A's encryption precompile");
+  step("3. spoke A learns B's viewing key from the hub");
   // -------------------------------------------------------------------------
-  // The hub publishes B's key; the precompile seals to it.
   const publishedKeyB = (await l1.readContract({ address: hub, abi: hubArt.abi, functionName: "viewingKeys", args: [DOMAIN_B] })) as Hex;
   if (publishedKeyB.toLowerCase() !== VIEWING_KEY_B.toLowerCase()) throw new Error(`hub publishes ${publishedKeyB} for B, expected VIEWING_KEY_B`);
+  // Anyone may push a key; the hub sends it as an L1 message from itself and A's client delivers it.
+  const deliveryFee = DELIVERY_GAS * (await readDomainGasPrice(l1, hub));
+  await confirm(
+    await aliceWallet.writeContract({
+      address: hub, abi: hubArt.abi, functionName: "sendViewingKey", args: [DOMAIN_A, spokeA, DOMAIN_B], gas: 300_000n, value: deliveryFee,
+    }),
+    "hub.sendViewingKey(A, spokeA, B)",
+  );
+  await retry(
+    "spoke A's copy of B's key",
+    async () => (await domainA.readContract({ address: spokeA, abi: spokeArt.abi, functionName: "viewingKeys", args: [DOMAIN_B] })) as Hex,
+    (key) => key.toLowerCase() === publishedKeyB.toLowerCase(),
+    90_000,
+  );
+  console.log(`  spoke A stores B's key (${(publishedKeyB.length - 2) / 2} bytes)`);
 
+  // -------------------------------------------------------------------------
+  step("4. alice records two messages for B on spoke A, sealed by A's encryption precompile");
+  // -------------------------------------------------------------------------
   const sends: { label: string; plaintext: MessagePlaintext }[] = [
     { label: "sendDomainMessage(B, receiver, 0x01)", plaintext: { from: alice.address, to: receiver, data: PAYLOAD_FIRST } },
     { label: "sendDomainMessage(B, receiver, 0x5ec2e7)", plaintext: { from: alice.address, to: receiver, data: PAYLOAD_SECOND } },
@@ -238,7 +255,7 @@ async function main() {
   }
 
   // -------------------------------------------------------------------------
-  step("4. validator attests A's next scheduled checkpoint (anchors the batch)");
+  step("5. validator attests A's next scheduled checkpoint (anchors the batch)");
   // -------------------------------------------------------------------------
   const interval = BigInt(await l1.readContract({ address: hub, abi: HUB_CHECKPOINT_ABI, functionName: "checkpointIntervals", args: [DOMAIN_A] }));
   const lastBlock = recorded[recorded.length - 1]!.blockNumber;
@@ -253,7 +270,7 @@ async function main() {
   console.log(`  checkpoint ${checkpointHeight}: anchor ${checkpoint.anchor} (${attestation.submitted[0]})`);
 
   // -------------------------------------------------------------------------
-  step("5. relay both through the hub: ciphertext-only transport events");
+  step("6. relay both through the hub: ciphertext-only transport events");
   // -------------------------------------------------------------------------
   const located = await retry(
     "attested batch",
@@ -263,7 +280,6 @@ async function main() {
   const batch = await fetchDomainBatch(domainA, spokeA, located!, context, { scanFromBlock: hubDeployBlock });
   const deliveryNonces: bigint[] = [];
   // The relayer pays for B's delivery of each routed message.
-  const deliveryFee = DELIVERY_GAS * (await readDomainGasPrice(l1, hub));
   for (const entry of recorded) {
     const proof = proveMessage(batch, entry.messageId);
     if (proof.anchor !== checkpoint.anchor) throw new Error(`rebuilt anchor ${proof.anchor} differs from the attested ${checkpoint.anchor}`);
@@ -305,7 +321,7 @@ async function main() {
   console.log(`  L1 view of B's inbox: ${inbox.encrypted} ciphertexts, no plaintext envelope (only the source domain in the clear)`);
 
   // -------------------------------------------------------------------------
-  step("6. B's client opens both ciphertexts and delivers them to the receiver");
+  step("7. B's client opens both ciphertexts and delivers them to the receiver");
   // -------------------------------------------------------------------------
   const status = (index: number) =>
     routedMessageDeliveryStatus(domainB, recorded[index]!.message, spokeB, deliveryNonces[index]!, recorded[index]!.plaintext);

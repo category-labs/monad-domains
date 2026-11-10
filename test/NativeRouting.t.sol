@@ -39,14 +39,15 @@ contract NativeRoutingTest is DomainTestBase {
         vm.chainId(L1);
         hub = new DomainHub();
         _register(hub, A);
-        _register(hub, B);
-        _register(hub, C);
+        _registerKeyedDomain(hub, B, KEY);
+        _registerKeyedDomain(hub, C, KEY);
         spokeA = new DomainSpoke(A, L1, address(hub));
         spokeB = new DomainSpoke(B, L1, address(hub));
         receiver = new CrossDomainReceiver(address(spokeB), A, alice);
         precompile = _installEncryptionPrecompile();
-        precompile.setViewingKey(B, "viewing key of B");
-        precompile.setViewingKey(C, "viewing key of C");
+        // Spoke A learns B's and C's keys from the hub before it can seal to them.
+        _deliverViewingKey(hub, spokeA, B);
+        _deliverViewingKey(hub, spokeA, C);
         vm.deal(makeAddr("relayer"), 100 ether);
         vm.deal(alice, 100 ether);
     }
@@ -158,17 +159,18 @@ contract NativeRoutingTest is DomainTestBase {
         assertEq(message.to, address(0), "the envelope hides the target");
 
         // Sealed by spoke A, for B, under this envelope's nonce.
-        (address sealer, uint64 destination, uint256 sequence, bytes memory plaintext) =
+        (address sealer, uint64 destination, uint256 sequence, bytes32 keyHash, bytes memory plaintext) =
             precompile.openMessage(message.data);
         assertEq(sealer, address(spokeA));
         assertEq(destination, B);
         assertEq(sequence, 0);
+        assertEq(keyHash, keccak256(hub.viewingKeys(B)), "sealed under B's registered key");
         assertEq(plaintext, MessageLib.encodePlaintext(alice, address(receiver), hex"abcd"));
         assertEq(precompile.seals(), 1);
 
         // The next envelope is sealed under the next nonce.
         MessageLib.DomainMessage memory next = _send(address(receiver), hex"");
-        (,, sequence,) = precompile.openMessage(next.data);
+        (,, sequence,,) = precompile.openMessage(next.data);
         assertEq(sequence, 1);
         assertEq(next.sourceNonce, 1);
     }
@@ -189,7 +191,7 @@ contract NativeRoutingTest is DomainTestBase {
         spokeA.sendDomainMessage(A, address(receiver), hex"", TEST_SALT);
         vm.expectRevert(DomainSpoke.ZeroTarget.selector);
         spokeA.sendDomainMessage(B, address(0), hex"", TEST_SALT);
-        // No key is known for domain 1234.
+        // Spoke A holds no key for domain 1234.
         vm.expectRevert("MockDomainEncryption: unknown viewing key");
         spokeA.sendDomainMessage(1234, address(receiver), hex"", TEST_SALT);
         vm.stopPrank();
@@ -252,11 +254,21 @@ contract NativeRoutingTest is DomainTestBase {
     }
 
     function test_unknownDestinationDoesNotConsumeAuthenticatedMessage() public {
-        precompile.setViewingKey(1234, "viewing key of an unregistered domain");
-        MessageLib.DomainMessage memory message = _sendTo(1234, address(receiver), hex"");
-        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+        // Spoke A cannot seal to an unregistered domain, so this is a forgery A's validators
+        // attested; the hub still does not consume it.
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Encrypted,
+            sourceChainId: A,
+            destinationChainId: 1234,
+            from: address(0),
+            to: address(0),
+            sourceNonce: 0,
+            salt: bytes32(0),
+            data: hex"c0ffee"
+        });
+        _post(hub, A, _id(message));
         vm.expectRevert(DomainHub.DestinationNotRegistered.selector);
-        hub.relayDomainMessage(message, anchor, new bytes32[](0));
+        hub.relayDomainMessage(message, _id(message), new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(A, _id(message)));
     }
 
@@ -463,6 +475,7 @@ contract NativeRoutingTest is DomainTestBase {
         MessageLib.DomainMessage memory first = _send(address(receiver), hex"");
         _deliver(_route(first));
         DomainSpoke spokeC = new DomainSpoke(C, L1, address(hub));
+        _deliverViewingKey(hub, spokeC, B);
         MessageLib.DomainMessage memory second = _sendFrom(spokeC, B, address(receiver), hex"");
         assertNotEq(_id(first), _id(second));
         bytes32 anchor = _attestBatch(hub, spokeC, KEY);
