@@ -11,6 +11,10 @@ import {BridgedERC20} from "./BridgedERC20.sol";
 /// the corresponding bridged token. Exactly-once delivery is the protocol's guarantee.
 contract DomainBridge is IDomainMessageReceiver {
     error ZeroL1Bridge();
+    error SpokeHasNoCode();
+    error ZeroPolicyOwner();
+    error PolicyHasNoCode();
+    error InvalidTokenPolicy();
     error NotSpoke();
     error NotFromL1();
     error NotL1Bridge();
@@ -23,6 +27,10 @@ contract DomainBridge is IDomainMessageReceiver {
     /// @notice Counterpart L1Bridge - the only accepted message sender.
     address public immutable L1_BRIDGE;
 
+    /// @notice Policy administrator and initial policy shared by newly created bridged tokens.
+    address public immutable TOKEN_POLICY_OWNER;
+    address public immutable INITIAL_TOKEN_POLICY;
+
     /// @notice Bridged token per L1 token address.
     mapping(address => BridgedERC20) public bridgedTokens;
 
@@ -30,10 +38,16 @@ contract DomainBridge is IDomainMessageReceiver {
     event DepositFinalized(address indexed recipient, address indexed l1Token, uint256 amount);
     event WithdrawalInitiated(address indexed sender, address recipient, address indexed l1Token, uint256 amount);
 
-    constructor(IDomainSpoke spoke, address l1Bridge) {
+    constructor(IDomainSpoke spoke, address l1Bridge, address tokenPolicyOwner, address initialTokenPolicy) {
         if (l1Bridge == address(0)) revert ZeroL1Bridge();
+        if (address(spoke).code.length == 0) revert SpokeHasNoCode();
+        if (tokenPolicyOwner == address(0)) revert ZeroPolicyOwner();
+        if (initialTokenPolicy.code.length == 0) revert PolicyHasNoCode();
+        if (initialTokenPolicy == address(spoke)) revert InvalidTokenPolicy();
         SPOKE = spoke;
         L1_BRIDGE = l1Bridge;
+        TOKEN_POLICY_OWNER = tokenPolicyOwner;
+        INITIAL_TOKEN_POLICY = initialTokenPolicy;
     }
 
     /// @notice Receives an L1 deposit message delivered by the protocol and mints the bridged
@@ -77,7 +91,13 @@ contract DomainBridge is IDomainMessageReceiver {
     /// bridged token address is fully deterministic.
     function _deployBridgedToken(address l1Token) internal returns (BridgedERC20 token) {
         token = new BridgedERC20{salt: bytes32(uint256(uint160(l1Token)))}(
-            l1Token, string.concat("Bridged ", Strings.toHexString(l1Token)), "BRG", 18
+            l1Token,
+            string.concat("Bridged ", Strings.toHexString(l1Token)),
+            "BRG",
+            18,
+            SPOKE,
+            TOKEN_POLICY_OWNER,
+            INITIAL_TOKEN_POLICY
         );
         bridgedTokens[l1Token] = token;
         emit BridgedTokenDeployed(l1Token, address(token));

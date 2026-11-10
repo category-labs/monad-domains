@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {DomainAccessRules} from "../../src/access/DomainAccessRules.sol";
+
 import {Test} from "forge-std/Test.sol";
 import {BridgedERC20} from "../../src/bridge/BridgedERC20.sol";
 import {L1Bridge} from "../../src/bridge/L1Bridge.sol";
@@ -67,7 +69,8 @@ contract BridgeHandler is DomainTestBase {
         SPOKE = new DomainSpoke(CHAIN_ID, block.chainid, address(HUB));
 
         L1_BRIDGE = new L1Bridge(HUB, CHAIN_ID);
-        DOMAIN_BRIDGE = new DomainBridge(SPOKE, address(L1_BRIDGE));
+        DOMAIN_BRIDGE =
+            new DomainBridge(SPOKE, address(L1_BRIDGE), address(this), address(new DomainAccessRules(SPOKE)));
         L1_BRIDGE.registerDomainBridge(address(DOMAIN_BRIDGE));
 
         TOKEN = new TestERC20();

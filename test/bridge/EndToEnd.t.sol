@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {DomainAccessRules} from "../../src/access/DomainAccessRules.sol";
+
 import {BridgedERC20} from "../../src/bridge/BridgedERC20.sol";
 import {L1Bridge} from "../../src/bridge/L1Bridge.sol";
 import {DomainBridge} from "../../src/bridge/DomainBridge.sol";
@@ -35,7 +37,7 @@ contract DepositEndToEndTest is DomainTestBase {
 
         // Application: bridge pair wired to each other.
         l1Bridge = new L1Bridge(hub, CHAIN_ID);
-        domainBridge = new DomainBridge(spoke, address(l1Bridge));
+        domainBridge = new DomainBridge(spoke, address(l1Bridge), address(this), address(new DomainAccessRules(spoke)));
         l1Bridge.registerDomainBridge(address(domainBridge));
 
         token = new TestERC20();

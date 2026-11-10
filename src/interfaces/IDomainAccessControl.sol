@@ -19,6 +19,7 @@ interface IDomainAccessPolicy {
 /// call frame.
 interface IDomainAccessControl is IDomainAccessPolicy {
     event ContractDeployed(address indexed target, address indexed deployer, address indexed policyOwner);
+    event ContractRegistered(address indexed target, address indexed policyOwner);
     /// @notice A zero `policy` opens the contract to every caller.
     event AccessPolicySet(address indexed target, address indexed policy);
     event LogReaderSet(address indexed target, address indexed reader, bool allowed);
@@ -27,6 +28,13 @@ interface IDomainAccessControl is IDomainAccessPolicy {
     /// @param initCode Creation bytecode including ABI-encoded constructor arguments.
     /// @param policyOwner Account authorized to name the contract's access policy.
     function deployContract(bytes calldata initCode, address policyOwner) external returns (address deployed);
+
+    /// @notice Register the caller once, assigning its policy owner and initial policy together.
+    /// @dev May be called during construction. Only the caller's address is registered.
+    /// If used inside `deployContract`, both paths must name the same policy owner.
+    /// @param policyOwner Nonzero account authorized to configure the caller's access policy and log readers.
+    /// @param initialPolicy Policy to install immediately, or zero to admit every caller.
+    function selfRegisterPolicy(address policyOwner, address initialPolicy) external;
 
     /// @notice Who may name each deployed contract's access policy.
     function policyOwners(address target) external view returns (address);
