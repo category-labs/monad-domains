@@ -30,3 +30,15 @@ contract FeeOnTransferERC20 is ERC20 {
         super._update(from, to, value);
     }
 }
+
+/// @notice ERC20 whose transfers cost roughly 300k gas - used to assert the bridge cannot be
+/// given enough gas to finish a withdrawal but too little to transfer.
+contract GasHeavyERC20 is TestERC20 {
+    function _update(address from, address to, uint256 value) internal override {
+        bytes32 hash;
+        for (uint256 i; i < 1_000; ++i) {
+            hash = keccak256(abi.encode(hash));
+        }
+        super._update(from, to, value);
+    }
+}

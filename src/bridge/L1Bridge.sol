@@ -84,7 +84,9 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
 
     /// @notice Receives a withdrawal authenticated and delivered by the hub. The protocol
     /// verifies inclusion and prevents replay; the bridge authorizes its source and releases
-    /// collateral. Reverting leaves the message retryable at the hub.
+    /// collateral. Reverting leaves the message retryable at the hub, and every step here
+    /// reverts on failure, so a relay with too little gas can never consume the withdrawal
+    /// without releasing the tokens.
     function onDomainMessage(uint64 domainChainId, address from, bytes calldata data) external {
         require(msg.sender == address(HUB), "L1Bridge: not hub");
         require(domainChainId == DOMAIN_CHAIN_ID, "L1Bridge: wrong domain");
