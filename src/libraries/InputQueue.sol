@@ -31,7 +31,7 @@ pragma solidity ^0.8.24;
 ///
 ///   transaction        `rlpTx`
 ///   message            `sourceChainId(8) | from(20) | to(20) | nonce(8) | data`
-///   encrypted message  `sourceChainId(8) | from(20) | nonce(8) | ciphertext`
+///   encrypted message  `sourceChainId(8) | sourceNonce(8) | nonce(8) | ciphertext`
 ///
 /// No word written to the ring is zero unless `prevrandao` is, so once it has been lapped a
 /// write only replaces a nonzero word and pays no state growth.
