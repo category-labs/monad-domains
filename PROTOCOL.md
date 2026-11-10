@@ -44,6 +44,8 @@ Everything that enters a domain is pushed by the protocol from L1 events.
 3. Validators sign the anchor together with the state root. Once a quorum signed, the hub records the anchor.
 4. Anyone calls `relayDomainMessage(message, anchor, proof)` on the hub to execute the message. A message to another domain is queued there as an L1 to domain message instead, and the caller attaches its delivery fee.
 
+**Receivers.** A receiver must do all its work or revert. The sender does not set the gas of a delivery: on the L1 it is whatever the relayer supplies, in a domain it is what the attached fee bought, and a retry runs with its caller's gas. A callback that reverts leaves the message retryable, while one that returns normally consumes it for good. So a receiver that carries on after a failed inner call can be given just enough gas to finish without that call, and the message is lost.
+
 ## Checkpoint attestation
 
 Validators attest checkpoints on a schedule. The hub accepts a checkpoint height that is a multiple of the domain's `checkpointInterval`, above the hub's last attested height.

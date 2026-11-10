@@ -15,8 +15,9 @@ executes the transaction. A `sendL1Message` / `bridgeToDomain` / domain-bound `r
 call must attach the fee of the gas its delivery needs, since the delivery runs with exactly that
 much. The hub rejects anything below `hub.minDeliveryFee(payload length)`, the gas that lets the
 spoke deliver or record a retryable failure, so a recorded message can be delayed by a stingy
-relayer but never lost. It also sells at most `DOMAIN_BLOCK_GAS_LIMIT` gas per domain per L1 block;
-a call that does not fit reverts and can be sent again in a later block.
+relayer but never lost, as long as its receiver reverts instead of skipping work (see Receivers
+in `PROTOCOL.md`). The hub also sells at most `DOMAIN_BLOCK_GAS_LIMIT` gas per domain per L1
+block; a call that does not fit reverts and can be sent again in a later block.
 
 ## Transaction encryption
 

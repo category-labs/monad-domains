@@ -6,7 +6,7 @@ import {IDomainHub} from "../../src/interfaces/IDomain.sol";
 import {L1Bridge} from "../../src/bridge/L1Bridge.sol";
 import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
-import {TestERC20, FeeOnTransferERC20} from "../mocks/TestERC20.sol";
+import {TestERC20, FeeOnTransferERC20, GasHeavyERC20} from "../mocks/TestERC20.sol";
 import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 
 contract L1BridgeTest is DomainTestBase {
@@ -228,6 +228,30 @@ contract L1BridgeTest is DomainTestBase {
         assertEq(token.balanceOf(bob), 40 ether);
         assertEq(token.balanceOf(address(bridge)), 60 ether);
         assertTrue(hub.relayedDomainMessages(CHAIN_ID, messageHash));
+    }
+
+    function test_withdraw_isNeverConsumedWithoutReleasingTokens() public {
+        token = new GasHeavyERC20();
+        token.mint(address(bridge), 100 ether);
+        MessageLib.DomainMessage memory message = _anchoredWithdrawal(bob, 40 ether, 0);
+        bytes32 messageHash = _hash(message);
+
+        // Whatever gas the relayer picks, the relay reverts (the message stays relayable),
+        // records a retryable failure, or releases the tokens.
+        uint256 released;
+        for (uint256 gas = 50_000; gas <= 600_000; gas += 5_000) {
+            uint256 snapshot = vm.snapshotState();
+            try hub.relayDomainMessage{gas: gas}(message, messageHash, new bytes32[](0)) returns (bool success) {
+                if (success) {
+                    assertEq(token.balanceOf(bob), 40 ether);
+                    ++released;
+                } else {
+                    assertTrue(hub.failedDomainMessages(CHAIN_ID, messageHash));
+                }
+            } catch {}
+            vm.revertToState(snapshot);
+        }
+        assertGt(released, 0);
     }
 
     function test_withdraw_rejectsForgedSender() public {
