@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IDomainAccessControl} from "./IDomainAccessControl.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
+import {InputQueue} from "../libraries/InputQueue.sol";
 
 /// @notice L1-side hub of the domain messaging layer: the single L1 contract every domain connects
 /// through. It registers domains, sequences their transactions, records L1 -> domain messages, and
@@ -218,6 +219,49 @@ interface IDomainHub {
     /// @notice Number of L1 -> domain messages recorded for `domainChainId`, plaintext,
     /// encrypted and forwarded alike; equals the nonce the next message will be assigned.
     function l1MessageCounts(uint64 domainChainId) external view returns (uint256);
+
+    // --- Input queue ---
+
+    /// @notice Gas the domain has sold in L1 block `blockNumber`, the last one it sold any in.
+    function blockGas(uint64 domainChainId) external view returns (uint64 blockNumber, uint192 gasSold);
+
+    /// @notice Every sequenced transaction and recorded message is also appended, in L1 order,
+    /// to the destination domain's input queue: a circular buffer in the hub's storage (layout
+    /// in `InputQueue`) holding every input the domain's attested state does not yet cover. A
+    /// node holding the L1 state and the domain state at the attested height replays the queue
+    /// to reach the domain's tip. A call that would overflow the queue MUST revert with
+    /// `InputQueueFull`; an attestation at height `h` releases the inputs of every L1 block up
+    /// to `h`, or up to a later scheduled height when more than `InputQueue.CHECKPOINTS`
+    /// checkpoints with inputs are outstanding.
+    ///
+    /// Payload by entry kind:
+    ///   `INPUT_TRANSACTION`        `rlpTx`
+    ///   `INPUT_MESSAGE`            `sourceChainId(8) | from(20) | to(20) | nonce(8) | data`
+    ///   `INPUT_ENCRYPTED_MESSAGE`  `sourceChainId(8) | from(20) | nonce(8) | ciphertext`
+    function INPUT_QUEUE_CAPACITY() external view returns (uint256);
+    function INPUT_QUEUE_CHUNK() external view returns (uint256);
+    function INPUT_TRANSACTION() external view returns (uint8);
+    function INPUT_MESSAGE() external view returns (uint8);
+    function INPUT_ENCRYPTED_MESSAGE() external view returns (uint8);
+
+    /// @notice Storage slot the domain's queue starts at.
+    function inputQueueBase(uint64 domainChainId) external pure returns (uint256);
+
+    /// @notice Pays ahead for the state growth of queue words `[from, from + count)` that no
+    /// input has reached yet, so the inputs that first reach them cost what every later lap
+    /// costs. Permissionless; words already written are skipped, and a range past
+    /// `INPUT_QUEUE_CAPACITY` MUST revert.
+    function primeInputQueue(uint64 domainChainId, uint256 from, uint256 count) external;
+
+    /// @notice Queue words ever written and released; the entries in `[tail, head)` are live.
+    function inputQueueBounds(uint64 domainChainId) external view returns (uint64 head, uint64 tail);
+
+    /// @notice The live entry starting at word `index`, and the word the next one starts at.
+    /// Walk the queue from `tail` until `next == head`.
+    function inputQueueEntry(uint64 domainChainId, uint64 index)
+        external
+        view
+        returns (InputQueue.Entry memory entry, uint64 next);
 }
 
 /// @notice Domain-side spoke, deployed in each domain's state. Mirror image of the hub: it

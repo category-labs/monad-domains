@@ -60,6 +60,65 @@ StateTransition(
 )
 ```
 
+## Input queue
+
+Every sequenced transaction and recorded message is also appended, in L1 order, to the destination domain's input queue in the hub's storage. The queue holds every input the domain's last attested state does not yet cover, so a node that has the L1 state and the domain state at the attested height reaches the domain's tip by replaying the queue, without L1 receipts or blocks older than its L1 sync target.
+
+**Bound.** The queue is a circular buffer of `INPUT_QUEUE_CAPACITY` 32-byte words (2 MiB). A call that would overwrite an unreleased input reverts with `InputQueueFull`. An attestation at height `h` releases the inputs of every L1 block up to `h`, so the queue fills only while attestations fall behind.
+
+**Layout.** The layout follows MIP-8 page storage: a transaction pays to load and to first write each 128-slot page once, then 100 gas per slot, and only a zero to nonzero write pays for state growth. With `base = inputQueueBase(domainChainId)`, a page-aligned slot:
+
+| Slots | Content |
+| --- | --- |
+| `base` | `checkpointTail(32) \| checkpointHead(32) \| lastEpoch(64) \| tail(64) \| head(64)` |
+| `base + 1` | `checkpointInterval(64) \| feeRecipient(160)` |
+| `base + 2` | `blockNumber(64) \| gasSold(192)`, the gas sold in the last L1 block the domain sold any in |
+| `base + 3` | the domain's next delivery nonce |
+| `base + 4 .. base + 127` | checkpoint index: a ring of `epoch(64) \| startWord(64)` |
+| `base + 128 ..` | data ring; word `i` is at slot `base + 128 + i % INPUT_QUEUE_CAPACITY` |
+
+`head` and `tail` count the words ever written and released; the live inputs are the words in `[tail, head)`. Everything the hub reads or writes to record an input is in the first page, so recording touches that page and the data pages the input lands on.
+
+**Entries.** An input is a header word followed by its payload in 31-byte chunks:
+
+```
+header  kind(8) | payloadLength(32) | l1BlockNumber(64) | l1Timestamp(64) | fee(88)
+chunk   0x01 | 31 payload bytes        // the last chunk zero-padded
+```
+
+| Kind | Payload |
+| --- | --- |
+| 1, transaction | `rlpTx` |
+| 2, message | `sourceChainId(8) \| from(20) \| to(20) \| nonce(8) \| data` |
+| 3, encrypted message | `sourceChainId(8) \| from(20) \| nonce(8) \| ciphertext` |
+
+No stored word is ever zero, so after the ring's first lap a write only replaces a nonzero word and never pays for state growth.
+
+**Release.** An L1 block belongs to the first scheduled checkpoint at or above it, its epoch `ceil(l1BlockNumber / checkpointInterval)`. The checkpoint index has one item per epoch with unreleased inputs, holding the word its inputs start at. An attestation at height `h` moves `tail` to the start of the first epoch above `h / checkpointInterval`. When more than 124 epochs are outstanding the newest item absorbs the later ones, and their inputs are released together once the last of them is attested. A reader skips entries whose `l1BlockNumber` is at or below the attested height.
+
+**Priming.** The first lap of the ring writes empty slots and pays 17,000 gas of state growth per word. `primeInputQueue(domainChainId, from, count)` lets anyone pay that ahead of time for words no input has reached yet, about 2.25M gas per page and 1.15B for the whole ring, so that senders pay the steady cost from the start.
+
+**Gas.** L1 gas per transaction on MIP-8 pricing, measured with `forge test --match-path 'test/gas/*' --isolate -vv` (Foundry 1.9.0, no optimizer). "Events" is the hub before the queue. Inputs start on a page boundary; an input that straddles a boundary pays about 10,800 gas for the extra page. Large payloads are charged the calldata floor of 40 gas per byte, from about 4 kB without the events and 16 kB with them; there the queue adds nothing.
+
+| Call | Payload bytes | Events | Queue and events | Queue only | Queue and events, first lap |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `sequenceToDomain` | 110 | 65,230 | 73,084 | 69,629 | 175,084 |
+| | 500 | 74,524 | 85,618 | 79,049 | 408,618 |
+| | 1,000 | 86,724 | 101,810 | 91,089 | 696,810 |
+| | 2,000 | 110,688 | 133,755 | 114,990 | 1,272,755 |
+| | 4,000 | 181,670 | 208,643 | 181,670 | 2,452,643 |
+| | 16,000 | 660,500 | 660,500 | 660,500 | 9,449,402 |
+| `sendL1Message` | 0 | 78,598 | 76,918 | 70,351 | 144,918 |
+| | 100 | 81,397 | 80,715 | 73,073 | 216,715 |
+| | 500 | 90,926 | 93,238 | 82,367 | 433,238 |
+| | 2,000 | 127,584 | 142,115 | 118,602 | 1,315,115 |
+| | 8,000 | 342,200 | 357,739 | 342,200 | 4,811,739 |
+| `sendEncryptedL1Message` | 100 | 78,222 | 76,491 | 71,907 | |
+| | 2,000 | 123,848 | 137,330 | 117,435 | |
+| `submitStateSignature` reaching quorum | releases 0 epochs | 146,265 | 155,613 | | |
+| | releases 1 epoch | 146,265 | 158,897 | | |
+| | releases 124 epochs | 146,265 | 183,251 | | |
+
 ## Encryption
 
 Every byte a domain executes reaches the L1 as HPKE ciphertext sealed to the domain's viewing key. The L1 orders ciphertext it cannot read, and the execution client is the only party that can open it.

@@ -7,6 +7,7 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {IDomainHub, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
+import {InputQueue} from "./libraries/InputQueue.sol";
 
 contract DomainHub is IDomainHub, EIP712 {
     /// @notice EIP-712 type of the digest a validator signs to approve a state transition.
@@ -26,20 +27,25 @@ contract DomainHub is IDomainHub, EIP712 {
     /// @notice Most gas each domain may sell per L1 block, across sequencing and messages.
     uint256 public constant DOMAIN_BLOCK_GAS_LIMIT = 150_000_000;
 
-    /// @notice Gas sold for a domain's current L1 block.
-    struct BlockGas {
-        /// @dev L1 block `gasSold` counts; any earlier block means nothing is sold yet in this one.
-        uint64 blockNumber;
-        /// @dev Domain gas bought by the fees paid in `blockNumber`.
-        uint192 gasSold;
-    }
+    /// @notice Words of each domain's input queue; an entry takes one word plus one per
+    /// `INPUT_QUEUE_CHUNK` payload bytes.
+    uint256 public constant INPUT_QUEUE_CAPACITY = InputQueue.CAPACITY;
+    uint256 public constant INPUT_QUEUE_CHUNK = InputQueue.CHUNK;
+    /// @notice Entry kinds of the input queue.
+    uint8 public constant INPUT_TRANSACTION = 1;
+    uint8 public constant INPUT_MESSAGE = 2;
+    uint8 public constant INPUT_ENCRYPTED_MESSAGE = 3;
+
+    /// @dev Words of a domain's input queue page the hub keeps its per-input state in, so
+    /// recording an input loads and writes that page and the data it appends, nothing else.
+    /// `checkpointInterval(64) | feeRecipient(160)`: nonzero exactly when the domain is registered.
+    uint256 internal constant SCHEDULE_WORD = 1;
+    /// `blockNumber(64) | gasSold(192)`: gas sold in the last L1 block the domain sold any in.
+    uint256 internal constant BUDGET_WORD = 2;
+    /// Next delivery nonce of the domain.
+    uint256 internal constant MESSAGE_COUNT_WORD = 3;
 
     struct DomainConfig {
-        bool registered;
-        /// @dev Attested block numbers must be multiples of this interval.
-        uint64 checkpointInterval;
-        /// @dev Receives every fee paid for the domain.
-        address feeRecipient;
         /// @dev Distinct validator signatures required to advance the state.
         uint256 quorum;
         address[] validators;
@@ -50,13 +56,8 @@ contract DomainHub is IDomainHub, EIP712 {
 
     /// @dev Registration of each domain, by chain id.
     mapping(uint64 => DomainConfig) internal _configs;
-    /// @notice Gas each domain has sold in the current L1 block, against `DOMAIN_BLOCK_GAS_LIMIT`.
-    mapping(uint64 => BlockGas) public blockGas;
     /// @notice Latest attested state root of each domain.
     mapping(uint64 => bytes32) public stateRoots;
-    /// @notice Next delivery nonce of each destination domain, shared by plaintext, encrypted
-    /// and forwarded messages.
-    mapping(uint64 => uint256) public l1MessageCounts;
     /// @notice Attested batch roots of domain-origin messages, by source domain.
     mapping(uint64 => mapping(bytes32 => bool)) public domainAnchors;
     /// @notice Domain-origin messages already relayed, by source domain.
@@ -88,8 +89,8 @@ contract DomainHub is IDomainHub, EIP712 {
         uint64 checkpointInterval
     ) external {
         require(domainChainId != block.chainid, "DomainHub: cannot register L1 chain id");
-        DomainConfig storage config = _configs[domainChainId];
-        require(!config.registered, "DomainHub: already registered");
+        uint256 queue = InputQueue.base(domainChainId);
+        require(InputQueue.loadWord(queue, SCHEDULE_WORD) == 0, "DomainHub: already registered");
         require(quorum > 0, "DomainHub: zero quorum");
         require(quorum <= validators.length, "DomainHub: quorum exceeds validators");
         require(feeRecipient != address(0), "DomainHub: zero fee recipient");
@@ -99,9 +100,8 @@ contract DomainHub is IDomainHub, EIP712 {
             "DomainHub: invalid viewing key"
         );
 
-        config.registered = true;
-        config.checkpointInterval = checkpointInterval;
-        config.feeRecipient = feeRecipient;
+        InputQueue.storeWord(queue, SCHEDULE_WORD, (uint256(checkpointInterval) << 160) | uint160(feeRecipient));
+        DomainConfig storage config = _configs[domainChainId];
         config.quorum = quorum;
         config.viewingKey = viewingKey;
         for (uint256 i = 0; i < validators.length; i++) {
@@ -117,7 +117,7 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     function isDomainRegistered(uint64 domainChainId) external view returns (bool) {
-        return _configs[domainChainId].registered;
+        return _schedule(domainChainId) != 0;
     }
 
     function getValidators(uint64 domainChainId) external view returns (address[] memory) {
@@ -129,11 +129,19 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     function feeRecipients(uint64 domainChainId) external view returns (address) {
-        return _configs[domainChainId].feeRecipient;
+        return address(uint160(_schedule(domainChainId)));
     }
 
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64) {
-        return _configs[domainChainId].checkpointInterval;
+        return uint64(_schedule(domainChainId) >> 160);
+    }
+
+    function l1MessageCounts(uint64 domainChainId) external view returns (uint256) {
+        return InputQueue.loadWord(InputQueue.base(domainChainId), MESSAGE_COUNT_WORD);
+    }
+
+    function _schedule(uint64 domainChainId) internal view returns (uint256) {
+        return InputQueue.loadWord(InputQueue.base(domainChainId), SCHEDULE_WORD);
     }
 
     function viewingKeys(uint64 domainChainId) external view returns (bytes memory) {
@@ -172,10 +180,11 @@ contract DomainHub is IDomainHub, EIP712 {
         bytes calldata signature
     ) external {
         DomainConfig storage config = _configs[domainChainId];
-        require(config.registered, "DomainHub: domain not registered");
+        uint64 checkpointInterval = uint64(_schedule(domainChainId) >> 160);
+        require(checkpointInterval != 0, "DomainHub: domain not registered");
         require(domainBlockNumber > domainBlockNumbers[domainChainId], "DomainHub: stale block number");
         require(uint256(domainBlockNumber) < block.number, "DomainHub: block number not in the past");
-        require(domainBlockNumber % config.checkpointInterval == 0, "DomainHub: block number off schedule");
+        require(domainBlockNumber % checkpointInterval == 0, "DomainHub: block number off schedule");
 
         bytes32 digest = stateTransitionDigest(domainChainId, domainBlockNumber, newStateRoot, domainAnchor);
         address signer = ECDSA.recover(digest, signature);
@@ -193,6 +202,8 @@ contract DomainHub is IDomainHub, EIP712 {
             stateRoots[domainChainId] = newStateRoot;
             if (domainAnchor != bytes32(0)) domainAnchors[domainChainId][domainAnchor] = true;
             domainBlockNumbers[domainChainId] = domainBlockNumber;
+            // The attested state covers every input up to this height: stop holding them.
+            InputQueue.release(InputQueue.base(domainChainId), domainBlockNumber / checkpointInterval);
             emit DomainStateUpdated(domainChainId, nonce, domainBlockNumber, newStateRoot, domainAnchor);
         }
     }
@@ -207,7 +218,7 @@ contract DomainHub is IDomainHub, EIP712 {
         returns (bool success)
     {
         require(message.sourceChainId != message.destinationChainId, "DomainHub: same domain");
-        require(_configs[message.sourceChainId].registered, "DomainHub: source not registered");
+        require(_schedule(message.sourceChainId) != 0, "DomainHub: source not registered");
         require(message.to != address(0), "DomainHub: zero target");
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         require(!relayedDomainMessages[message.sourceChainId][messageHash], "DomainHub: message already relayed");
@@ -216,7 +227,7 @@ contract DomainHub is IDomainHub, EIP712 {
         relayedDomainMessages[message.sourceChainId][messageHash] = true;
 
         if (message.destinationChainId != block.chainid) {
-            require(_configs[message.destinationChainId].registered, "DomainHub: destination not registered");
+            require(_schedule(message.destinationChainId) != 0, "DomainHub: destination not registered");
             uint256 deliveryNonce = _sendL1Message(
                 message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
             );
@@ -259,23 +270,69 @@ contract DomainHub is IDomainHub, EIP712 {
     // ---------------------------------------------------------------------
 
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable {
-        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
-        _buyGas(domainChainId, msg.value);
+        _recordInput(_registeredQueue(domainChainId), INPUT_TRANSACTION, msg.value, rlpTx);
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
     }
 
-    /// @dev Counts the gas `fee` buys against the domain's budget for this L1 block and pays
-    /// the fee to the domain's fee recipient, who must accept it.
-    function _buyGas(uint64 domainChainId, uint256 fee) internal {
-        BlockGas storage budget = blockGas[domainChainId];
-        uint256 sold = budget.blockNumber == block.number ? budget.gasSold : 0;
+    /// @dev The queue of a registered domain.
+    function _registeredQueue(uint64 domainChainId) internal view returns (uint256 queue) {
+        queue = InputQueue.base(domainChainId);
+        require(InputQueue.loadWord(queue, SCHEDULE_WORD) != 0, "DomainHub: domain not registered");
+    }
+
+    /// @dev Charges `fee` against the domain's budget for this L1 block, appends the input to
+    /// the domain's `queue` and pays the fee to the domain's fee recipient, who must accept it.
+    function _recordInput(uint256 queue, uint8 kind, uint256 fee, bytes memory payload) internal {
+        uint256 budget = InputQueue.loadWord(queue, BUDGET_WORD);
+        uint256 sold = budget >> 192 == block.number ? uint192(budget) : 0;
         sold += fee / DOMAIN_GAS_PRICE;
         require(sold <= DOMAIN_BLOCK_GAS_LIMIT, "DomainHub: domain block gas limit exceeded");
-        budget.blockNumber = uint64(block.number);
-        budget.gasSold = uint192(sold);
+        InputQueue.storeWord(queue, BUDGET_WORD, (block.number << 192) | sold);
+
+        // An L1 block belongs to the first scheduled checkpoint at or above it. The budget
+        // above caps `fee` far below the 88 bits an entry holds.
+        uint256 schedule = InputQueue.loadWord(queue, SCHEDULE_WORD);
+        uint256 interval = schedule >> 160;
+        InputQueue.push(queue, kind, fee, payload, uint64((block.number + interval - 1) / interval));
+
         if (fee == 0) return;
-        (bool success,) = _configs[domainChainId].feeRecipient.call{value: fee}("");
+        (bool success,) = address(uint160(schedule)).call{value: fee}("");
         require(success, "DomainHub: fee transfer failed");
+    }
+
+    /// @dev Assigns the domain's next delivery nonce.
+    function _nextMessageNonce(uint256 queue) internal returns (uint256 nonce) {
+        nonce = InputQueue.loadWord(queue, MESSAGE_COUNT_WORD);
+        InputQueue.storeWord(queue, MESSAGE_COUNT_WORD, nonce + 1);
+    }
+
+    function blockGas(uint64 domainChainId) external view returns (uint64 blockNumber, uint192 gasSold) {
+        uint256 budget = InputQueue.loadWord(InputQueue.base(domainChainId), BUDGET_WORD);
+        return (uint64(budget >> 192), uint192(budget));
+    }
+
+    // ---------------------------------------------------------------------
+    // Input queue
+    // ---------------------------------------------------------------------
+
+    function inputQueueBase(uint64 domainChainId) external pure returns (uint256) {
+        return InputQueue.base(domainChainId);
+    }
+
+    function primeInputQueue(uint64 domainChainId, uint256 from, uint256 count) external {
+        InputQueue.prime(_registeredQueue(domainChainId), from, count);
+    }
+
+    function inputQueueBounds(uint64 domainChainId) external view returns (uint64 head, uint64 tail) {
+        return InputQueue.bounds(InputQueue.base(domainChainId));
+    }
+
+    function inputQueueEntry(uint64 domainChainId, uint64 index)
+        external
+        view
+        returns (InputQueue.Entry memory entry, uint64 next)
+    {
+        return InputQueue.entryAt(InputQueue.base(domainChainId), index);
     }
 
     // ---------------------------------------------------------------------
@@ -287,7 +344,7 @@ contract DomainHub is IDomainHub, EIP712 {
     }
 
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable {
-        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
+        _registeredQueue(domainChainId);
         _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data, msg.value);
     }
 
@@ -302,17 +359,23 @@ contract DomainHub is IDomainHub, EIP712 {
         uint256 fee
     ) internal returns (uint256 nonce) {
         require(fee >= minDeliveryFee(data.length), "DomainHub: delivery fee too low");
-        _buyGas(domainChainId, fee);
-        nonce = l1MessageCounts[domainChainId]++;
+        uint256 queue = InputQueue.base(domainChainId);
+        nonce = _nextMessageNonce(queue);
+        _recordInput(queue, INPUT_MESSAGE, fee, abi.encodePacked(sourceChainId, from, to, uint64(nonce), data));
         bytes32 messageHash = MessageLib.hashMessage(MessageLib.Message(sourceChainId, from, to, data, nonce));
         emit L1MessageRecorded(domainChainId, sourceChainId, from, to, data, nonce, fee, messageHash);
     }
 
     function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable {
-        require(_configs[domainChainId].registered, "DomainHub: domain not registered");
+        uint256 queue = _registeredQueue(domainChainId);
         require(msg.value >= minDeliveryFee(ciphertext.length), "DomainHub: delivery fee too low");
-        _buyGas(domainChainId, msg.value);
-        uint256 nonce = l1MessageCounts[domainChainId]++;
+        uint256 nonce = _nextMessageNonce(queue);
+        _recordInput(
+            queue,
+            INPUT_ENCRYPTED_MESSAGE,
+            msg.value,
+            abi.encodePacked(SafeCast.toUint64(block.chainid), msg.sender, uint64(nonce), ciphertext)
+        );
         emit EncryptedL1MessageRecorded(
             domainChainId, SafeCast.toUint64(block.chainid), msg.sender, ciphertext, nonce, msg.value
         );
