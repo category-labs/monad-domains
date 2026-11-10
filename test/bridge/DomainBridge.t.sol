@@ -6,6 +6,9 @@ import {DomainBridge} from "../../src/bridge/DomainBridge.sol";
 import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {DomainTestBase} from "../helpers/DomainTestBase.sol";
+import {DomainAccessRules} from "../../src/access/DomainAccessRules.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
 contract DomainBridgeTest is DomainTestBase {
     address internal constant L1_BRIDGE = address(0x11B41D6E);
@@ -14,12 +17,15 @@ contract DomainBridgeTest is DomainTestBase {
 
     DomainSpoke internal spoke;
     DomainBridge internal bridge;
+    address internal policyOwner = makeAddr("policyOwner");
+    address internal initialPolicy;
 
     address internal bob = makeAddr("bob");
 
     function setUp() public {
         spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(0x1234));
-        bridge = new DomainBridge(spoke, L1_BRIDGE);
+        initialPolicy = address(new DomainAccessRules(spoke));
+        bridge = new DomainBridge(spoke, L1_BRIDGE, policyOwner, initialPolicy);
     }
 
     /// @dev Delivers a deposit message through the spoke at its next expected nonce.
@@ -49,16 +55,28 @@ contract DomainBridgeTest is DomainTestBase {
         BridgedERC20 token = bridge.bridgedTokens(L1_TOKEN);
         assertEq(token.balanceOf(bob), 100 ether);
         assertEq(token.L1_TOKEN(), L1_TOKEN);
+        assertEq(token.BRIDGE(), address(bridge));
+        assertEq(spoke.policyOwners(address(token)), policyOwner);
+        assertEq(spoke.accessPolicies(address(token)), initialPolicy);
+        assertTrue(spoke.canCall(bob, address(token), abi.encodeCall(IERC20.balanceOf, (bob))));
+        assertTrue(spoke.canCall(policyOwner, address(token), abi.encodeCall(IERC20.balanceOf, (bob))));
     }
 
     function test_deposit_reusesDeployedToken() public {
         _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
         BridgedERC20 token = bridge.bridgedTokens(L1_TOKEN);
 
-        _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 50 ether);
+        address replacementPolicy = address(new DomainAccessRules(spoke));
+        vm.prank(policyOwner);
+        spoke.setAccessPolicy(address(token), replacementPolicy);
+        bytes32 messageHash = _deliverDeposit(L1_BRIDGE, policyOwner, L1_TOKEN, 50 ether);
 
+        assertFalse(spoke.failedL1Messages(messageHash));
         assertEq(address(bridge.bridgedTokens(L1_TOKEN)), address(token));
-        assertEq(token.balanceOf(bob), 150 ether);
+        assertEq(token.balanceOf(bob), 100 ether);
+        assertEq(token.balanceOf(policyOwner), 50 ether);
+        assertEq(spoke.policyOwners(address(token)), policyOwner);
+        assertEq(spoke.accessPolicies(address(token)), replacementPolicy);
     }
 
     function test_onDomainMessage_onlySpoke() public {
@@ -84,7 +102,140 @@ contract DomainBridgeTest is DomainTestBase {
 
     function test_constructor_rejectsZeroL1Bridge() public {
         vm.expectRevert(DomainBridge.ZeroL1Bridge.selector);
-        new DomainBridge(spoke, address(0));
+        new DomainBridge(spoke, address(0), policyOwner, initialPolicy);
+    }
+
+    function test_constructor_rejectsInvalidPolicyConfiguration() public {
+        vm.expectRevert(DomainBridge.ZeroPolicyOwner.selector);
+        new DomainBridge(spoke, L1_BRIDGE, address(0), initialPolicy);
+        vm.expectRevert(DomainBridge.PolicyHasNoCode.selector);
+        new DomainBridge(spoke, L1_BRIDGE, policyOwner, address(0));
+        vm.expectRevert(DomainBridge.PolicyHasNoCode.selector);
+        new DomainBridge(spoke, L1_BRIDGE, policyOwner, bob);
+        vm.expectRevert(DomainBridge.InvalidTokenPolicy.selector);
+        new DomainBridge(spoke, L1_BRIDGE, policyOwner, address(spoke));
+        vm.expectRevert(DomainBridge.SpokeHasNoCode.selector);
+        new DomainBridge(DomainSpoke(address(0)), L1_BRIDGE, policyOwner, initialPolicy);
+    }
+
+    function test_deposit_registersDifferentAssetsWithConfiguredOwnerAndPolicy() public {
+        address otherAsset = makeAddr("otherAsset");
+        _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
+        _deliverDeposit(L1_BRIDGE, bob, otherAsset, 10 ether);
+        address first = address(bridge.bridgedTokens(L1_TOKEN));
+        address second = address(bridge.bridgedTokens(otherAsset));
+        assertTrue(first != second);
+        assertEq(spoke.policyOwners(first), policyOwner);
+        assertEq(spoke.policyOwners(second), policyOwner);
+        assertEq(spoke.accessPolicies(first), initialPolicy);
+        assertEq(spoke.accessPolicies(second), initialPolicy);
+    }
+
+    function test_deposit_deploysAtPredictedCreate2Address() public {
+        bytes memory initCode = abi.encodePacked(
+            type(BridgedERC20).creationCode,
+            abi.encode(
+                L1_TOKEN,
+                string.concat("Bridged ", Strings.toHexString(L1_TOKEN)),
+                "BRG",
+                uint8(18),
+                spoke,
+                policyOwner,
+                initialPolicy
+            )
+        );
+        address predicted =
+            vm.computeCreate2Address(bytes32(uint256(uint160(L1_TOKEN))), keccak256(initCode), address(bridge));
+        _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
+        assertEq(address(bridge.bridgedTokens(L1_TOKEN)), predicted);
+        assertEq(spoke.policyOwners(predicted), policyOwner);
+    }
+
+    function test_deposit_registrationFailureRollsBackAndCanBeRetried() public {
+        bytes memory policyCode = initialPolicy.code;
+        vm.etch(initialPolicy, hex"");
+        bytes32 messageHash = _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
+        assertTrue(spoke.failedL1Messages(messageHash));
+        assertEq(address(bridge.bridgedTokens(L1_TOKEN)), address(0));
+
+        vm.etch(initialPolicy, policyCode);
+        spoke.retryL1Message(
+            MessageLib.Message(
+                uint64(block.chainid),
+                L1_BRIDGE,
+                address(bridge),
+                MessageLib.encodeTransfer(bob, L1_TOKEN, 100 ether),
+                0
+            )
+        );
+        assertFalse(spoke.failedL1Messages(messageHash));
+        BridgedERC20 token = bridge.bridgedTokens(L1_TOKEN);
+        assertEq(token.balanceOf(bob), 100 ether);
+        assertEq(spoke.policyOwners(address(token)), policyOwner);
+        assertEq(spoke.accessPolicies(address(token)), initialPolicy);
+    }
+
+    function test_policyOwnerCanConfigureRulesAndLogReadersForBridgedToken() public {
+        BridgedERC20 token = _depositedToken();
+        DomainAccessRules rules = DomainAccessRules(initialPolicy);
+        address reader = makeAddr("reader");
+        bytes memory query = abi.encodeCall(IERC20.balanceOf, (bob));
+
+        vm.startPrank(bob);
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
+        spoke.setAccessPolicy(address(token), address(rules));
+        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
+        spoke.setLogReader(address(token), bob, true);
+        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        rules.setAccessControl(address(token), IERC20.balanceOf.selector, DomainAccessRules.AccessMode.Open, 0);
+        vm.stopPrank();
+
+        vm.startPrank(policyOwner);
+        rules.setAccessControl(address(token), IERC20.balanceOf.selector, DomainAccessRules.AccessMode.SubjectMatch, 1);
+        rules.setAccessControl(address(token), IERC20.allowance.selector, DomainAccessRules.AccessMode.SubjectMatch, 3);
+        spoke.setAccessPolicy(address(token), address(rules));
+        assertFalse(spoke.canCall(policyOwner, address(token), query));
+        rules.setReaderAllowed(address(token), IERC20.balanceOf.selector, reader, true);
+        spoke.setLogReader(address(token), reader, true);
+        vm.stopPrank();
+        assertTrue(spoke.canCall(reader, address(token), query));
+        assertTrue(spoke.logReaders(address(token), reader));
+        assertFalse(spoke.canCall(policyOwner, address(token), query));
+    }
+
+    function test_configuredPolicyAllowsTransfersAndBridgeCallsButRestrictsReads() public {
+        BridgedERC20 token = _depositedToken();
+        DomainAccessRules rules = DomainAccessRules(initialPolicy);
+        vm.startPrank(policyOwner);
+        rules.setAccessControl(address(token), IERC20.balanceOf.selector, DomainAccessRules.AccessMode.SubjectMatch, 1);
+        rules.setAccessControl(address(token), IERC20.allowance.selector, DomainAccessRules.AccessMode.SubjectMatch, 3);
+        vm.stopPrank();
+        assertTrue(spoke.canCall(bob, address(token), abi.encodeCall(IERC20.balanceOf, (bob))));
+        assertFalse(spoke.canCall(policyOwner, address(token), abi.encodeCall(IERC20.balanceOf, (bob))));
+        address spender = makeAddr("spender");
+        bytes memory allowanceQuery = abi.encodeCall(IERC20.allowance, (bob, spender));
+        assertTrue(spoke.canCall(bob, address(token), allowanceQuery));
+        assertTrue(spoke.canCall(spender, address(token), allowanceQuery));
+        assertFalse(spoke.canCall(policyOwner, address(token), allowanceQuery));
+        assertTrue(spoke.canCall(address(bridge), address(token), abi.encodeCall(token.mint, (bob, 1))));
+        assertTrue(spoke.canCall(address(bridge), address(token), abi.encodeCall(token.burn, (bob, 1))));
+
+        bytes memory transfer = abi.encodeCall(IERC20.transfer, (spender, 10 ether));
+        assertTrue(spoke.canCall(bob, address(token), transfer));
+        vm.prank(bob);
+        token.transfer(spender, 10 ether);
+        vm.prank(bob);
+        token.approve(spender, 5 ether);
+        assertTrue(spoke.canCall(spender, address(token), abi.encodeCall(IERC20.transferFrom, (bob, spender, 5 ether))));
+        vm.prank(spender);
+        token.transferFrom(bob, spender, 5 ether);
+        assertEq(token.balanceOf(spender), 15 ether);
+        vm.prank(spender);
+        vm.expectRevert(BridgedERC20.NotBridge.selector);
+        token.mint(spender, 1);
+        vm.prank(spender);
+        vm.expectRevert(BridgedERC20.NotBridge.selector);
+        token.burn(bob, 1);
     }
 
     // ---------------------------------------------------------------------

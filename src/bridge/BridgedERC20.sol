@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IDomainAccessControl} from "../interfaces/IDomainAccessControl.sol";
 
 /// @notice Domain-side representation of a locked L1 token. Mint and burn are
 /// restricted to the DomainBridge that deployed it.
@@ -18,10 +19,19 @@ contract BridgedERC20 is ERC20 {
         _;
     }
 
-    constructor(address l1Token, string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_) {
+    constructor(
+        address l1Token,
+        string memory name_,
+        string memory symbol_,
+        uint8 decimals_,
+        IDomainAccessControl spoke,
+        address policyOwner,
+        address initialPolicy
+    ) ERC20(name_, symbol_) {
         BRIDGE = msg.sender;
         L1_TOKEN = l1Token;
         _TOKEN_DECIMALS = decimals_;
+        spoke.selfRegisterPolicy(policyOwner, initialPolicy);
     }
 
     function decimals() public view override returns (uint8) {

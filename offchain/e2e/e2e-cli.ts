@@ -3,7 +3,6 @@ import {
   createPublicClient,
   createWalletClient,
   defineChain,
-  encodeDeployData,
   encodeFunctionData,
   getContractAddress,
   http,
@@ -37,7 +36,7 @@ import { generateMessageSalt, type MessageContext } from "../src/message.js";
  * node (monad single-node devnet with `--private-domain` /
  * `--private-domain-sequencer` pointing at the hub deployed here):
  *
- *   1. setup: hub + L1Bridge on the L1, spoke + DomainBridge seeded by sequencing
+ *   1. setup: hub + L1Bridge on the L1, spoke + DomainAccessRules + DomainBridge seeded by sequencing
  *      their creation transactions through the hub;
  *   2. deposit: lock TestERC20 on the L1 — delivery is protocol-driven (the node
  *      derives a system transaction per hub L1MessageRecorded event and injects it
@@ -250,6 +249,10 @@ async function main() {
   const domainBridgeArt = loadArtifact("DomainBridge.sol", "DomainBridge");
   const bridgedArt = loadArtifact("BridgedERC20.sol", "BridgedERC20");
   const tokenArt = loadArtifact("TestERC20.sol", "TestERC20");
+  const rulesArt = loadArtifact("DomainAccessRules.sol", "DomainAccessRules");
+  const BALANCE_OF = toFunctionSelector("balanceOf(address)");
+  const ALLOWANCE = toFunctionSelector("allowance(address,address)");
+  const SUBJECT_MATCH = 1; // DomainAccessRules.AccessMode.SubjectMatch
 
   const confirm = async (hash: Hex, label: string) => {
     const receipt = await l1.waitForTransactionReceipt({ hash });
@@ -259,7 +262,7 @@ async function main() {
   };
 
   // -------------------------------------------------------------------------
-  step("1. domain setup (hub + L1Bridge on L1, spoke + bridge seeded via sequencing)");
+  step("1. domain setup (hub + L1Bridge on L1, spoke + policy + bridge seeded via sequencing)");
   // -------------------------------------------------------------------------
   const adminNonce = await l1.getTransactionCount({ address: admin.address });
   if (adminNonce !== 0) {
@@ -286,11 +289,24 @@ async function main() {
     viewingKey: VIEWING_KEY,
   });
   const { hub, l1Bridge, spoke, domainBridge } = setup;
+  const rules = setup.initialTokenPolicy;
+  const sequence = async (senderKey: Hex, to: Address | undefined, data: Hex, gas = 300_000n) =>
+    sequenceTransaction({
+      l1RpcUrl: L1_RPC_URL,
+      hub,
+      domainChainId: DOMAIN_CHAIN_ID,
+      senderKey,
+      to,
+      data,
+      gas,
+      nonce: await domain.getTransactionCount({ address: privateKeyToAccount(senderKey).address }),
+      viewingKey: VIEWING_KEY,
+    });
   if (hub.toLowerCase() !== EXPECTED_HUB.toLowerCase()) {
     throw new Error(`hub deployed at ${hub}, but the node's scanner watches ${EXPECTED_HUB} — aborting`);
   }
 
-  // The node's scanner should have executed the two seeded creation transactions.
+  // The node's scanner should have executed the seeded spoke, policy and bridge creations.
   await retry("spoke code on domain", () => domain.getCode({ address: spoke }), (c) => !!c && c !== "0x", 90_000);
   await retry("bridge code on domain", () => domain.getCode({ address: domainBridge }), (c) => !!c && c !== "0x", 90_000);
   console.log("  spoke + domain bridge code present on the domain");
@@ -376,14 +392,50 @@ async function main() {
     functionName: "bridgedTokens",
     args: [token],
   })) as Address;
-  const bobBalance = (await domain.readContract({
+  const bridgedPolicyOwner = await domain.readContract({
+    address: spoke, abi: spokeArt.abi, functionName: "policyOwners", args: [bridgedToken],
+  }) as Address;
+  const bridgedPolicy = await domain.readContract({
+    address: spoke, abi: spokeArt.abi, functionName: "accessPolicies", args: [bridgedToken],
+  }) as Address;
+  if (bridgedPolicyOwner.toLowerCase() !== setup.tokenPolicyOwner.toLowerCase() ||
+      bridgedPolicy.toLowerCase() !== setup.initialTokenPolicy.toLowerCase()) {
+    throw new Error("bridged token did not register its configured policy owner and initial policy");
+  }
+
+  // The shared policy starts open; the policy owner configures each token's read rules.
+  const openBridgedBalance = await domainAs(ALICE_KEY).readContract({
+    address: bridgedToken, abi: bridgedArt.abi, functionName: "balanceOf", args: [bob.address], account: alice.address,
+  });
+  if (openBridgedBalance !== DEPOSIT) throw new Error("unconfigured bridged token balance should be readable");
+  for (const [selector, subjects] of [[BALANCE_OF, 0b1], [ALLOWANCE, 0b11]] as const) {
+    const restrictRead = await sequence(
+      ADMIN_KEY,
+      rules,
+      encodeFunctionData({ abi: rulesArt.abi, functionName: "setAccessControl", args: [bridgedToken, selector, SUBJECT_MATCH, subjects] }),
+    );
+    await waitForDomainTx(domain, restrictRead.domainTxHash, `rules.setAccessControl(bridgedToken, ${selector})`);
+  }
+  const bobBalance = (await domainAs(BOB_KEY).readContract({
     address: bridgedToken,
     abi: bridgedArt.abi,
     functionName: "balanceOf",
     args: [bob.address],
+    account: bob.address,
   })) as bigint;
   console.log(`  bridged token ${bridgedToken}, bob balance on domain: ${bobBalance}`);
   if (bobBalance !== DEPOSIT) throw new Error(`deposit mismatch: bob has ${bobBalance}, expected ${DEPOSIT}`);
+  await expectCallDenied("alice -> bridgedToken.balanceOf(bob)", () => domainAs(ALICE_KEY).readContract({
+    address: bridgedToken, abi: bridgedArt.abi, functionName: "balanceOf", args: [bob.address], account: alice.address,
+  }));
+  const readBridgedAllowance = (key: Hex) => domainAs(key).readContract({
+    address: bridgedToken, abi: bridgedArt.abi, functionName: "allowance", args: [bob.address, alice.address],
+    account: privateKeyToAccount(key).address,
+  });
+  if (await readBridgedAllowance(BOB_KEY) !== 0n || await readBridgedAllowance(ALICE_KEY) !== 0n) {
+    throw new Error("unexpected bridged token allowance");
+  }
+  await expectCallDenied("admin -> bridgedToken.allowance(bob, alice)", () => readBridgedAllowance(ADMIN_KEY));
   console.log("  ✅ L1 -> domain deposit complete");
 
   // -------------------------------------------------------------------------
@@ -477,25 +529,9 @@ async function main() {
   step("5. access control: the client calls spoke.canCall before every domain call frame");
   // -------------------------------------------------------------------------
   const readerArt = loadArtifact("BalanceReader.sol", "BalanceReader");
-  const rulesArt = loadArtifact("DomainAccessRules.sol", "DomainAccessRules");
-  const BALANCE_OF = toFunctionSelector("balanceOf(address)");
-  const SUBJECT_MATCH = 1; // DomainAccessRules.AccessMode.SubjectMatch
   const PRIVATE_SUPPLY = 1000n * 10n ** 18n;
-  const sequence = async (senderKey: Hex, to: Address | undefined, data: Hex, gas = 300_000n) =>
-    sequenceTransaction({
-      l1RpcUrl: L1_RPC_URL,
-      hub,
-      domainChainId: DOMAIN_CHAIN_ID,
-      senderKey,
-      to,
-      data,
-      gas,
-      nonce: await domain.getTransactionCount({ address: privateKeyToAccount(senderKey).address }),
-      viewingKey: VIEWING_KEY,
-    });
 
-  // Contracts get a policy owner only when created through spoke.deployContract (CREATE from
-  // the spoke); the admin sequences each deployment and names the policy owner.
+  // These examples use spoke.deployContract; bridged tokens instead register during construction.
   const deployViaSpoke = async (initCode: Hex, label: string, policyOwner: Address = admin.address): Promise<Address> => {
     const spokeNonce = await domain.getTransactionCount({ address: spoke });
     const predicted = getContractAddress({ from: spoke, nonce: BigInt(spokeNonce) });
@@ -521,19 +557,6 @@ async function main() {
   };
   const privateToken = await deployViaSpoke(tokenArt.bytecode, "TestERC20");
   const reader = await deployViaSpoke(readerArt.bytecode, "BalanceReader");
-
-  // The stock rule table is deployed once per domain with a plain create.
-  const rulesDeploy = await sequence(
-    ADMIN_KEY,
-    undefined,
-    encodeDeployData({ abi: rulesArt.abi, bytecode: rulesArt.bytecode, args: [spoke] }),
-    3_000_000n,
-  );
-  const rulesReceipt = await waitForDomainTx(domain, rulesDeploy.domainTxHash, "new DomainAccessRules(spoke)");
-  const rules = rulesReceipt.contractAddress;
-  if (!rules) throw new Error("DomainAccessRules deployment receipt carries no contractAddress");
-  await retry("DomainAccessRules code", () => domain.getCode({ address: rules }), (c) => !!c && c !== "0x", 30_000);
-  console.log(`  DomainAccessRules deployed at ${rules}`);
 
   const mint = await sequence(
     ADMIN_KEY,
@@ -603,7 +626,6 @@ async function main() {
 
   // A two-party view: allowance(owner, spender) is readable by either party (argument words 0
   // and 1) and by nobody else, the policy owner included.
-  const ALLOWANCE = toFunctionSelector("allowance(address,address)");
   const bothParties = await sequence(
     ADMIN_KEY,
     rules,
@@ -761,7 +783,9 @@ async function main() {
   // -------------------------------------------------------------------------
   const carolBalance = (await l1.readContract({ address: token, abi: tokenArt.abi, functionName: "balanceOf", args: [CAROL] })) as bigint;
   const lockedCollateral = (await l1.readContract({ address: token, abi: tokenArt.abi, functionName: "balanceOf", args: [l1Bridge] })) as bigint;
-  const bobAfter = (await domain.readContract({ address: bridgedToken, abi: bridgedArt.abi, functionName: "balanceOf", args: [bob.address] })) as bigint;
+  const bobAfter = (await domainAs(BOB_KEY).readContract({
+    address: bridgedToken, abi: bridgedArt.abi, functionName: "balanceOf", args: [bob.address], account: bob.address,
+  })) as bigint;
   const bridgedSupply = (await domain.readContract({ address: bridgedToken, abi: bridgedArt.abi, functionName: "totalSupply", args: [] })) as bigint;
 
   console.log(`  carol L1 balance:        ${carolBalance} (expected ${WITHDRAWAL})`);

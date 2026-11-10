@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {DomainAccessRules} from "../../src/access/DomainAccessRules.sol";
+
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {BridgedERC20} from "../../src/bridge/BridgedERC20.sol";
@@ -83,8 +85,10 @@ contract DomainToDomainTest is DomainTestBase {
         // Application: an independent bridge pair per domain, sharing the L1 token.
         l1BridgeA = new L1Bridge(hub, CHAIN_A);
         l1BridgeB = new L1Bridge(hub, CHAIN_B);
-        domainBridgeA = new DomainBridge(spokeA, address(l1BridgeA));
-        domainBridgeB = new DomainBridge(spokeB, address(l1BridgeB));
+        domainBridgeA =
+            new DomainBridge(spokeA, address(l1BridgeA), address(this), address(new DomainAccessRules(spokeA)));
+        domainBridgeB =
+            new DomainBridge(spokeB, address(l1BridgeB), address(this), address(new DomainAccessRules(spokeB)));
         l1BridgeA.registerDomainBridge(address(domainBridgeA));
         l1BridgeB.registerDomainBridge(address(domainBridgeB));
 

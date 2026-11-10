@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {DomainAccessRules} from "../src/access/DomainAccessRules.sol";
+
 import {Vm} from "forge-std/Test.sol";
 import {IDomainHub, IDomainSpoke} from "../src/interfaces/IDomain.sol";
 import {DomainHub} from "../src/DomainHub.sol";
@@ -434,7 +436,7 @@ contract NativeRoutingTest is DomainTestBase {
     }
 
     function test_routeCannotImpersonateL1Bridge() public {
-        DomainBridge bridge = new DomainBridge(spokeB, alice);
+        DomainBridge bridge = new DomainBridge(spokeB, alice, address(this), address(new DomainAccessRules(spokeB)));
         MessageLib.DomainMessage memory message =
             _send(address(bridge), MessageLib.encodeTransfer(alice, address(123), 1));
         MessageLib.Message memory envelope = _route(message);

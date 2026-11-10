@@ -14,6 +14,8 @@ import { setupDomain, type SetupConfig } from "./setup.js";
  *   [FEE_RECIPIENT=0x..]    \  # receives sequencing and delivery fees; defaults to admin
  *   [CHECKPOINT_INTERVAL=5] \  # attested heights are multiples of this
  *   [MAX_UNATTESTED_PERIODS=50] \ # unattested checkpoint periods before inputs are refused
+ *   [TOKEN_POLICY_OWNER=0x..] \  # domain policy administrator; defaults to admin
+ *   [INITIAL_TOKEN_POLICY=0x..] \  # existing domain policy; default deploys unconfigured DomainAccessRules
  *   [ALLOWED_TOKEN=0x..]    \  # e.g. wrapped MON
  *   [DOMAIN_GAS=5000000]    \  # gas limit of each seeded creation, paid at DOMAIN_GAS_PRICE
  *   [VIEWING_KEY=0x...]     \  # viewing public key: published on the hub, encrypts the seeded txs
@@ -41,6 +43,8 @@ function main() {
   if (process.env.FEE_RECIPIENT) config.feeRecipient = process.env.FEE_RECIPIENT as Address;
   if (process.env.CHECKPOINT_INTERVAL) config.checkpointInterval = BigInt(process.env.CHECKPOINT_INTERVAL);
   if (process.env.MAX_UNATTESTED_PERIODS) config.maxUnattestedPeriods = Number(process.env.MAX_UNATTESTED_PERIODS);
+  if (process.env.TOKEN_POLICY_OWNER) config.tokenPolicyOwner = process.env.TOKEN_POLICY_OWNER as Address;
+  if (process.env.INITIAL_TOKEN_POLICY) config.initialTokenPolicy = process.env.INITIAL_TOKEN_POLICY as Address;
   if (process.env.ALLOWED_TOKEN) config.allowedToken = process.env.ALLOWED_TOKEN as Address;
   if (process.env.DOMAIN_GAS) config.domainGas = BigInt(process.env.DOMAIN_GAS);
   if (process.env.VIEWING_KEY) config.viewingKey = process.env.VIEWING_KEY as Hex;

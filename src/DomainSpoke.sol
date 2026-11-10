@@ -12,6 +12,8 @@ contract DomainSpoke is IDomainSpoke {
     error DomainIsL1();
     error L1ChainIdTooLarge();
     error ZeroPolicyOwner();
+    error PolicyOwnerMismatch();
+    error AlreadyRegistered();
     error DeploymentFailed();
     error PolicyHasNoCode();
     error InvalidSelfPolicy();
@@ -44,8 +46,8 @@ contract DomainSpoke is IDomainSpoke {
     uint256 public domainMessageCount;
     /// @notice Message ID of every recorded domain-origin message, by source nonce.
     mapping(uint256 => bytes32) public domainMessageIds;
-    /// @notice Account that may name each contract's access policy; zero for contracts not
-    /// deployed through `deployContract`.
+    /// @notice Account that may name each contract's access policy; zero until the contract
+    /// is deployed through `deployContract` or calls `selfRegisterPolicy`.
     mapping(address => address) public policyOwners;
     /// @notice Policy deciding calls into each contract; zero admits every caller.
     mapping(address => address) public accessPolicies;
@@ -89,11 +91,29 @@ contract DomainSpoke is IDomainSpoke {
             deployed := create(0, add(code, 32), mload(code))
         }
         if (deployed == address(0) || deployed.code.length == 0) revert DeploymentFailed();
-        policyOwners[deployed] = policyOwner;
+        address registeredOwner = policyOwners[deployed];
+        if (registeredOwner != address(0) && registeredOwner != policyOwner) revert PolicyOwnerMismatch();
+        if (registeredOwner == address(0)) policyOwners[deployed] = policyOwner;
         emit ContractDeployed(deployed, msg.sender, policyOwner);
     }
 
+    function selfRegisterPolicy(address policyOwner, address initialPolicy) external {
+        if (policyOwner == address(0)) revert ZeroPolicyOwner();
+        if (policyOwners[msg.sender] != address(0)) revert AlreadyRegistered();
+        policyOwners[msg.sender] = policyOwner;
+        emit ContractRegistered(msg.sender, policyOwner);
+        _setAccessPolicy(msg.sender, initialPolicy);
+    }
+
     function setAccessPolicy(address target, address policy) external onlyPolicyOwner(target) {
+        _setAccessPolicy(target, policy);
+    }
+
+    /// @dev Validate and store the policy, then emit `AccessPolicySet`. Authorization is enforced
+    /// by the calling function. A nonzero policy must have code and must not be this spoke.
+    /// @param target Address whose call access is governed by the policy.
+    /// @param policy Policy to install, or zero to admit every caller.
+    function _setAccessPolicy(address target, address policy) internal {
         if (policy != address(0) && policy.code.length == 0) revert PolicyHasNoCode();
         if (policy == address(this)) revert InvalidSelfPolicy();
         accessPolicies[target] = policy;
