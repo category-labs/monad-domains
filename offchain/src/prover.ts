@@ -284,7 +284,8 @@ export async function fetchDomainBatch(
  * Locates the attested batch containing source nonce `nonce` by walking the hub's
  * `DomainStateUpdated` events for `domainChainId` in `range` (L1 blocks, scanned in chunks)
  * and reading the spoke's message count at each attested height. `range` must start at or
- * before the domain's first attestation, because batches are defined by consecutive ones.
+ * before the domain's first attestation, because batches are defined by consecutive ones;
+ * otherwise the batch root will not match the anchor, which `fetchDomainBatch` rejects.
  * Null if no attestation covers the nonce yet.
  */
 export async function findBatchForNonce(
@@ -310,11 +311,6 @@ export async function findBatchForNonce(
     }
   }
   updates.sort((a, b) => (a.stateNonce < b.stateNonce ? -1 : a.stateNonce > b.stateNonce ? 1 : 0));
-  if (updates.length > 0 && updates[0]!.stateNonce !== 0n) {
-    throw new Error(
-      `prover: scan range starts after the domain's first attestation (first state nonce seen: ${updates[0]!.stateNonce})`,
-    );
-  }
 
   let previousHeight = 0n;
   let previousCount = 0n;

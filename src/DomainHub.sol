@@ -38,10 +38,18 @@ contract DomainHub is IDomainHub, EIP712 {
     error DomainBlockGasLimitExceeded();
     error FeeTransferFailed();
     error DeliveryFeeTooLow();
+    error NotEnoughSignatures();
+    error SignersNotAscending();
+    error ViewingKeyRemoved();
 
     /// @notice EIP-712 type of the digest a validator signs to approve a state transition.
     bytes32 public constant STATE_TRANSITION_TYPEHASH = keccak256(
         "StateTransition(uint64 domainChainId,uint256 stateNonce,uint64 domainBlockNumber,bytes32 newStateRoot,bytes32 domainAnchor)"
+    );
+    /// @notice EIP-712 type of the digest validators sign to replace a domain's validator set,
+    /// quorum and viewing key.
+    bytes32 public constant CONFIG_UPDATE_TYPEHASH = keccak256(
+        "ConfigUpdate(uint64 domainChainId,uint256 stateNonce,address[] validators,uint256 quorum,bytes viewingKey)"
     );
     /// @notice Length of an uncompressed SEC1 P-256 point: the only accepted viewing key encoding.
     uint256 public constant VIEWING_KEY_LENGTH = 65;
@@ -93,8 +101,8 @@ contract DomainHub is IDomainHub, EIP712 {
     mapping(uint64 => mapping(bytes32 => bool)) public relayedDomainMessages;
     /// @notice L1 callbacks that failed and await a successful retry, by source domain.
     mapping(uint64 => mapping(bytes32 => bool)) public failedDomainMessages;
-    /// @notice Monotonic per-domain transition counter bound into every digest, so a round's
-    /// signatures cannot be replayed against a later transition.
+    /// @notice Monotonic per-domain counter of state transitions and config updates, bound into
+    /// every digest, so signatures cannot be replayed against a later transition or update.
     mapping(uint64 => uint256) public stateNonces;
     /// @notice Domain block number of the latest attested state root; strictly increasing.
     mapping(uint64 => uint64) public domainBlockNumbers;
@@ -120,19 +128,73 @@ contract DomainHub is IDomainHub, EIP712 {
         if (domainChainId == block.chainid) revert L1ChainIdNotAllowed();
         DomainConfig storage config = _configs[domainChainId];
         if (config.registered) revert DomainAlreadyRegistered();
-        if (quorum == 0) revert ZeroQuorum();
-        if (quorum > validators.length) revert QuorumExceedsValidators();
         if (feeRecipient == address(0)) revert ZeroFeeRecipient();
         if (checkpointInterval == 0) revert ZeroCheckpointInterval();
-        if (viewingKey.length != 0 && (viewingKey.length != VIEWING_KEY_LENGTH || viewingKey[0] != 0x04)) {
-            revert InvalidViewingKey();
-        }
 
         config.registered = true;
         config.checkpointInterval = checkpointInterval;
         config.feeRecipient = feeRecipient;
+        _setValidators(config, validators, quorum);
+        _setViewingKey(config, viewingKey);
+
+        emit DomainRegistered(domainChainId, feeRecipient, checkpointInterval);
+        emit ViewingKeyRegistered(domainChainId, viewingKey);
+    }
+
+    function configUpdateDigest(
+        uint64 domainChainId,
+        address[] calldata validators,
+        uint256 quorum,
+        bytes calldata viewingKey
+    ) public view returns (bytes32) {
+        return _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    CONFIG_UPDATE_TYPEHASH,
+                    domainChainId,
+                    stateNonces[domainChainId],
+                    keccak256(abi.encodePacked(validators)),
+                    quorum,
+                    keccak256(viewingKey)
+                )
+            )
+        );
+    }
+
+    function updateDomainConfig(
+        uint64 domainChainId,
+        address[] calldata validators,
+        uint256 quorum,
+        bytes calldata viewingKey,
+        bytes[] calldata currentSignatures,
+        bytes[] calldata newSignatures
+    ) external {
+        DomainConfig storage config = _configs[domainChainId];
+        if (!config.registered) revert DomainNotRegistered();
+        if (viewingKey.length == 0 && config.viewingKey.length != 0) revert ViewingKeyRemoved();
+
+        bytes32 digest = configUpdateDigest(domainChainId, validators, quorum, viewingKey);
+        _checkSignatures(config, digest, currentSignatures);
+        _setValidators(config, validators, quorum);
+        _checkSignatures(config, digest, newSignatures);
+        _setViewingKey(config, viewingKey);
+
+        // The bump changes every digest, so votes cast under the old config no longer count.
+        uint256 nonce = stateNonces[domainChainId]++;
+        emit DomainConfigUpdated(domainChainId, nonce, validators, quorum);
+        emit ViewingKeyRegistered(domainChainId, viewingKey);
+    }
+
+    /// @dev Replaces the validator set and quorum.
+    function _setValidators(DomainConfig storage config, address[] calldata validators, uint256 quorum) internal {
+        if (quorum == 0) revert ZeroQuorum();
+        if (quorum > validators.length) revert QuorumExceedsValidators();
+        address[] storage current = config.validators;
+        for (uint256 i = 0; i < current.length; i++) {
+            config.isValidator[current[i]] = false;
+        }
+        delete config.validators;
         config.quorum = quorum;
-        config.viewingKey = viewingKey;
         for (uint256 i = 0; i < validators.length; i++) {
             address validator = validators[i];
             if (validator == address(0)) revert ZeroValidator();
@@ -140,9 +202,26 @@ contract DomainHub is IDomainHub, EIP712 {
             config.isValidator[validator] = true;
             config.validators.push(validator);
         }
+    }
 
-        emit DomainRegistered(domainChainId, feeRecipient, checkpointInterval);
-        emit ViewingKeyRegistered(domainChainId, viewingKey);
+    function _setViewingKey(DomainConfig storage config, bytes calldata viewingKey) internal {
+        if (viewingKey.length != 0 && (viewingKey.length != VIEWING_KEY_LENGTH || viewingKey[0] != 0x04)) {
+            revert InvalidViewingKey();
+        }
+        config.viewingKey = viewingKey;
+    }
+
+    /// @dev Requires at least a quorum of signatures over `digest` from validators of `config`,
+    /// ordered by ascending signer address so each signer counts once.
+    function _checkSignatures(DomainConfig storage config, bytes32 digest, bytes[] calldata signatures) internal view {
+        if (signatures.length < config.quorum) revert NotEnoughSignatures();
+        address previous = address(0);
+        for (uint256 i = 0; i < signatures.length; i++) {
+            address signer = ECDSA.recover(digest, signatures[i]);
+            if (signer <= previous) revert SignersNotAscending();
+            if (!config.isValidator[signer]) revert NotValidator();
+            previous = signer;
+        }
     }
 
     function isDomainRegistered(uint64 domainChainId) external view returns (bool) {

@@ -96,6 +96,20 @@ test("buildCheckpoint pins hub reads to one block, never reads state at height 0
   for (const read of reads) assert.equal(read.blockNumber, 10n);
 });
 
+test("buildCheckpoint starts the first batch at nonce 0 after a config update moved the state nonce", async () => {
+  const domainCalls: Record<string, unknown>[] = [];
+  const checkpoint = await buildCheckpoint({
+    l1: hubClient(1n, 0n),
+    domain: domainClient(5n, zeroHash, domainCalls),
+    hub, spoke, domainChainId: 7777n, height: 10n,
+  });
+  assert.equal(checkpoint.stateNonce, 1n);
+  assert.deepEqual([checkpoint.fromNonce, checkpoint.toNonce], [0n, 5n]);
+  assert.equal(checkpoint.anchor, root(ids));
+  const countReads = domainCalls.filter((c) => c.functionName === "domainMessageCount");
+  assert.deepEqual(countReads.map((c) => c.blockNumber), [10n], "no count read at height 0 before the first attestation");
+});
+
 test("buildCheckpoint starts the batch at the previous checkpoint's count and anchors zero when idle", async () => {
   const domainCalls: Record<string, unknown>[] = [];
   const checkpoint = await buildCheckpoint({

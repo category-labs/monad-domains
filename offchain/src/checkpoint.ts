@@ -262,7 +262,7 @@ export async function buildCheckpoint(args: {
 
   // Before the first attestation nothing can have been recorded, and the domain state at
   // L1 height 0 is not necessarily readable on a long-lived chain.
-  const fromNonce = stateNonce === 0n ? 0n : await domainMessageCountAt(domain, spoke, previousBlockNumber);
+  const fromNonce = previousBlockNumber === 0n ? 0n : await domainMessageCountAt(domain, spoke, previousBlockNumber);
   const toNonce = await domainMessageCountAt(domain, spoke, height);
   if (toNonce < fromNonce) {
     throw new Error(`checkpoint: message count went backwards (${fromNonce} at ${previousBlockNumber}, ${toNonce} at ${height})`);

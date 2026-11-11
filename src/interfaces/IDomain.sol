@@ -14,6 +14,10 @@ interface IDomainHub {
     /// 65-byte uncompressed P-256 point.
     event ViewingKeyRegistered(uint64 indexed domainChainId, bytes viewingKey);
 
+    /// @notice The domain's validator set and quorum were replaced by `updateDomainConfig`.
+    /// `stateNonce` is the nonce the update was signed at; the hub's nonce is now one higher.
+    event DomainConfigUpdated(uint64 indexed domainChainId, uint256 stateNonce, address[] validators, uint256 quorum);
+
     /// @notice One L1-sequenced domain transaction. The domain sender is recovered from the
     /// signed transaction inside `rlpTx`. `fee` is the wei paid: the transaction executes only if
     /// its gas limit is within `fee / DOMAIN_GAS_PRICE`.
@@ -110,6 +114,30 @@ interface IDomainHub {
         uint64 checkpointInterval
     ) external;
 
+    /// @notice The EIP-712 digest validators sign to replace a domain's validator set, quorum and
+    /// viewing key, bound to this hub, the L1 chain, the domain and the current `stateNonces`
+    /// entry.
+    function configUpdateDigest(
+        uint64 domainChainId,
+        address[] calldata validators,
+        uint256 quorum,
+        bytes calldata viewingKey
+    ) external view returns (bytes32);
+
+    /// @notice Replaces a registered domain's validator set, quorum and viewing key. Needs at
+    /// least a quorum of signatures over `configUpdateDigest` from the current validators and
+    /// from the new ones, each list ordered by ascending signer address. Bumps `stateNonces`, so
+    /// votes cast before the update no longer count. The new values are checked as in
+    /// `registerDomain`, and a domain with a viewing key cannot remove it.
+    function updateDomainConfig(
+        uint64 domainChainId,
+        address[] calldata validators,
+        uint256 quorum,
+        bytes calldata viewingKey,
+        bytes[] calldata currentSignatures,
+        bytes[] calldata newSignatures
+    ) external;
+
     function isDomainRegistered(uint64 domainChainId) external view returns (bool);
     function getValidators(uint64 domainChainId) external view returns (address[] memory);
     function quorums(uint64 domainChainId) external view returns (uint256);
@@ -154,8 +182,9 @@ interface IDomainHub {
     /// attest strictly increasing block numbers.
     function domainBlockNumbers(uint64 domainChainId) external view returns (uint64);
 
-    /// @notice Number of transitions the domain has advanced through. Bound into every digest,
-    /// so signatures for one transition cannot be replayed against a later one.
+    /// @notice Number of state transitions and config updates the domain has gone through.
+    /// Bound into every digest, so signatures cannot be replayed against a later transition or
+    /// update.
     function stateNonces(uint64 domainChainId) external view returns (uint256);
 
     /// @notice Votes accumulated for a proposal, keyed by its `stateTransitionDigest`.
