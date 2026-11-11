@@ -91,7 +91,7 @@ contract L1BridgeTest is DomainTestBase {
                 sourceChainId: uint64(block.chainid), from: address(bridge), to: DOMAIN_BRIDGE, data: data, nonce: 0
             })
         );
-        uint256 before = address(this).balance;
+        uint256 before = hub.accruedFees(CHAIN_ID);
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
@@ -100,9 +100,8 @@ contract L1BridgeTest is DomainTestBase {
         vm.prank(alice);
         bridge.bridgeToDomain{value: 0.02 ether}(bob, address(token), 100 ether);
 
-        assertEq(address(this).balance - before, 0.02 ether, "fee recipient is paid");
+        assertEq(hub.accruedFees(CHAIN_ID) - before, 0.02 ether, "the fee is held for the fee recipient");
         assertEq(address(bridge).balance, 0);
-        assertEq(address(hub).balance, 0);
     }
 
     function test_bridge_rejectsUnderpaidDeliveryBeforeLockingTokens() public {

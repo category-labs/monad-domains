@@ -371,15 +371,19 @@ contract DomainInputQueueTest is DomainTestBase {
         assertEq(entries[2].payload, hex"ee");
     }
 
-    /// @dev The fee is paid out last, so an input recorded from inside the payment comes
-    /// after the paying one in the queue and in the logs alike.
-    function test_feeRecipientReenteringKeepsQueueAndLogsInOrder() public {
+    /// @dev Recording an input does not call the fee recipient; a withdrawal does. The inputs
+    /// the recipient records from inside the payment are queued and logged in order, and their
+    /// fees stay in the hub for the next withdrawal.
+    function test_feeRecipientReenteringAWithdrawalKeepsQueueLogsAndNewFees() public {
         ReenteringRecipient recipient = new ReenteringRecipient(hub, 8888);
         hub.registerDomain(8888, _addresses(_keys(VALIDATOR_KEY)), 1, address(recipient), "", CHECKPOINT_INTERVAL, 3);
         uint256 fee = hub.minDeliveryFee(1);
-        vm.recordLogs();
         vm.prank(alice);
         hub.sendL1Message{value: 2 * fee}(8888, bob, hex"00");
+        assertEq(_inputs(8888).length, 1, "the recipient is not called when a fee is paid");
+
+        vm.recordLogs();
+        hub.withdrawFees(8888);
 
         QueueEntry[] memory entries = _inputs(8888);
         assertEq(entries.length, 3);
@@ -392,11 +396,17 @@ contract DomainInputQueueTest is DomainTestBase {
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         assertEq(logs.length, 3);
-        assertEq(logs[0].topics[0], IDomainHub.L1MessageRecorded.selector);
-        assertEq(logs[0].topics[2], bytes32(uint256(uint160(alice))));
-        assertEq(logs[1].topics[0], IDomainHub.DomainTransactionSequenced.selector);
-        assertEq(logs[2].topics[0], IDomainHub.L1MessageRecorded.selector);
-        assertEq(logs[2].topics[2], bytes32(uint256(uint160(address(recipient)))));
+        assertEq(logs[0].topics[0], IDomainHub.DomainTransactionSequenced.selector);
+        assertEq(logs[1].topics[0], IDomainHub.L1MessageRecorded.selector);
+        assertEq(logs[1].topics[2], bytes32(uint256(uint160(address(recipient)))));
+        assertEq(logs[2].topics[0], IDomainHub.FeesWithdrawn.selector);
+        assertEq(abi.decode(logs[2].data, (uint256)), 2 * fee);
+
+        // The withdrawal under way pays out what was held before it, not the two new fees.
+        uint256 newFees = hub.minSequencingFee(1) + fee;
+        assertEq(hub.accruedFees(8888), newFees);
+        assertEq(address(hub).balance, newFees);
+        assertEq(address(recipient).balance, 2 * fee - newFees);
     }
 
     // ---------------------------------------------------------------------
