@@ -14,6 +14,9 @@ interface IDomainHub {
     /// 65-byte uncompressed P-256 point.
     event ViewingKeyRegistered(uint64 indexed domainChainId, bytes viewingKey);
 
+    /// @notice A domain's collected fees were paid to its fee recipient.
+    event FeesWithdrawn(uint64 indexed domainChainId, address indexed recipient, uint256 amount);
+
     /// @notice One L1-sequenced domain transaction. The domain sender is recovered from the
     /// signed transaction inside `rlpTx`. `fee` is the wei paid: the transaction executes only if
     /// its gas limit is within `fee / DOMAIN_GAS_PRICE`.
@@ -80,7 +83,7 @@ interface IDomainHub {
     // --- Registration ---
 
     /// @notice Price of one unit of domain gas in wei. The value attached to a sequencing or
-    /// message call is a non-refundable fee paid to the domain's fee recipient; it buys
+    /// message call is a non-refundable fee held for the domain's fee recipient; it buys
     /// `value / DOMAIN_GAS_PRICE` gas of domain execution. The execution client mirrors it.
     function DOMAIN_GAS_PRICE() external view returns (uint256);
 
@@ -88,6 +91,14 @@ interface IDomainHub {
     /// gas for the spoke to deliver it or to mark it failed and retryable. A send or a
     /// domain-bound relay attaching less MUST revert.
     function minDeliveryFee(uint256 dataLength) external pure returns (uint256);
+
+    /// @notice Fees the hub holds for the domain's fee recipient: every fee paid for the domain
+    /// since the last withdrawal.
+    function accruedFees(uint64 domainChainId) external view returns (uint256);
+
+    /// @notice Pays the domain's `accruedFees` to its fee recipient. Anyone may call it. MUST
+    /// revert, leaving the fees in the hub, if the recipient does not accept the payment.
+    function withdrawFees(uint64 domainChainId) external;
 
     /// @notice Most gas a domain's sequenced transactions and deliveries may buy per L1 block
     /// in total; a call that would sell more MUST revert, so the work a domain block carries
@@ -193,7 +204,7 @@ interface IDomainHub {
 
     // --- Domain transactions: sequenced on the L1 ---
 
-    /// @notice Sequences a domain transaction through the L1. Forwards `msg.value` to the
+    /// @notice Sequences a domain transaction through the L1. Holds `msg.value` for the
     /// domain's fee recipient as a prepaid, non-refundable execution fee and emits `rlpTx` (a
     /// signed domain transaction, HPKE-encrypted to the domain's viewing key when it has one)
     /// for the domain clients to execute. The fee bounds the transaction's gas limit.
@@ -204,7 +215,7 @@ interface IDomainHub {
     /// @notice Records a message to the target domain; the domain client delivers it to the
     /// spoke as a system transaction. Nonces are per-domain and gapless (`nonce ==
     /// l1MessageCounts[domainChainId]` at recording time), so the spoke can enforce in-order,
-    /// at-most-once delivery. `msg.value` is paid to the domain's fee recipient and sets the
+    /// at-most-once delivery. `msg.value` is held for the domain's fee recipient and sets the
     /// delivery's gas limit (see `DOMAIN_GAS_PRICE`); it must be at least
     /// `minDeliveryFee(data.length)`.
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable;

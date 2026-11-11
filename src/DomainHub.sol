@@ -82,6 +82,8 @@ contract DomainHub is IDomainHub, EIP712 {
     mapping(uint64 => DomainConfig) internal _configs;
     /// @notice Gas each domain has sold in the current L1 block, against `DOMAIN_BLOCK_GAS_LIMIT`.
     mapping(uint64 => BlockGas) public blockGas;
+    /// @notice Fees each domain has collected and its fee recipient has not yet been paid.
+    mapping(uint64 => uint256) public accruedFees;
     /// @notice Latest attested state root of each domain.
     mapping(uint64 => bytes32) public stateRoots;
     /// @notice Next delivery nonce of each destination domain, shared by plaintext, encrypted
@@ -293,8 +295,9 @@ contract DomainHub is IDomainHub, EIP712 {
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
     }
 
-    /// @dev Counts the gas `fee` buys against the domain's budget for this L1 block and pays
-    /// the fee to the domain's fee recipient, who must accept it.
+    /// @dev Counts the gas `fee` buys against the domain's budget for this L1 block and holds
+    /// the fee for the domain's fee recipient. The recipient is not called here, so it cannot
+    /// make a sequencing or message call revert.
     function _buyGas(uint64 domainChainId, uint256 fee) internal {
         BlockGas storage budget = blockGas[domainChainId];
         uint256 sold = budget.blockNumber == block.number ? budget.gasSold : 0;
@@ -302,9 +305,18 @@ contract DomainHub is IDomainHub, EIP712 {
         if (sold > DOMAIN_BLOCK_GAS_LIMIT) revert DomainBlockGasLimitExceeded();
         budget.blockNumber = uint64(block.number);
         budget.gasSold = uint192(sold);
-        if (fee == 0) return;
-        (bool success,) = _configs[domainChainId].feeRecipient.call{value: fee}("");
+        if (fee != 0) accruedFees[domainChainId] += fee;
+    }
+
+    function withdrawFees(uint64 domainChainId) external {
+        DomainConfig storage config = _configs[domainChainId];
+        if (!config.registered) revert DomainNotRegistered();
+        address recipient = config.feeRecipient;
+        uint256 amount = accruedFees[domainChainId];
+        accruedFees[domainChainId] = 0;
+        (bool success,) = recipient.call{value: amount}("");
         if (!success) revert FeeTransferFailed();
+        emit FeesWithdrawn(domainChainId, recipient, amount);
     }
 
     // ---------------------------------------------------------------------
