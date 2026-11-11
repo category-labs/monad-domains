@@ -39,7 +39,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function _register(uint64 chainId, address recipient, bytes memory viewingKey, uint64 interval) internal {
-        hub.registerDomain(chainId, _validators(), 2, recipient, viewingKey, interval);
+        hub.registerDomain(chainId, _validators(), 2, recipient, viewingKey, interval, MAX_UNATTESTED_PERIODS);
     }
 
     // ---------------------------------------------------------------------
@@ -58,19 +58,19 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_register_rejectsZeroQuorum() public {
         vm.expectRevert(DomainHub.ZeroQuorum.selector);
-        hub.registerDomain(4444, _validators(), 0, feeRecipient, "", 1);
+        hub.registerDomain(4444, _validators(), 0, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsQuorumAboveValidatorCount() public {
         vm.expectRevert(DomainHub.QuorumExceedsValidators.selector);
-        hub.registerDomain(4444, _validators(), 4, feeRecipient, "", 1);
+        hub.registerDomain(4444, _validators(), 4, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsZeroValidator() public {
         address[] memory validators = new address[](1);
         validators[0] = address(0);
         vm.expectRevert(DomainHub.ZeroValidator.selector);
-        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1);
+        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsDuplicateValidator() public {
@@ -78,7 +78,7 @@ contract DomainMessagingTest is DomainTestBase {
         validators[0] = vm.addr(K1);
         validators[1] = vm.addr(K1);
         vm.expectRevert(DomainHub.DuplicateValidator.selector);
-        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1);
+        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsZeroFeeRecipient() public {
@@ -89,6 +89,13 @@ contract DomainMessagingTest is DomainTestBase {
     function test_register_rejectsZeroCheckpointInterval() public {
         vm.expectRevert(DomainHub.ZeroCheckpointInterval.selector);
         _register(4444, feeRecipient, "", 0);
+    }
+
+    function test_register_rejectsPeriodLimitOutOfRange() public {
+        vm.expectRevert(DomainHub.InvalidMaxUnattestedPeriods.selector);
+        hub.registerDomain(4444, _validators(), 2, feeRecipient, "", 1, 0);
+        vm.expectRevert(DomainHub.InvalidMaxUnattestedPeriods.selector);
+        hub.registerDomain(4444, _validators(), 2, feeRecipient, "", 1, 51);
     }
 
     function test_register_rejectsMalformedViewingKey() public {
@@ -111,6 +118,7 @@ contract DomainMessagingTest is DomainTestBase {
         assertFalse(hub.isDomainRegistered(5555));
         assertEq(hub.feeRecipients(4444), feeRecipient);
         assertEq(hub.checkpointIntervals(4444), 25);
+        assertEq(hub.maxUnattestedPeriods(4444), MAX_UNATTESTED_PERIODS);
         assertEq(hub.quorums(4444), 2);
         assertEq(hub.viewingKeys(4444), "");
         assertEq(hub.getValidators(4444), _validators());
@@ -529,7 +537,7 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(gasSold, cap);
         vm.prank(alice);
         vm.expectRevert(DomainHub.DomainBlockGasLimitExceeded.selector);
-        hub.sequenceToDomain{value: price}(CHAIN_ID, hex"c0ffee");
+        hub.sequenceToDomain{value: _sequencingFee(3)}(CHAIN_ID, hex"c0ffee");
         vm.prank(alice);
         vm.expectRevert(DomainHub.DomainBlockGasLimitExceeded.selector);
         hub.sendL1Message{value: 300_000 * price}(CHAIN_ID, bob, hex"01");
@@ -542,6 +550,24 @@ contract DomainMessagingTest is DomainTestBase {
         hub.sequenceToDomain{value: cap * price}(CHAIN_ID, hex"c0ffee");
         (, gasSold) = hub.blockGas(CHAIN_ID);
         assertEq(gasSold, cap);
+    }
+
+    function test_sequenceToDomain_rejectsAFeeBelowTheMinimum() public {
+        // A transaction's intrinsic gas plus 10 per payload byte, at the domain gas price.
+        uint256 minimum = hub.minSequencingFee(3);
+        assertEq(minimum, (21_000 + 10 * 3) * hub.DOMAIN_GAS_PRICE());
+        assertEq(minimum, _sequencingFee(3));
+
+        vm.startPrank(alice);
+        vm.expectRevert(DomainHub.SequencingFeeTooLow.selector);
+        hub.sequenceToDomain(CHAIN_ID, hex"c0ffee");
+        vm.expectRevert(DomainHub.SequencingFeeTooLow.selector);
+        hub.sequenceToDomain{value: minimum - 1}(CHAIN_ID, hex"c0ffee");
+        hub.sequenceToDomain{value: minimum}(CHAIN_ID, hex"c0ffee");
+        // The same fee does not cover a longer payload.
+        vm.expectRevert(DomainHub.SequencingFeeTooLow.selector);
+        hub.sequenceToDomain{value: minimum}(CHAIN_ID, hex"c0ffee00");
+        vm.stopPrank();
     }
 
     function test_sequenceToDomain_rejectsUnregisteredDomain() public {

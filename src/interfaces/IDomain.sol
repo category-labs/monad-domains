@@ -96,18 +96,21 @@ interface IDomainHub {
 
     /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
     /// validator signatures required to advance the state, the recipient of sequencing fees,
-    /// the viewing public key senders encrypt to (32-byte X25519 public key, or empty)
-    /// and the checkpoint interval attested block numbers must be multiples of. MUST reject
-    /// the L1 chain id, an already registered chain id, a zero quorum, a quorum exceeding the
-    /// validator count, zero or duplicate validators, a zero fee recipient, a zero interval
-    /// and a viewing key that is neither empty nor 32 bytes.
+    /// the viewing public key senders encrypt to (32-byte X25519 public key, or empty),
+    /// the checkpoint interval attested block numbers must be multiples of, and how many
+    /// checkpoint periods may be unattested before the domain stops accepting inputs. MUST
+    /// reject the L1 chain id, an already registered chain id, a zero quorum, a quorum
+    /// exceeding the validator count, zero or duplicate validators, a zero fee recipient, a
+    /// zero interval, a period limit outside 1 to 50 and a viewing key that is neither empty
+    /// nor 32 bytes.
     function registerDomain(
         uint64 domainChainId,
         address[] calldata validators,
         uint256 quorum,
         address feeRecipient,
         bytes calldata viewingKey,
-        uint64 checkpointInterval
+        uint64 checkpointInterval,
+        uint8 maxUnattestedPeriods
     ) external;
 
     function isDomainRegistered(uint64 domainChainId) external view returns (bool);
@@ -115,6 +118,7 @@ interface IDomainHub {
     function quorums(uint64 domainChainId) external view returns (uint256);
     function feeRecipients(uint64 domainChainId) external view returns (address);
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64);
+    function maxUnattestedPeriods(uint64 domainChainId) external view returns (uint8);
     /// @notice The registered viewing public key, or empty bytes.
     function viewingKeys(uint64 domainChainId) external view returns (bytes memory);
 
@@ -150,8 +154,9 @@ interface IDomainHub {
     /// @notice The latest attested state root of the domain.
     function stateRoots(uint64 domainChainId) external view returns (bytes32);
 
-    /// @notice The domain block number of the latest attested state root; transitions must
-    /// attest strictly increasing block numbers.
+    /// @notice The L1 block number of the latest attested state root, not the input queue's
+    /// domain block number; transitions must attest strictly increasing block numbers. Starts
+    /// at the last multiple of the checkpoint interval below the registering L1 block.
     function domainBlockNumbers(uint64 domainChainId) external view returns (uint64);
 
     /// @notice Number of transitions the domain has advanced through. Bound into every digest,
@@ -196,8 +201,14 @@ interface IDomainHub {
     /// @notice Sequences a domain transaction through the L1. Forwards `msg.value` to the
     /// domain's fee recipient as a prepaid, non-refundable execution fee and emits `rlpTx` (a
     /// signed domain transaction, HPKE-encrypted to the domain's viewing key when it has one)
-    /// for the domain clients to execute. The fee bounds the transaction's gas limit.
+    /// for the domain clients to execute. The fee bounds the transaction's gas limit; it must
+    /// be at least `minSequencingFee(rlpTx.length)`.
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable;
+
+    /// @notice Smallest fee a sequencing call with `payloadLength` bytes of `rlpTx` is accepted
+    /// with: it buys a transaction's intrinsic gas plus the calldata floor of a zero byte per
+    /// payload byte, so no input is free. A call attaching less MUST revert.
+    function minSequencingFee(uint256 payloadLength) external pure returns (uint256);
 
     // --- Messaging: L1 -> domain ---
 
@@ -218,6 +229,27 @@ interface IDomainHub {
     /// @notice Number of L1 -> domain messages recorded for `domainChainId`, plaintext,
     /// encrypted and forwarded alike; equals the nonce the next message will be assigned.
     function l1MessageCounts(uint64 domainChainId) external view returns (uint256);
+
+    // --- Input queue ---
+    //
+    // Every sequenced transaction and recorded message is also appended, in L1 order, to the
+    // destination domain's input queue: a circular buffer in the hub's storage holding the
+    // inputs the domain's attested state does not cover yet.
+
+    /// @notice Pays ahead for the state growth of queue words `[from, from + count)` that no
+    /// input has reached yet, so recording into them costs what it does on a lapped queue.
+    function primeInputQueue(uint64 domainChainId, uint256 from, uint256 count) external;
+
+    /// @notice The domain's latest block and the L1 block it is derived from. The registering
+    /// L1 block is block 0; every later L1 block that records an input is the next block.
+    function latestDomainBlock(uint64 domainChainId)
+        external
+        view
+        returns (uint64 l1BlockNumber, uint64 domainBlockNumber);
+
+    /// @notice Gas the domain has sold in L1 block `blockNumber`, the one its latest block is
+    /// derived from.
+    function blockGas(uint64 domainChainId) external view returns (uint64 blockNumber, uint192 gasSold);
 }
 
 /// @notice Domain-side spoke, deployed in each domain's state. Mirror image of the hub: it

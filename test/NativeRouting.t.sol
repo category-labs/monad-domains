@@ -7,6 +7,7 @@ import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {DomainBridge} from "../src/bridge/DomainBridge.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
+import {InputQueue} from "../src/libraries/InputQueue.sol";
 import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
 import {CrossDomainReceiver} from "./mocks/CrossDomainReceiver.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
@@ -300,6 +301,30 @@ contract NativeRoutingTest is DomainTestBase {
         hub.relayDomainMessage{value: minimum - 1}(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(A, _id(message)), "an underpaid relay consumes nothing");
         assertTrue(hub.relayDomainMessage{value: minimum}(message, anchor, new bytes32[](0)));
+    }
+
+    function test_routeToAStalledDestinationStaysRelayable() public {
+        MessageLib.DomainMessage memory message = _send(address(receiver), hex"1234");
+        bytes32 anchor = _attestBatch(hub, spokeA, KEY);
+        // B has left its registration unattested for more periods than it allows.
+        vm.roll(block.number + uint256(MAX_UNATTESTED_PERIODS) * CHECKPOINT_INTERVAL);
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
+        hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0));
+        assertFalse(hub.relayedDomainMessages(A, _id(message)), "a refused relay consumes nothing");
+
+        _post(hub, B, bytes32(0));
+        assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, new bytes32[](0)));
+
+        // The forwarded message is B's newest queue entry, under its source's identity.
+        (uint64 head, uint64 index) = _queueBounds(hub, B);
+        QueueEntry memory entry;
+        while (index < head) {
+            (entry, index) = _queueEntry(hub, B, index);
+        }
+        assertEq(entry.kind, InputQueue.MESSAGE);
+        assertEq(entry.fee, DELIVERY_FEE);
+        assertEq(entry.payload, abi.encodePacked(A, alice, address(receiver), uint64(0), hex"1234"));
     }
 
     function test_deliveryNoncesSharePlaintextAndEncryptedQueue() public {
