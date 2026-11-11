@@ -148,7 +148,9 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
     }
     if (published !== "0x") encryptionKey = published;
   }
-  const rlpTx = encryptionKey ? await encryptTransaction(encryptionKey, rawTransaction) : rawTransaction;
+  const rlpTx = encryptionKey
+    ? await encryptTransaction(encryptionKey, { l1ChainId: BigInt(l1Chain.id), hub, domainChainId }, rawTransaction)
+    : rawTransaction;
 
   const fee = gas * (await readDomainGasPrice(l1, hub));
   const l1TxHash = await wallet.writeContract({

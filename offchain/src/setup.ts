@@ -180,7 +180,9 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   // the hub records the HPKE ciphertext of each creation; the execution client decrypts it.
   const sequencingFee = domainGas * (await readDomainGasPrice(publicClient, hub));
   const sequenceSeedTransaction = async (rawTransaction: Hex): Promise<Hex> => {
-    const rlpTx = viewingKey ? await encryptTransaction(viewingKey, rawTransaction) : rawTransaction;
+    const rlpTx = viewingKey
+      ? await encryptTransaction(viewingKey, { l1ChainId: BigInt(l1ChainId), hub, domainChainId }, rawTransaction)
+      : rawTransaction;
     return wallet.writeContract({
       address: hub,
       abi: hubArt.abi,

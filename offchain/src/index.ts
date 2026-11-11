@@ -15,6 +15,7 @@ export {
   encryptMessage,
   encryptTransaction,
   generateViewingKeyPair,
+  type EncryptionContext,
   type ViewingKeyPair,
 } from "./encryption.js";
 export {

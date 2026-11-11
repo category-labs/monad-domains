@@ -27,11 +27,16 @@ client — the holder of the viewing secret key — decrypts before executing. `
 implements the fixed RFC 9180 Base-mode profile the client expects:
 
 - KEM `DHKEM(P-256, HKDF-SHA256)`, KDF `HKDF-SHA256`, AEAD `AES-128-GCM`
-- `info` = `private-domain-hpke-rfc9180-v1`, no associated data
+- `info` = `private-domain-hpke-rfc9180-v1/transaction` for a sequenced transaction,
+  `private-domain-hpke-rfc9180-v1/message` for an encrypted L1 -> domain message
+- associated data = `l1ChainId || hub || domainChainId`, followed for a message by the L1
+  account that sends it (`PROTOCOL.md` gives the exact bytes)
 - payload = `enc[65] || AEAD(0x01 || signed_transaction)`; the domain still indexes the
   transaction by the hash of its plaintext bytes
 
-The execution client and senders must use the exact same `info` value.
+The execution client and senders must use the exact same `info` and associated data. They tie
+a ciphertext to one hub call, so a copy of it opens nowhere else; in particular, a message
+opens only when sent by the account passed to `encryptMessage`.
 
 `npm run setup` and `npm run sequence` encrypt whenever `VIEWING_KEY` is set. A node started
 with a receiver key for the domain (`--private-domain <id> <spoke> <key.pem>`) decrypts every
@@ -47,7 +52,7 @@ npm run viewing-key -- public  domain-85679.pem    # VIEWING_KEY for an existing
 
 Programmatic equivalents are exported (`generateViewingKeyFiles`, `viewingPublicKeyFromPem`,
 `viewingSecretKeyFromPem`, `viewingSecretKeyToPem`), alongside `encryptTransaction` /
-`decryptTransaction` for tests and local tooling.
+`decryptTransaction` and `encryptMessage` / `decryptMessage` for tests and local tooling.
 
 ## Checkpoints
 
