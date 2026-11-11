@@ -27,6 +27,8 @@ A domain is identified by its chain ID. A domain is created by calling `register
 2. **Configure the execution clients.** Each replica is started with the domain's chain ID, the address its spoke will have, and the key file, plus the hub address as the sequencer contract. Every replica must hold the same secret key to decrypt the ciphertext.
 3. **Deploy the spoke inside the domain.** The spoke is a contract in the domain's own state, not on the L1. Its creation transaction is sequenced through the hub like any other domain transaction.
 
+**Updating a domain.** `updateDomainConfig` replaces the validator set, quorum and viewing key. It needs a quorum of signatures over `configUpdateDigest` from the current validators and from the new ones. The update bumps `stateNonces`, so checkpoint votes cast before it no longer count and validators sign the checkpoint again. A domain with a viewing key cannot remove it. Ciphertexts sequenced before a key change stay sealed to the old key, so execution clients must keep the old secret key to open them.
+
 ## Transactions and Message passing
 
 Everything that enters a domain is pushed by the protocol from L1 events.

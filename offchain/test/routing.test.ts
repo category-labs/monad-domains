@@ -190,15 +190,16 @@ test("findBatchForNonce pairs consecutive attestations with the spoke's counts a
   assert.equal(await findBatchForNonce(l1, domain, addr(1), spoke, 7777n, 10n, range), null, "not attested yet");
 });
 
-test("findBatchForNonce rejects a scan range that starts after the first attestation", async () => {
+test("findBatchForNonce finds the first batch when a config update moved the state nonce before it", async () => {
+  const anchor = root([legacyId]);
   const l1 = {
     getLogs: async () => [
-      { args: { domainChainId: 7777n, stateNonce: 2n, domainBlockNumber: 30n, newStateRoot: "0x" as Hex, domainAnchor: root([routeId]) }, blockNumber: 31n, logIndex: 0 },
+      { args: { domainChainId: 7777n, stateNonce: 1n, domainBlockNumber: 10n, newStateRoot: "0x" as Hex, domainAnchor: anchor }, blockNumber: 11n, logIndex: 0 },
     ],
   } as unknown as PublicClient;
-  const domain = { readContract: async () => 10n } as unknown as PublicClient;
-  await assert.rejects(
-    findBatchForNonce(l1, domain, addr(1), spoke, 7777n, 9n, { fromBlock: 25n, toBlock: 40n }),
-    /starts after the domain's first attestation/,
-  );
+  const domain = { readContract: async () => 9n } as unknown as PublicClient;
+  assert.deepEqual(await findBatchForNonce(l1, domain, addr(1), spoke, 7777n, 8n, { fromBlock: 0n, toBlock: 30n }), {
+    fromNonce: 0n, toNonce: 9n, fromBlock: 0n, toBlock: 10n, anchor,
+  });
 });
+
