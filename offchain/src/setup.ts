@@ -23,6 +23,11 @@ export interface SetupConfig {
   /** Attested L1 heights must be multiples of this many blocks. Default 5. */
   checkpointInterval?: bigint;
   /**
+   * Checkpoint periods that may be unattested before the hub stops accepting the domain's
+   * inputs, 1 to 50. Default 50.
+   */
+  maxUnattestedPeriods?: number;
+  /**
    * Key of the domain account whose first two (sequenced) transactions create the spoke and bridge.
    * Defaults to `adminKey` — the same account works because L1 and domain nonces are independent, so
    * on a fresh domain the admin's domain nonces are 0 and 1. If overridden, the account MUST have
@@ -82,6 +87,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     allowedToken,
     domainGas = 5_000_000n,
     checkpointInterval = 5n,
+    maxUnattestedPeriods = 50,
     viewingKey,
   } = config;
 
@@ -90,6 +96,9 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     throw new Error("setup: quorum must be in [1, validators.length]");
   }
   if (checkpointInterval <= 0n) throw new Error("setup: checkpointInterval must be positive");
+  if (!Number.isInteger(maxUnattestedPeriods) || maxUnattestedPeriods < 1 || maxUnattestedPeriods > 50) {
+    throw new Error("setup: maxUnattestedPeriods must be in [1, 50]");
+  }
 
   const admin = privateKeyToAccount(adminKey);
   const seed = privateKeyToAccount(config.seedDeployerKey ?? adminKey);
@@ -135,12 +144,14 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
       address: hub,
       abi: hubArt.abi,
       functionName: "registerDomain",
-      args: [domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval],
+      args: [
+        domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval, maxUnattestedPeriods,
+      ],
     }),
   );
   console.log(
     `  registered chain ${domainChainId} (quorum ${quorum} of ${validators.length}, fee recipient ${feeRecipient}, ` +
-      `checkpoint interval ${checkpointInterval}, viewing key ${viewingKey ? "published" : "none"})`,
+      `checkpoint interval ${checkpointInterval}, at most ${maxUnattestedPeriods} unattested periods, viewing key ${viewingKey ? "published" : "none"})`,
   );
 
   // 2. Deploy the L1 bridge (admin becomes owner).

@@ -15,6 +15,7 @@ import { encryptTransaction } from "./encryption.js";
 
 const HUB_SEQUENCING_ABI = parseAbi([
   "function DOMAIN_GAS_PRICE() view returns (uint256)",
+  "function minSequencingFee(uint256 payloadLength) pure returns (uint256)",
   "function sequenceToDomain(uint64 domainChainId, bytes rlpTx) payable",
   "function viewingKeys(uint64 domainChainId) view returns (bytes)",
   "event DomainTransactionSequenced(uint64 indexed domainChainId, bytes rlpTx, uint256 fee)",
@@ -152,6 +153,19 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
   const rlpTx = await encryptTransaction(encryptionKey, domainChainId, rawTransaction);
 
   const fee = gas * (await readDomainGasPrice(l1, hub));
+  // The hub refuses a fee below its minimum for the payload's size.
+  const payloadLength = BigInt((rlpTx.length - 2) / 2);
+  const minimumFee = await l1.readContract({
+    address: hub,
+    abi: HUB_SEQUENCING_ABI,
+    functionName: "minSequencingFee",
+    args: [payloadLength],
+  });
+  if (fee < minimumFee) {
+    throw new Error(
+      `sequence: gas ${gas} pays ${fee} wei, below the hub's minimum of ${minimumFee} wei for a ${payloadLength}-byte payload`,
+    );
+  }
   const l1TxHash = await wallet.writeContract({
     address: hub,
     abi: HUB_SEQUENCING_ABI,

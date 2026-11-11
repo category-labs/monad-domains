@@ -14,6 +14,8 @@ abstract contract DomainTestBase is Test {
     /// @dev Attested L1 heights must be multiples of this.
     uint64 internal constant CHECKPOINT_INTERVAL = 10;
     bytes32 internal constant TEST_SALT = bytes32(uint256(1));
+    /// @dev Checkpoint periods a test domain may leave unattested: the most the hub allows.
+    uint8 internal constant MAX_UNATTESTED_PERIODS = 50;
 
     /// @dev `domainMessageCount` as of the last attestation per domain: the start of the
     /// next batch. Mirrors what a validator reads from the state at the previous checkpoint.
@@ -22,8 +24,80 @@ abstract contract DomainTestBase is Test {
     /// @dev Fee attached to test deliveries: above the hub's minimum for any test payload.
     uint256 internal constant DELIVERY_FEE = 0.1 ether;
 
+    /// @dev The hub's `minSequencingFee`, without a call, so it can sit between a prank or an
+    /// expected revert and the sequencing call.
+    function _sequencingFee(uint256 payloadLength) internal pure returns (uint256) {
+        return (21_000 + 10 * payloadLength) * 50 gwei;
+    }
+
     /// @dev Registered as every test domain's fee recipient.
     receive() external payable {}
+
+    // ---------------------------------------------------------------------
+    // Input queue, read from the hub's storage
+    // ---------------------------------------------------------------------
+
+    struct QueueEntry {
+        uint8 kind;
+        // Of a block entry.
+        uint64 l1BlockNumber;
+        uint64 l1Timestamp;
+        uint64 domainBlockNumber;
+        uint64 slotNumber;
+        bytes32 prevrandao;
+        // Of an input.
+        uint256 fee;
+        bytes payload;
+    }
+
+    function _queueBase(uint64 chainId) internal pure returns (uint256) {
+        return uint256(keccak256(abi.encode(chainId, "monad.domains.input-queue"))) & ~uint256(127);
+    }
+
+    function _queueWord(DomainHub hub, uint64 chainId, uint256 slot) internal view returns (uint256) {
+        return uint256(vm.load(address(hub), bytes32(_queueBase(chainId) + slot)));
+    }
+
+    function _queueBounds(DomainHub hub, uint64 chainId) internal view returns (uint64 head, uint64 tail) {
+        uint256 state = _queueWord(hub, chainId, 1);
+        return (uint64(state), uint64(state >> 64));
+    }
+
+    /// @dev The entry starting at ring word `index`, and the word the next entry starts at.
+    function _queueEntry(DomainHub hub, uint64 chainId, uint64 index)
+        internal
+        view
+        returns (QueueEntry memory entry, uint64 next)
+    {
+        uint256 header = _queueWord(hub, chainId, 128 + index % 65536);
+        entry.kind = uint8(header >> 248);
+        if (entry.kind == 4) {
+            // Two words: the header, then prevrandao.
+            entry.l1BlockNumber = uint64(header >> 184);
+            entry.l1Timestamp = uint64(header >> 120);
+            entry.domainBlockNumber = uint64(header >> 56);
+            entry.slotNumber = uint56(header);
+            entry.prevrandao = bytes32(_queueWord(hub, chainId, 128 + (index + 1) % 65536));
+            return (entry, index + 2);
+        }
+        entry.fee = uint88(header);
+        uint256 length = uint32(header >> 216);
+        entry.payload = new bytes(length);
+        next = index + 1;
+        for (uint256 copied = 0; copied < length; next++) {
+            // 0x01, then 31 payload bytes, zero past the payload's end.
+            uint256 chunk = _queueWord(hub, chainId, 128 + next % 65536);
+            assertEq(chunk >> 248, 1, "chunk tag");
+            for (uint256 i = 0; i < 31; i++) {
+                uint8 value = uint8(chunk >> (240 - 8 * i));
+                if (copied < length) {
+                    entry.payload[copied++] = bytes1(value);
+                } else {
+                    assertEq(value, 0, "chunk padding");
+                }
+            }
+        }
+    }
 
     // ---------------------------------------------------------------------
     // Keys
@@ -61,7 +135,9 @@ abstract contract DomainTestBase is Test {
     /// @dev Registers `chainId` with the validators behind `keys`, the test contract as fee
     /// recipient, no viewing key and the shared checkpoint interval.
     function _registerDomain(DomainHub hub, uint64 chainId, uint256[] memory keys, uint256 quorum) internal {
-        hub.registerDomain(chainId, _addresses(keys), quorum, address(this), "", CHECKPOINT_INTERVAL);
+        hub.registerDomain(
+            chainId, _addresses(keys), quorum, address(this), "", CHECKPOINT_INTERVAL, MAX_UNATTESTED_PERIODS
+        );
     }
 
     /// @dev Single validator, quorum 1.
