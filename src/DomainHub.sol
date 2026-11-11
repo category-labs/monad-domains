@@ -35,12 +35,18 @@ contract DomainHub is IDomainHub, EIP712 {
     uint8 public constant INPUT_TRANSACTION = 1;
     uint8 public constant INPUT_MESSAGE = 2;
     uint8 public constant INPUT_ENCRYPTED_MESSAGE = 3;
+    /// @notice Kind of the entry that opens each domain block in the input queue.
+    uint8 public constant INPUT_BLOCK = 4;
+    /// @notice Contract that returns the L1 block's slot number (EIP-7843), or fails on an L1
+    /// revision without it.
+    address public immutable SLOT_NUMBER_PROBE;
 
     /// @dev Words of a domain's input queue page the hub keeps its per-input state in, so
     /// recording an input loads and writes that page and the data it appends, nothing else.
     /// `checkpointInterval(64) | feeRecipient(160)`: nonzero exactly when the domain is registered.
     uint256 internal constant SCHEDULE_WORD = 1;
-    /// `blockNumber(64) | gasSold(192)`: gas sold in the last L1 block the domain sold any in.
+    /// `blockNumber(64) | domainBlockNumber(64) | gasSold(128)`: the domain's latest block, the
+    /// L1 block it is derived from, and the gas sold in that L1 block.
     uint256 internal constant BUDGET_WORD = 2;
     /// Next delivery nonce of the domain.
     uint256 internal constant MESSAGE_COUNT_WORD = 3;
@@ -74,7 +80,17 @@ contract DomainHub is IDomainHub, EIP712 {
     /// @notice Whether a validator has already voted for a proposal digest.
     mapping(bytes32 => mapping(address => bool)) public hasVotedFor;
 
-    constructor() EIP712("MonadDomainHub", "1") {}
+    constructor() EIP712("MonadDomainHub", "1") {
+        // Runtime `SLOTNUM PUSH0 MSTORE PUSH1 32 PUSH0 RETURN`, behind the init code that
+        // returns it. Solidity has no builtin for the opcode.
+        bytes memory initCode = hex"664b5f5260205ff35f5260076019f3";
+        address probe;
+        assembly ("memory-safe") {
+            probe := create(0, add(initCode, 32), mload(initCode))
+        }
+        require(probe != address(0), "DomainHub: slot number probe not deployed");
+        SLOT_NUMBER_PROBE = probe;
+    }
 
     // ---------------------------------------------------------------------
     // Registration
@@ -101,6 +117,9 @@ contract DomainHub is IDomainHub, EIP712 {
         );
 
         InputQueue.storeWord(queue, SCHEDULE_WORD, (uint256(checkpointInterval) << 160) | uint160(feeRecipient));
+        // The registering L1 block is the domain's block 0.
+        InputQueue.storeWord(queue, BUDGET_WORD, block.number << 192);
+        _recordBlock(queue, 0, _epoch(checkpointInterval));
         DomainConfig storage config = _configs[domainChainId];
         config.quorum = quorum;
         config.viewingKey = viewingKey;
@@ -282,22 +301,49 @@ contract DomainHub is IDomainHub, EIP712 {
 
     /// @dev Charges `fee` against the domain's budget for this L1 block, appends the input to
     /// the domain's `queue` and pays the fee to the domain's fee recipient, who must accept it.
+    /// The first input of an L1 block opens the domain's next block.
     function _recordInput(uint256 queue, uint8 kind, uint256 fee, bytes memory payload) internal {
+        uint256 schedule = InputQueue.loadWord(queue, SCHEDULE_WORD);
+        uint64 epoch = _epoch(schedule >> 160);
+
         uint256 budget = InputQueue.loadWord(queue, BUDGET_WORD);
-        uint256 sold = budget >> 192 == block.number ? uint192(budget) : 0;
+        uint256 domainBlockNumber = uint64(budget >> 128);
+        uint256 sold;
+        if (budget >> 192 == block.number) {
+            sold = uint128(budget);
+        } else {
+            domainBlockNumber++;
+            _recordBlock(queue, uint64(domainBlockNumber), epoch);
+        }
         sold += fee / DOMAIN_GAS_PRICE;
         require(sold <= DOMAIN_BLOCK_GAS_LIMIT, "DomainHub: domain block gas limit exceeded");
-        InputQueue.storeWord(queue, BUDGET_WORD, (block.number << 192) | sold);
+        InputQueue.storeWord(queue, BUDGET_WORD, (block.number << 192) | (domainBlockNumber << 128) | sold);
 
-        // An L1 block belongs to the first scheduled checkpoint at or above it. The budget
-        // above caps `fee` far below the 88 bits an entry holds.
-        uint256 schedule = InputQueue.loadWord(queue, SCHEDULE_WORD);
-        uint256 interval = schedule >> 160;
-        InputQueue.push(queue, kind, fee, payload, uint64((block.number + interval - 1) / interval));
+        // The budget above caps `fee` far below the 88 bits an entry holds.
+        InputQueue.push(queue, kind, fee, payload, epoch);
 
         if (fee == 0) return;
         (bool success,) = address(uint160(schedule)).call{value: fee}("");
         require(success, "DomainHub: fee transfer failed");
+    }
+
+    /// @dev An L1 block belongs to the first scheduled checkpoint at or above it.
+    function _epoch(uint256 checkpointInterval) internal view returns (uint64) {
+        return uint64((block.number + checkpointInterval - 1) / checkpointInterval);
+    }
+
+    /// @dev Opens domain block `domainBlockNumber` in the queue with what its execution takes
+    /// from this L1 block beyond the number and timestamp every entry carries: `prevrandao`,
+    /// and the slot number on an L1 revision that has one.
+    function _recordBlock(uint256 queue, uint64 domainBlockNumber, uint64 epoch) internal {
+        bytes memory payload = abi.encodePacked(block.prevrandao, domainBlockNumber);
+        // The probe's only opcode that can fail is SLOTNUM, which then takes all the gas it
+        // was given.
+        (bool success, bytes memory slotNumber) = SLOT_NUMBER_PROBE.staticcall{gas: 200}("");
+        if (success && slotNumber.length == 32) {
+            payload = bytes.concat(payload, bytes8(SafeCast.toUint64(abi.decode(slotNumber, (uint256)))));
+        }
+        InputQueue.push(queue, INPUT_BLOCK, 0, payload, epoch);
     }
 
     /// @dev Assigns the domain's next delivery nonce.
@@ -308,7 +354,16 @@ contract DomainHub is IDomainHub, EIP712 {
 
     function blockGas(uint64 domainChainId) external view returns (uint64 blockNumber, uint192 gasSold) {
         uint256 budget = InputQueue.loadWord(InputQueue.base(domainChainId), BUDGET_WORD);
-        return (uint64(budget >> 192), uint192(budget));
+        return (uint64(budget >> 192), uint128(budget));
+    }
+
+    function latestDomainBlock(uint64 domainChainId)
+        external
+        view
+        returns (uint64 l1BlockNumber, uint64 domainBlockNumber)
+    {
+        uint256 budget = InputQueue.loadWord(InputQueue.base(domainChainId), BUDGET_WORD);
+        return (uint64(budget >> 192), uint64(budget >> 128));
     }
 
     // ---------------------------------------------------------------------

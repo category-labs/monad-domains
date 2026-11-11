@@ -225,6 +225,14 @@ interface IDomainHub {
     /// @notice Gas the domain has sold in L1 block `blockNumber`, the last one it sold any in.
     function blockGas(uint64 domainChainId) external view returns (uint64 blockNumber, uint192 gasSold);
 
+    /// @notice The domain's latest block and the L1 block it is derived from. The registering
+    /// L1 block is block 0, and every later L1 block that records an input for the domain is
+    /// its next block. Both are zero for an unregistered domain.
+    function latestDomainBlock(uint64 domainChainId)
+        external
+        view
+        returns (uint64 l1BlockNumber, uint64 domainBlockNumber);
+
     /// @notice Every sequenced transaction and recorded message is also appended, in L1 order,
     /// to the destination domain's input queue: a circular buffer in the hub's storage (layout
     /// in `InputQueue`) holding every input the domain's attested state does not yet cover. A
@@ -238,11 +246,22 @@ interface IDomainHub {
     ///   `INPUT_TRANSACTION`        `rlpTx`
     ///   `INPUT_MESSAGE`            `sourceChainId(8) | from(20) | to(20) | nonce(8) | data`
     ///   `INPUT_ENCRYPTED_MESSAGE`  `sourceChainId(8) | from(20) | nonce(8) | ciphertext`
+    ///   `INPUT_BLOCK`              `prevrandao(32) | domainBlockNumber(8) | slotNumber(8)`
+    ///
+    /// An `INPUT_BLOCK` entry opens each domain block: registration appends block 0's, and the
+    /// first input of every later L1 block appends the next block's ahead of itself. Its
+    /// `slotNumber` is present exactly when the L1 block has one (EIP-7843), and its fee is
+    /// zero.
     function INPUT_QUEUE_CAPACITY() external view returns (uint256);
     function INPUT_QUEUE_CHUNK() external view returns (uint256);
     function INPUT_TRANSACTION() external view returns (uint8);
     function INPUT_MESSAGE() external view returns (uint8);
     function INPUT_ENCRYPTED_MESSAGE() external view returns (uint8);
+    function INPUT_BLOCK() external view returns (uint8);
+
+    /// @notice Contract the hub calls for the L1 block's slot number: it returns the result
+    /// of the SLOTNUM opcode, and fails on an L1 revision without it.
+    function SLOT_NUMBER_PROBE() external view returns (address);
 
     /// @notice Storage slot the domain's queue starts at.
     function inputQueueBase(uint64 domainChainId) external pure returns (uint256);

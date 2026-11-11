@@ -62,7 +62,7 @@ StateTransition(
 
 ## Input queue
 
-Every sequenced transaction and recorded message is also appended, in L1 order, to the destination domain's input queue in the hub's storage. The queue holds every input the domain's last attested state does not yet cover, so a node that has the L1 state and the domain state at the attested height reaches the domain's tip by replaying the queue, without L1 receipts or blocks older than its L1 sync target.
+Every sequenced transaction and recorded message is also appended, in L1 order, to the destination domain's input queue in the hub's storage, behind a block record for each L1 block that has any. The queue holds every input the domain's last attested state does not yet cover, so a node that has the L1 state and the domain state at the attested height reaches the domain's tip by replaying the queue, without L1 receipts, headers or blocks older than its L1 sync target.
 
 **Bound.** The queue is a circular buffer of `INPUT_QUEUE_CAPACITY` 32-byte words (2 MiB). A call that would overwrite an unreleased input reverts with `InputQueueFull`. An attestation at height `h` releases the inputs of every L1 block up to `h`, so the queue fills only while attestations fall behind.
 
@@ -72,7 +72,7 @@ Every sequenced transaction and recorded message is also appended, in L1 order, 
 | --- | --- |
 | `base` | `checkpointTail(32) \| checkpointHead(32) \| lastEpoch(64) \| tail(64) \| head(64)` |
 | `base + 1` | `checkpointInterval(64) \| feeRecipient(160)` |
-| `base + 2` | `blockNumber(64) \| gasSold(192)`, the gas sold in the last L1 block the domain sold any in |
+| `base + 2` | `blockNumber(64) \| domainBlockNumber(64) \| gasSold(128)`: the domain's latest block, the L1 block it is derived from, and the gas sold in that L1 block |
 | `base + 3` | the domain's next delivery nonce |
 | `base + 4 .. base + 127` | checkpoint index: a ring of `epoch(64) \| startWord(64)` |
 | `base + 128 ..` | data ring; word `i` is at slot `base + 128 + i % INPUT_QUEUE_CAPACITY` |
@@ -91,6 +91,11 @@ chunk   0x01 | 31 payload bytes        // the last chunk zero-padded
 | 1, transaction | `rlpTx` |
 | 2, message | `sourceChainId(8) \| from(20) \| to(20) \| nonce(8) \| data` |
 | 3, encrypted message | `sourceChainId(8) \| from(20) \| nonce(8) \| ciphertext` |
+| 4, block | `prevrandao(32) \| domainBlockNumber(8) \| slotNumber(8)` |
+
+**Blocks.** A domain block is the inputs of one L1 block, so the hub numbers the blocks as it records them. Registration makes the registering L1 block the domain's block 0, and the first input of each later L1 block opens the next block. Opening a block appends a block record ahead of its inputs. With the L1 block number and timestamp in its header, the record holds everything the block's execution takes from the L1 block: `prevrandao`, and `slotNumber` when the L1 block has one (EIP-7843), in which case the payload is 48 bytes and not 40. Its fee is zero. The hub reads the slot number by calling `SLOT_NUMBER_PROBE`, a contract whose code is the `SLOTNUM` opcode followed by a return of its result; on an L1 revision without the opcode the call fails and the record has no slot number.
+
+`base + 2` holds the latest block's number and L1 block, which `latestDomainBlock(domainChainId)` returns. A client that has executed the domain through block `n` finds where to continue from L1 state alone: if the latest block is `n`, nothing is pending; otherwise block `n + 1` is derived from the first L1 block at which the word's `domainBlockNumber` is above `n`, which it finds by reading the word at earlier L1 blocks.
 
 No stored word is ever zero, so after the ring's first lap a write only replaces a nonzero word and never pays for state growth.
 
@@ -98,7 +103,7 @@ No stored word is ever zero, so after the ring's first lap a write only replaces
 
 **Priming.** The first lap of the ring writes empty slots and pays 17,000 gas of state growth per word. `primeInputQueue(domainChainId, from, count)` lets anyone pay that ahead of time for words no input has reached yet, about 2.25M gas per page and 1.15B for the whole ring, so that senders pay the steady cost from the start.
 
-**Gas.** L1 gas per transaction on MIP-8 pricing, measured with `forge test --match-path 'test/gas/*' --isolate -vv` (Foundry 1.9.0, no optimizer). "Events" is the hub before the queue. Inputs start on a page boundary; an input that straddles a boundary pays about 10,800 gas for the extra page. Large payloads are charged the calldata floor of 40 gas per byte, from about 4 kB without the events and 16 kB with them; there the queue adds nothing.
+**Gas.** L1 gas per transaction on MIP-8 pricing, measured with `forge test --match-path 'test/gas/*' --isolate -vv` (Foundry 1.9.0, no optimizer). "Events" is the hub before the queue. Inputs start on a page boundary; an input that straddles a boundary pays about 10,800 gas for the extra page. The figures leave out the block record, which the first input of an L1 block also pays for: three or four words and a call to the probe. Large payloads are charged the calldata floor of 40 gas per byte, from about 4 kB without the events and 16 kB with them; there the queue adds nothing.
 
 | Call | Payload bytes | Events | Queue and events | Queue only | Queue and events, first lap |
 | --- | ---: | ---: | ---: | ---: | ---: |
