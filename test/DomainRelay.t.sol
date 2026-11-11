@@ -213,18 +213,22 @@ contract DomainRelayTest is DomainTestBase {
         assertEq(receiver.calls(), 1);
     }
 
-    function test_deliveryToAddressWithoutCodeSucceeds() public {
+    function test_noCodeTargetFailsAndIsRetryable() public {
         MessageLib.DomainMessage memory message = _message(0);
         message.to = makeAddr("future receiver");
         bytes32 hash = _hash(message);
         _anchor(CHAIN_A, hash);
-        assertTrue(_relay(message));
+        assertFalse(_relay(message));
         assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
-        assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
-        vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
-        _relay(message);
-        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
+        vm.expectRevert(DomainHub.RetryFailed.selector);
         hub.retryDomainMessage(message);
+        assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
+
+        vm.etch(message.to, address(receiver).code);
+        hub.retryDomainMessage(message);
+        assertEq(DomainReceiverMock(message.to).calls(), 1);
+        assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
     }
 
     function test_deliveryForwardsAllAvailableGas() public {

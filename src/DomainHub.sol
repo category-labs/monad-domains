@@ -260,6 +260,8 @@ contract DomainHub is IDomainHub, EIP712 {
                     IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
                 )
             );
+        // A call to an address without code succeeds without running anything.
+        success = success && message.to.code.length != 0;
         if (!success) failedDomainMessages[message.sourceChainId][messageHash] = true;
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, success
@@ -277,7 +279,7 @@ contract DomainHub is IDomainHub, EIP712 {
                     IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
                 )
             );
-        if (!success) revert RetryFailed();
+        if (!success || message.to.code.length == 0) revert RetryFailed();
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, true
         );
