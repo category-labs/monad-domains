@@ -402,14 +402,13 @@ contract NativeRoutingTest is DomainTestBase {
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         address relayer = makeAddr("relayer");
         vm.deal(relayer, 1 ether);
-        uint256 before = address(this).balance;
+        uint256 before = hub.accruedFees(B);
 
         vm.expectEmit(address(hub));
         emit IDomainHub.EncryptedMessageRecorded(B, A, 0, message.data, 0, 0.3 ether);
         vm.prank(relayer);
         assertTrue(hub.relayDomainMessage{value: 0.3 ether}(message, anchor, new bytes32[](0)));
-        assertEq(address(this).balance - before, 0.3 ether, "B's fee recipient is paid");
-        assertEq(address(hub).balance, 0);
+        assertEq(hub.accruedFees(B) - before, 0.3 ether, "the fee is held for B's fee recipient");
     }
 
     function test_l1CallbackRejectsAFee() public {

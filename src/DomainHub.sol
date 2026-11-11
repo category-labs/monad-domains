@@ -123,6 +123,10 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     mapping(bytes32 digest => uint256 votes) public stateVotes;
     /// @notice Whether a validator has already voted for a proposal digest.
     mapping(bytes32 digest => mapping(address validator => bool voted)) public hasVotedFor;
+    /// @notice Fees each domain has collected and its fee recipient has not yet been paid.
+    /// @dev Paying a fee only adds to this: the recipient is not called until `withdrawFees`, so
+    /// it cannot make a sequencing or message call revert.
+    mapping(uint64 domainChainId => uint256 fees) public accruedFees;
 
     constructor() EIP712("MonadDomainHub", "1") {
         // Runtime `SLOTNUM PUSH0 MSTORE PUSH1 32 PUSH0 RETURN` behind the init code that
@@ -331,11 +335,10 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             if (_queueConfig(message.destinationChainId) == 0) revert DestinationNotRegistered();
             // No spoke can have sealed to a domain without an encryption public key.
             if (_configs[message.destinationChainId].encryptionPubKey.length == 0) revert NoEncryptionPubKey();
-            (uint256 deliveryNonce, uint256 config) = _sendEncryptedMessage(
+            uint256 deliveryNonce = _sendEncryptedMessage(
                 message.destinationChainId, message.sourceChainId, message.sourceNonce, message.data, msg.value
             );
             emit DomainMessageRouted(messageHash, message.sourceChainId, message.destinationChainId, deliveryNonce);
-            _payFee(config, msg.value);
             return true; // Queued atomically; destination execution happens asynchronously.
         }
 
@@ -382,8 +385,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         uint256 config = _registeredConfig(queue);
         if (msg.value < minSequencingFee(rlpTx.length)) revert SequencingFeeTooLow();
         _recordInput(queue, config, InputQueue.loadState(queue), InputQueue.TRANSACTION, msg.value, rlpTx);
+        accruedFees[domainChainId] += msg.value;
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
-        _payFee(config, msg.value);
     }
 
     // ---------------------------------------------------------------------
@@ -395,16 +398,14 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable {
-        (, uint256 config) =
-            _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data, msg.value);
-        _payFee(config, msg.value);
+        _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data, msg.value);
     }
 
     function sendEncryptionPubKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable {
         bytes memory encryptionPubKey = _configs[keyChainId].encryptionPubKey;
         if (encryptionPubKey.length == 0) revert NoEncryptionPubKey();
         // The hub itself is the sender, which is how the spoke recognizes a key message.
-        (, uint256 config) = _sendL1Message(
+        _sendL1Message(
             domainChainId,
             SafeCast.toUint64(block.chainid),
             address(this),
@@ -412,12 +413,11 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             MessageLib.encodeEncryptionPubKey(keyChainId, bytes32(encryptionPubKey)),
             msg.value
         );
-        _payFee(config, msg.value);
     }
 
-    /// @dev Charges `fee` for the delivery, assigns the next delivery nonce of `domainChainId` and
-    /// records the message for the domain client to deliver. Returns the domain's config word:
-    /// the caller pays the fee out once it has nothing left to do.
+    /// @dev Charges `fee` for the delivery, assigns the next delivery nonce of `domainChainId`,
+    /// records the message for the domain client to deliver and holds the fee for the domain's
+    /// fee recipient.
     function _sendL1Message(
         uint64 domainChainId,
         uint64 sourceChainId,
@@ -425,9 +425,9 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         address to,
         bytes memory data,
         uint256 fee
-    ) internal returns (uint256 nonce, uint256 config) {
+    ) internal returns (uint256 nonce) {
         uint256 queue = InputQueue.base(domainChainId);
-        config = _registeredConfig(queue);
+        uint256 config = _registeredConfig(queue);
         if (fee < minDeliveryFee(data.length)) revert DeliveryFeeTooLow();
         InputQueue.State memory state = InputQueue.loadState(queue);
         nonce = state.messageCount++;
@@ -439,23 +439,23 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             fee,
             abi.encodePacked(sourceChainId, from, to, uint64(nonce), data)
         );
+        accruedFees[domainChainId] += fee;
         bytes32 messageHash = MessageLib.hashMessage(MessageLib.Message(sourceChainId, from, to, data, nonce));
         emit L1MessageRecorded(domainChainId, sourceChainId, from, to, data, nonce, fee, messageHash);
     }
 
     /// @dev Charges `fee`, assigns the next delivery nonce of `domainChainId` (shared with
-    /// `sendL1Message`) and records the ciphertext for the destination client to open and
-    /// deliver. Returns the domain's config word: the caller pays the fee out once it has
-    /// nothing left to do.
+    /// `sendL1Message`), records the ciphertext for the destination client to open and deliver
+    /// and holds the fee for the domain's fee recipient.
     function _sendEncryptedMessage(
         uint64 domainChainId,
         uint64 sourceChainId,
         uint256 sourceNonce,
         bytes calldata ciphertext,
         uint256 fee
-    ) internal returns (uint256 nonce, uint256 config) {
+    ) internal returns (uint256 nonce) {
         uint256 queue = InputQueue.base(domainChainId);
-        config = _registeredConfig(queue);
+        uint256 config = _registeredConfig(queue);
         if (fee < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow();
         InputQueue.State memory state = InputQueue.loadState(queue);
         nonce = state.messageCount++;
@@ -467,6 +467,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             fee,
             abi.encodePacked(sourceChainId, SafeCast.toUint64(sourceNonce), uint64(nonce), ciphertext)
         );
+        accruedFees[domainChainId] += fee;
         emit EncryptedMessageRecorded(domainChainId, sourceChainId, sourceNonce, ciphertext, nonce, fee);
     }
 
@@ -486,8 +487,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
     /// @dev Records one input in the domain's queue and counts its gas and its words against the
     /// domain's limits for this L1 block. The first input of an L1 block opens the domain's
-    /// next block. Paying the fee out is left to the caller, as its last step: the recipient
-    /// may call back in, and an input it records must follow this one in the queue and the logs.
+    /// next block. Adding the fee to the domain's `accruedFees` is left to the caller.
     function _recordInput(
         uint256 queue,
         uint256 config,
@@ -543,13 +543,6 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         return uint64((uint256(l1BlockNumber) + checkpointInterval - 1) / checkpointInterval);
     }
 
-    /// @dev Pays `fee` to the fee recipient in `config`, who must accept it.
-    function _payFee(uint256 config, uint256 fee) internal {
-        if (fee == 0) return;
-        (bool success,) = address(uint160(config)).call{value: fee}("");
-        if (!success) revert FeeTransferFailed();
-    }
-
     function blockGas(uint64 domainChainId) external view returns (uint64 blockNumber, uint192 gasSold) {
         uint256 latest = InputQueue.load(InputQueue.base(domainChainId), InputQueue.LATEST);
         return (uint64(latest >> 64), uint192(latest >> 192));
@@ -568,5 +561,18 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         uint256 queue = InputQueue.base(domainChainId);
         _registeredConfig(queue);
         InputQueue.prime(queue, from, count);
+    }
+
+    // ---------------------------------------------------------------------
+    // Fees
+    // ---------------------------------------------------------------------
+
+    function withdrawFees(uint64 domainChainId) external {
+        address recipient = address(uint160(_registeredConfig(InputQueue.base(domainChainId))));
+        uint256 amount = accruedFees[domainChainId];
+        accruedFees[domainChainId] = 0;
+        (bool success,) = recipient.call{value: amount}("");
+        if (!success) revert FeeTransferFailed();
+        emit FeesWithdrawn(domainChainId, recipient, amount);
     }
 }
