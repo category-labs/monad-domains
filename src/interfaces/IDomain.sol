@@ -11,7 +11,7 @@ interface IDomainHub {
     event DomainRegistered(uint64 indexed domainChainId, address indexed feeRecipient, uint64 checkpointInterval);
 
     /// @notice The viewing public key senders encrypt domain transactions and messages to, as a
-    /// 65-byte uncompressed P-256 point.
+    /// 32-byte X25519 public key.
     event ViewingKeyRegistered(uint64 indexed domainChainId, bytes viewingKey);
 
     /// @notice One L1-sequenced domain transaction. The domain sender is recovered from the
@@ -96,11 +96,11 @@ interface IDomainHub {
 
     /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
     /// validator signatures required to advance the state, the recipient of sequencing fees,
-    /// the viewing public key senders encrypt to (65-byte uncompressed P-256 point, or empty)
+    /// the viewing public key senders encrypt to (32-byte X25519 public key, or empty)
     /// and the checkpoint interval attested block numbers must be multiples of. MUST reject
     /// the L1 chain id, an already registered chain id, a zero quorum, a quorum exceeding the
     /// validator count, zero or duplicate validators, a zero fee recipient, a zero interval
-    /// and a viewing key that is neither empty nor a 65-byte `0x04`-prefixed point.
+    /// and a viewing key that is neither empty nor 32 bytes.
     function registerDomain(
         uint64 domainChainId,
         address[] calldata validators,

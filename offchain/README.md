@@ -26,19 +26,19 @@ domain's *viewing key*, so the L1 only ever sees ciphertext and the domain execu
 client — the holder of the viewing secret key — decrypts before executing. `src/encryption.ts`
 implements the fixed RFC 9180 Base-mode profile the client expects:
 
-- KEM `DHKEM(P-256, HKDF-SHA256)`, KDF `HKDF-SHA256`, AEAD `AES-128-GCM`
-- `info` = `private-domain-hpke-rfc9180-v1`, no associated data
-- payload = `enc[65] || AEAD(0x01 || signed_transaction)`; the domain still indexes the
+- KEM `DHKEM(X25519, HKDF-SHA256)`, KDF `HKDF-SHA256`, AEAD `AES-128-GCM`
+- empty `info`, associated data = `abi.encode("monad-transaction-encryption-v1", uint64 domainChainId)`
+- payload = `enc[32] || AEAD(0x01 || signed_transaction)`; the domain still indexes the
   transaction by the hash of its plaintext bytes
 
-The execution client and senders must use the exact same `info` value.
+The execution client and senders must use the exact same associated data.
 
 `npm run setup` and `npm run sequence` encrypt whenever `VIEWING_KEY` is set. A node started
 with a receiver key for the domain (`--private-domain <id> <spoke> <key.pem>`) decrypts every
 payload and drops plaintext, so set `VIEWING_KEY` whenever the node has one.
 
 The two sides use different key encodings — the client loads an unencrypted PKCS#8 PEM, senders
-use the 65-byte uncompressed public point — and `npm run viewing-key` bridges them:
+use the raw 32-byte public key — and `npm run viewing-key` bridges them:
 
 ```sh
 npm run viewing-key -- generate domain-85679.pem   # new key: writes the PEM (mode 0600), prints VIEWING_KEY

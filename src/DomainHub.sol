@@ -43,8 +43,8 @@ contract DomainHub is IDomainHub, EIP712 {
     bytes32 public constant STATE_TRANSITION_TYPEHASH = keccak256(
         "StateTransition(uint64 domainChainId,uint256 stateNonce,uint64 domainBlockNumber,bytes32 newStateRoot,bytes32 domainAnchor)"
     );
-    /// @notice Length of an uncompressed SEC1 P-256 point: the only accepted viewing key encoding.
-    uint256 public constant VIEWING_KEY_LENGTH = 65;
+    /// @notice Length of an X25519 public key: the only accepted viewing key encoding.
+    uint256 public constant VIEWING_KEY_LENGTH = 32;
     /// @notice Price of one unit of domain gas, in wei; mirrored by the execution client.
     uint256 public constant DOMAIN_GAS_PRICE = 50 gwei;
     /// @notice Gas a delivery needs beyond its payload to run or be recorded as failed: the
@@ -73,7 +73,7 @@ contract DomainHub is IDomainHub, EIP712 {
         /// @dev Distinct validator signatures required to advance the state.
         uint256 quorum;
         address[] validators;
-        /// @dev Uncompressed P-256 point senders encrypt domain transactions to, or empty.
+        /// @dev X25519 public key senders encrypt domain transactions to, or empty.
         bytes viewingKey;
         mapping(address => bool) isValidator;
     }
@@ -124,9 +124,7 @@ contract DomainHub is IDomainHub, EIP712 {
         if (quorum > validators.length) revert QuorumExceedsValidators();
         if (feeRecipient == address(0)) revert ZeroFeeRecipient();
         if (checkpointInterval == 0) revert ZeroCheckpointInterval();
-        if (viewingKey.length != 0 && (viewingKey.length != VIEWING_KEY_LENGTH || viewingKey[0] != 0x04)) {
-            revert InvalidViewingKey();
-        }
+        if (viewingKey.length != 0 && viewingKey.length != VIEWING_KEY_LENGTH) revert InvalidViewingKey();
 
         config.registered = true;
         config.checkpointInterval = checkpointInterval;

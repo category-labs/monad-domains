@@ -4,7 +4,7 @@ import { generateViewingKeyFiles, viewingPublicKeyFromPem } from "./viewing-key.
 /**
  * CLI for domain viewing keys.
  *
- *   npm run viewing-key -- generate <key.pem>   # new P-256 key: writes the unencrypted PKCS#8 PEM
+ *   npm run viewing-key -- generate <key.pem>   # new X25519 key: writes the unencrypted PKCS#8 PEM
  *                                               # (mode 0600) and prints the matching VIEWING_KEY
  *   npm run viewing-key -- public <key.pem>     # prints VIEWING_KEY for an existing public- or
  *                                               # private-key PEM (e.g. one made with openssl)
@@ -25,7 +25,7 @@ function main() {
     case "generate": {
       const files = generateViewingKeyFiles();
       writeFileSync(path, files.privateKeyPem, { mode: 0o600, flag: "wx" });
-      console.log(`wrote ${path} (unencrypted PKCS#8 P-256 private key; keep it with the domain execution client)`);
+      console.log(`wrote ${path} (unencrypted PKCS#8 X25519 private key; keep it with the domain execution client)`);
       console.log(`  client flag:  --private-domain <chain id> <spoke address> ${path}`);
       console.log(`  VIEWING_KEY=${files.publicKey}`);
       break;

@@ -59,7 +59,7 @@ export interface SequenceConfig {
   /** If set, the sender's current domain nonce is read from this domain RPC. */
   domainRpcUrl?: string;
   /**
-   * Domain viewing public key (65-byte uncompressed P-256 point). The signed transaction is
+   * Domain viewing public key (32-byte X25519 public key). The signed transaction is
    * HPKE-encrypted to it before sequencing. When omitted, the key the domain published on the
    * hub is used; the transaction is sequenced in plaintext only if the hub holds none.
    */
@@ -148,7 +148,9 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
     }
     if (published !== "0x") encryptionKey = published;
   }
-  const rlpTx = encryptionKey ? await encryptTransaction(encryptionKey, rawTransaction) : rawTransaction;
+  const rlpTx = encryptionKey
+    ? await encryptTransaction(encryptionKey, domainChainId, rawTransaction)
+    : rawTransaction;
 
   const fee = gas * (await readDomainGasPrice(l1, hub));
   const l1TxHash = await wallet.writeContract({

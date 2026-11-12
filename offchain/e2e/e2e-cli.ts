@@ -76,7 +76,7 @@ const DOMAIN_CHAIN_ID = BigInt(process.env.DOMAIN_CHAIN_ID ?? String((1n << 16n)
 const DOMAIN_RPC_URL = process.env.DOMAIN_RPC_URL ?? `${L1_RPC_URL}/domain/${DOMAIN_CHAIN_ID}`;
 // Validators attest at L1 heights that are multiples of this (the protocol default).
 const CHECKPOINT_INTERVAL = BigInt(process.env.CHECKPOINT_INTERVAL ?? "5");
-// Domain viewing public key (65-byte uncompressed P-256 point). Unset => plaintext sequencing,
+// Domain viewing public key (32-byte X25519 public key). Unset => plaintext sequencing,
 // which a node running with a receiver key for the domain drops.
 const VIEWING_KEY = process.env.VIEWING_KEY as Hex | undefined;
 
