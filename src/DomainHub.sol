@@ -254,14 +254,14 @@ contract DomainHub is IDomainHub, EIP712 {
         }
 
         if (msg.value != 0) revert UnexpectedL1CallbackFee();
-        (success,) = message.to
-            .call(
-                abi.encodeCall(
-                    IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
-                )
-            );
-        // A call to an address without code succeeds without running anything.
-        success = success && message.to.code.length != 0;
+        if (message.to.code.length != 0) {
+            (success,) = message.to
+                .call(
+                    abi.encodeCall(
+                        IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
+                    )
+                );
+        }
         if (!success) failedDomainMessages[message.sourceChainId][messageHash] = true;
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, success
@@ -273,13 +273,14 @@ contract DomainHub is IDomainHub, EIP712 {
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         if (!failedDomainMessages[message.sourceChainId][messageHash]) revert NotFailedMessage();
         delete failedDomainMessages[message.sourceChainId][messageHash];
+        if (message.to.code.length == 0) revert RetryFailed();
         (bool success,) = message.to
             .call(
                 abi.encodeCall(
                     IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
                 )
             );
-        if (!success || message.to.code.length == 0) revert RetryFailed();
+        if (!success) revert RetryFailed();
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, true
         );
