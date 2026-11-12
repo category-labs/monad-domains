@@ -94,6 +94,10 @@ interface IDomainHub {
     /// is bounded whatever its senders pay.
     function DOMAIN_BLOCK_GAS_LIMIT() external view returns (uint256);
 
+    /// @notice Most input queue words a domain's inputs may take per L1 block, an input taking
+    /// one word plus one per 31 payload bytes; a call that would exceed it MUST revert.
+    function DOMAIN_BLOCK_WORD_LIMIT() external view returns (uint256);
+
     /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
     /// validator signatures required to advance the state, the recipient of sequencing fees,
     /// the viewing public key senders encrypt to (32-byte X25519 public key, or empty),

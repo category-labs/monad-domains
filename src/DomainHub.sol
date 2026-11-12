@@ -38,6 +38,7 @@ contract DomainHub is IDomainHub, EIP712 {
     error NotFailedMessage();
     error RetryFailed();
     error DomainBlockGasLimitExceeded();
+    error DomainBlockSizeLimitExceeded();
     error FeeTransferFailed();
     error DeliveryFeeTooLow();
     error SequencingFeeTooLow();
@@ -64,6 +65,9 @@ contract DomainHub is IDomainHub, EIP712 {
     uint256 public constant DELIVERY_GAS_PER_BYTE = 48;
     /// @notice Most gas each domain may sell per L1 block, across sequencing and messages.
     uint256 public constant DOMAIN_BLOCK_GAS_LIMIT = 150_000_000;
+    /// @notice Most input queue words each domain's inputs may take per L1 block: a tenth of
+    /// the queue, about 0.4 MB.
+    uint256 public constant DOMAIN_BLOCK_WORD_LIMIT = InputQueue.CAPACITY / 10;
     /// @notice Contract that returns the L1 block's slot number (EIP-7843), or fails on an L1
     /// revision without one.
     address public immutable SLOT_NUMBER_PROBE;
@@ -416,8 +420,8 @@ contract DomainHub is IDomainHub, EIP712 {
         if (config == 0) revert DomainNotRegistered();
     }
 
-    /// @dev Records one input in the domain's queue and counts the gas `fee` buys against the
-    /// domain's budget for this L1 block. The first input of an L1 block opens the domain's
+    /// @dev Records one input in the domain's queue and counts its gas and its words against the
+    /// domain's limits for this L1 block. The first input of an L1 block opens the domain's
     /// next block. Paying the fee out is left to the caller, as its last step: the recipient
     /// may call back in, and an input it records must follow this one in the queue and the logs.
     function _recordInput(
@@ -429,16 +433,20 @@ contract DomainHub is IDomainHub, EIP712 {
         bytes memory payload
     ) internal {
         uint256 latest = InputQueue.load(queue, InputQueue.LATEST);
-        uint256 gasSold = latest >> 128;
+        uint256 gasSold = latest >> 192;
+        uint256 inputWords = uint64(latest >> 128);
         if (uint64(latest >> 64) != block.number) {
             uint64 domainBlockNumber = uint64(latest) + 1;
             _openBlock(queue, state, config, uint64(latest >> 64), domainBlockNumber);
             latest = (uint256(uint64(block.number)) << 64) | domainBlockNumber;
             gasSold = 0;
+            inputWords = 0;
         }
         gasSold += fee / DOMAIN_GAS_PRICE;
         if (gasSold > DOMAIN_BLOCK_GAS_LIMIT) revert DomainBlockGasLimitExceeded();
-        InputQueue.store(queue, InputQueue.LATEST, (gasSold << 128) | uint128(latest));
+        inputWords += InputQueue.inputWords(payload.length);
+        if (inputWords > DOMAIN_BLOCK_WORD_LIMIT) revert DomainBlockSizeLimitExceeded();
+        InputQueue.store(queue, InputQueue.LATEST, (gasSold << 192) | (inputWords << 128) | uint128(latest));
 
         // The gas limit above keeps `fee` far below the 88 bits a header holds.
         InputQueue.push(queue, state, InputQueue.inputHeader(kind, fee), payload);
@@ -480,7 +488,7 @@ contract DomainHub is IDomainHub, EIP712 {
 
     function blockGas(uint64 domainChainId) external view returns (uint64 blockNumber, uint192 gasSold) {
         uint256 latest = InputQueue.load(InputQueue.base(domainChainId), InputQueue.LATEST);
-        return (uint64(latest >> 64), uint192(latest >> 128));
+        return (uint64(latest >> 64), uint192(latest >> 192));
     }
 
     function latestDomainBlock(uint64 domainChainId)

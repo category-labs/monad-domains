@@ -108,9 +108,17 @@ contract DomainInputQueueTest is DomainTestBase {
     /// not pay for state growth.
     function _lapRing() internal {
         uint256 data = _queueBase(CHAIN_ID) + DATA;
+        uint256 free;
+        assembly {
+            free := mload(0x40)
+        }
         for (uint256 i = 0; i < InputQueue.CAPACITY; i++) {
             if (vm.load(address(hub), bytes32(data + i)) == 0) {
                 vm.store(address(hub), bytes32(data + i), bytes32(uint256(1)));
+            }
+            // Free the cheatcodes' memory, which Monad limits per transaction.
+            assembly {
+                mstore(0x40, free)
             }
         }
     }
@@ -151,7 +159,7 @@ contract DomainInputQueueTest is DomainTestBase {
 
         // config: zero(24) | maxUnattestedPeriods(8) | checkpointInterval(64) | feeRecipient(160)
         assertEq(_word(8888, 2), (uint256(7) << 224) | (uint256(10) << 160) | uint160(bob));
-        // latest block: gasSold(128) | l1BlockNumber(64) | domainBlockNumber(64)
+        // latest block: gasSold(64) | inputWords(64) | l1BlockNumber(64) | domainBlockNumber(64)
         assertEq(_word(8888, 0), uint256(25) << 64);
         // queue state: messageCount(64) | firstPeriod(64) | tail(64) | head(64)
         assertEq(_word(8888, 1), (uint256(3) << 128) | BLOCK_WORDS);
@@ -168,7 +176,8 @@ contract DomainInputQueueTest is DomainTestBase {
         hub.sequenceToDomain{value: 2 ether}(8888, hex"02");
 
         uint256 gasSold = (fee + 2 ether) / hub.DOMAIN_GAS_PRICE();
-        assertEq(_word(8888, 0), (gasSold << 128) | (uint256(531) << 64) | 1);
+        // The message takes a header and two chunks, the transaction a header and one.
+        assertEq(_word(8888, 0), (gasSold << 192) | (uint256(5) << 128) | (uint256(531) << 64) | 1);
         (uint64 head,) = _queueBounds(hub, 8888);
         assertEq(_word(8888, 1), (uint256(1) << 192) | (uint256(54) << 128) | (uint256(BLOCK_WORDS) << 64) | head);
         assertEq(_word(8888, TABLE + 4), (uint256(54) << 64) | BLOCK_WORDS);
@@ -535,18 +544,24 @@ contract DomainInputQueueTest is DomainTestBase {
 
     function test_fullQueueRevertsUntilAnAttestationReleasesIt() public {
         uint256 capacity = InputQueue.CAPACITY;
+        uint256 limit = hub.DOMAIN_BLOCK_WORD_LIMIT();
         _lapRing();
-        vm.roll(5);
-        // Two block entries, one header word plus `capacity - 2` chunks less those, then a
-        // one-word entry: exactly full.
-        bytes memory large = new bytes((capacity - 2 - 2 * BLOCK_WORDS) * InputQueue.CHUNK);
-        large[large.length - 1] = 0x42;
-        _sequence(large);
-        _sequence("");
+        // Nine L1 blocks with an input at the block size limit, then one input that takes
+        // what is left: exactly full.
+        bytes memory large = new bytes((limit - 1) * InputQueue.CHUNK);
+        for (uint256 l1Block = 5; l1Block < 14; l1Block++) {
+            vm.roll(l1Block);
+            _sequence(large);
+        }
         (uint64 head, uint64 tail) = _queueBounds(hub, CHAIN_ID);
+        bytes memory rest = new bytes((capacity - (head - tail) - BLOCK_WORDS - 1) * InputQueue.CHUNK);
+        rest[rest.length - 1] = 0x42;
+        vm.roll(14);
+        _sequence(rest);
+        (head, tail) = _queueBounds(hub, CHAIN_ID);
         assertEq(head - tail, capacity);
-        // The large entry's last chunk is the ring's second to last word.
-        assertEq(_word(CHAIN_ID, DATA + capacity - 2), (uint256(1) << 248) | 0x42);
+        // The last entry's last chunk is the ring's last word.
+        assertEq(_word(CHAIN_ID, DATA + capacity - 1), (uint256(1) << 248) | 0x42);
 
         vm.prank(alice);
         vm.expectRevert(InputQueue.InputQueueFull.selector);
@@ -555,12 +570,12 @@ contract DomainInputQueueTest is DomainTestBase {
         vm.expectRevert(InputQueue.InputQueueFull.selector);
         hub.sendL1Message{value: 1 ether}(CHAIN_ID, bob, hex"01");
         // A new L1 block's block entry does not fit either.
-        vm.roll(6);
+        vm.roll(15);
         vm.prank(alice);
         vm.expectRevert(InputQueue.InputQueueFull.selector);
         hub.sequenceToDomain{value: _sequencingFee(0)}(CHAIN_ID, "");
 
-        _attestAt(10);
+        _attestAt(20);
         _sequence(hex"aa");
         assertEq(_inputs(CHAIN_ID).length, 1);
     }
@@ -592,10 +607,39 @@ contract DomainInputQueueTest is DomainTestBase {
         assertEq(tail, head);
     }
 
-    function test_entryLargerThanTheRingReverts() public {
-        bytes memory tooLarge = new bytes(InputQueue.CAPACITY * InputQueue.CHUNK);
+    // ---------------------------------------------------------------------
+    // Block size limit
+    // ---------------------------------------------------------------------
+
+    function test_inputsOfAnL1BlockAreLimitedInSize() public {
+        uint256 limit = hub.DOMAIN_BLOCK_WORD_LIMIT();
+        assertEq(limit, InputQueue.CAPACITY / 10);
+        uint256 fee = hub.minDeliveryFee(1);
+
+        // An input one word short of the limit, then a one-word input: the block is full.
+        vm.roll(5);
+        _sequence(new bytes((limit - 2) * InputQueue.CHUNK));
+        _sequence("");
+        assertEq(uint64(_word(CHAIN_ID, 0) >> 128), limit);
+        vm.startPrank(alice);
+        vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
+        hub.sequenceToDomain{value: _sequencingFee(0)}(CHAIN_ID, "");
+        vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
+        hub.sendL1Message{value: fee}(CHAIN_ID, bob, hex"01");
+        vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
+        hub.sendEncryptedL1Message{value: fee}(CHAIN_ID, hex"01");
+        vm.stopPrank();
+
+        // The next L1 block starts over.
+        vm.roll(6);
+        _sequence("");
+        assertEq(uint64(_word(CHAIN_ID, 0) >> 128), 1);
+
+        // An input over the limit fits in no block.
+        vm.roll(7);
+        bytes memory tooLarge = new bytes(limit * InputQueue.CHUNK);
         vm.prank(alice);
-        vm.expectRevert(InputQueue.InputQueueFull.selector);
+        vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
         hub.sequenceToDomain{value: _sequencingFee(tooLarge.length)}(CHAIN_ID, tooLarge);
     }
 
