@@ -69,7 +69,7 @@ abstract contract DomainTestBase is Test {
         view
         returns (QueueEntry memory entry, uint64 next)
     {
-        uint256 header = _queueWord(hub, chainId, 128 + index % 65536);
+        uint256 header = _queueWord(hub, chainId, 128 + index % 131072);
         entry.kind = uint8(header >> 248);
         if (entry.kind == 4) {
             // Two words: the header, then prevrandao.
@@ -77,7 +77,7 @@ abstract contract DomainTestBase is Test {
             entry.l1Timestamp = uint64(header >> 120);
             entry.domainBlockNumber = uint64(header >> 56);
             entry.slotNumber = uint56(header);
-            entry.prevrandao = bytes32(_queueWord(hub, chainId, 128 + (index + 1) % 65536));
+            entry.prevrandao = bytes32(_queueWord(hub, chainId, 128 + (index + 1) % 131072));
             return (entry, index + 2);
         }
         entry.fee = uint88(header);
@@ -86,7 +86,7 @@ abstract contract DomainTestBase is Test {
         next = index + 1;
         for (uint256 copied = 0; copied < length; next++) {
             // 0x01, then 31 payload bytes, zero past the payload's end.
-            uint256 chunk = _queueWord(hub, chainId, 128 + next % 65536);
+            uint256 chunk = _queueWord(hub, chainId, 128 + next % 131072);
             assertEq(chunk >> 248, 1, "chunk tag");
             for (uint256 i = 0; i < 31; i++) {
                 uint8 value = uint8(chunk >> (240 - 8 * i));

@@ -9,7 +9,7 @@ pragma solidity ^0.8.24;
 ///
 ///   base            `keccak256(abi.encode(domainChainId, "monad.domains.input-queue"))`, low 7
 ///                   bits cleared
-///   base + 0        latest block: `gasSold(128) | l1BlockNumber(64) | domainBlockNumber(64)`
+///   base + 0        latest block: `gasSold(64) | inputWords(64) | l1BlockNumber(64) | domainBlockNumber(64)`
 ///   base + 1        queue state: `messageCount(64) | firstPeriod(64) | tail(64) | head(64)`
 ///   base + 2        config: `zero(24) | maxUnattestedPeriods(8) | checkpointInterval(64) | feeRecipient(160)`
 ///   base + 3..52    checkpoint table: `zero(128) | period(64) | position(64)`, the item of
@@ -37,7 +37,7 @@ pragma solidity ^0.8.24;
 /// write only replaces a nonzero word and pays no state growth.
 library InputQueue {
     /// @dev Words of the data ring.
-    uint256 internal constant CAPACITY = 1 << 16;
+    uint256 internal constant CAPACITY = 1 << 17;
     /// @dev Payload bytes per chunk word.
     uint256 internal constant CHUNK = 31;
     /// @dev Slots of the checkpoint table: the most periods a domain may leave unattested.
@@ -124,6 +124,11 @@ library InputQueue {
             revert TooManyUnattestedPeriods();
         }
         store(queue, TABLE + period % MAX_PERIODS, (uint256(period) << 64) | state.head);
+    }
+
+    /// @dev Ring words of an input with `length` payload bytes: its header and chunks.
+    function inputWords(uint256 length) internal pure returns (uint256) {
+        return 1 + (length + CHUNK - 1) / CHUNK;
     }
 
     /// @dev Appends a block entry: `header`, then `prevrandao`.

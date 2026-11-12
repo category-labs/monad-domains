@@ -72,9 +72,17 @@ contract InputGasTest is DomainTestBase {
     function _steadyState() internal {
         uint256 base = _queue();
         if (base != 0) {
-            for (uint256 i = 3; i < 128 + (1 << 16); i++) {
+            uint256 free;
+            assembly {
+                free := mload(0x40)
+            }
+            for (uint256 i = 3; i < 128 + (1 << 17); i++) {
                 if (vm.load(address(hub), bytes32(base + i)) == 0) {
                     vm.store(address(hub), bytes32(base + i), bytes32(uint256(1)));
+                }
+                // Free the cheatcodes' memory, which Monad limits per transaction.
+                assembly {
+                    mstore(0x40, free)
                 }
             }
         }
