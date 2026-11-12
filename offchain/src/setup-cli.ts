@@ -15,7 +15,7 @@ import { setupDomain, type SetupConfig } from "./setup.js";
  *   [CHECKPOINT_INTERVAL=5] \  # attested heights are multiples of this
  *   [ALLOWED_TOKEN=0x..]    \  # e.g. wrapped MON
  *   [DOMAIN_GAS=5000000]    \  # gas limit of each seeded creation, paid at DOMAIN_GAS_PRICE
- *   [VIEWING_KEY=0x04...]   \  # viewing public key: published on the hub, encrypts the seeded txs
+ *   [VIEWING_KEY=0x...]     \  # viewing public key: published on the hub, encrypts the seeded txs
  *     npm run setup
  */
 function required(name: string): string {

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bytesToHex, hexToBytes, parseTransaction, type Hex } from "viem";
+import { bytesToHex, concat, hexToBytes, parseTransaction, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
+import { Aes128Gcm, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/core";
 import {
   EncryptionError,
   decryptMessage,
@@ -11,6 +11,7 @@ import {
   encryptTransaction,
   generateViewingKeyPair,
 } from "../src/encryption.js";
+import { viewingPublicKeyFromPem, viewingSecretKeyFromPem, viewingSecretKeyToPem } from "../src/viewing-key.js";
 
 /**
  * Behavioural tests for domain-transaction encryption. The ciphertext built here is the
@@ -19,14 +20,24 @@ import {
  */
 
 const SENDER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
-const DOMAIN_CHAIN_ID = 85679;
+const DOMAIN_CHAIN_ID = 85679n;
 const TO = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF" as const;
+
+// Fixtures of the execution client's HPKE tests: its key file (secret key 0x11 * 32), and the
+// transaction `0x02c0` sealed to it for CLIENT_DOMAIN by an independent HPKE implementation.
+const CLIENT_KEY_PEM = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VuBCIEIBERERERERERERERERERERERERERERERERERERERERER
+-----END PRIVATE KEY-----
+`;
+const CLIENT_DOMAIN = 0x510000004eafn;
+const CLIENT_PAYLOAD =
+  "0xa04588b74683334f6e7670db45cca1288fc2c1499d78715d9456f5d99261a823a3c6898d05630de04949dbf70f2e544a52814e" as Hex;
 
 /** A realistic domain transaction: signed, EIP-1559, gasless (fees prepaid on the L1). */
 async function signDomainTransaction(nonce = 42): Promise<Hex> {
   return privateKeyToAccount(SENDER_KEY).signTransaction({
     type: "eip1559",
-    chainId: DOMAIN_CHAIN_ID,
+    chainId: Number(DOMAIN_CHAIN_ID),
     nonce,
     to: TO,
     data: "0xa9059cbb",
@@ -49,13 +60,13 @@ test("round trip preserves the signed transaction", async () => {
   const { publicKey, secretKey } = await generateViewingKeyPair();
   const rawTransaction = await signDomainTransaction();
 
-  const ciphertext = await encryptTransaction(publicKey, rawTransaction);
-  const recovered = await decryptTransaction(secretKey, ciphertext);
+  const ciphertext = await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, rawTransaction);
+  const recovered = await decryptTransaction(secretKey, DOMAIN_CHAIN_ID, ciphertext);
   assert.equal(recovered, rawTransaction);
 
   // The recovered bytes still parse as the same signed domain transaction.
   const parsed = parseTransaction(recovered);
-  assert.equal(parsed.chainId, DOMAIN_CHAIN_ID);
+  assert.equal(parsed.chainId, Number(DOMAIN_CHAIN_ID));
   assert.equal(parsed.nonce, 42);
   // RLP carries no checksum casing, so the parsed address comes back lowercase.
   assert.equal(parsed.to, TO.toLowerCase());
@@ -63,9 +74,18 @@ test("round trip preserves the signed transaction", async () => {
 
 test("keys match the fixed profile", async () => {
   const { publicKey, secretKey } = await generateViewingKeyPair();
-  assert.equal(hexToBytes(publicKey).length, 65);
-  assert.equal(hexToBytes(publicKey)[0], 0x04); // uncompressed SEC1 point
+  assert.equal(hexToBytes(publicKey).length, 32);
   assert.equal(hexToBytes(secretKey).length, 32);
+});
+
+test("viewing key encodings match the execution client's key file", () => {
+  const secretKey = `0x${"11".repeat(32)}` as const;
+  assert.equal(viewingSecretKeyFromPem(CLIENT_KEY_PEM), secretKey);
+  assert.equal(viewingSecretKeyToPem(secretKey), CLIENT_KEY_PEM);
+  assert.equal(
+    viewingPublicKeyFromPem(CLIENT_KEY_PEM),
+    "0x7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+  );
 });
 
 test("encryption is randomized", async () => {
@@ -75,24 +95,24 @@ test("encryption is randomized", async () => {
   // A fresh ephemeral key per call: the same transaction never yields the same ciphertext, so
   // nothing on the L1 can be deduplicated or correlated by ciphertext identity.
   assert.notEqual(
-    await encryptTransaction(publicKey, rawTransaction),
-    await encryptTransaction(publicKey, rawTransaction),
+    await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, rawTransaction),
+    await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, rawTransaction),
   );
 });
 
 test("a tampered ciphertext fails to authenticate", async () => {
   const { publicKey, secretKey } = await generateViewingKeyPair();
   const ciphertext = hexToBytes(
-    await encryptTransaction(publicKey, await signDomainTransaction()),
+    await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, await signDomainTransaction()),
   );
 
   const corrupted = Uint8Array.from(ciphertext);
   const lastByte = corrupted.length - 1;
   corrupted[lastByte] = (corrupted[lastByte] ?? 0) ^ 0x80;
-  await expectDecryptionFailure(decryptTransaction(secretKey, bytesToHex(corrupted)));
+  await expectDecryptionFailure(decryptTransaction(secretKey, DOMAIN_CHAIN_ID, bytesToHex(corrupted)));
 
   const truncated = ciphertext.subarray(0, ciphertext.length - 1);
-  await expectDecryptionFailure(decryptTransaction(secretKey, bytesToHex(truncated)));
+  await expectDecryptionFailure(decryptTransaction(secretKey, DOMAIN_CHAIN_ID, bytesToHex(truncated)));
 });
 
 test("only the domain viewing key opens the ciphertext", async () => {
@@ -100,55 +120,50 @@ test("only the domain viewing key opens the ciphertext", async () => {
   const stranger = await generateViewingKeyPair();
   const ciphertext = await encryptTransaction(
     domain.publicKey,
+    DOMAIN_CHAIN_ID,
     await signDomainTransaction(),
   );
 
-  await expectDecryptionFailure(decryptTransaction(stranger.secretKey, ciphertext));
+  await expectDecryptionFailure(decryptTransaction(stranger.secretKey, DOMAIN_CHAIN_ID, ciphertext));
+});
+
+test("a transaction opens only in the domain it was sealed for", async () => {
+  const { publicKey, secretKey } = await generateViewingKeyPair();
+  const ciphertext = await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, await signDomainTransaction());
+
+  await expectDecryptionFailure(decryptTransaction(secretKey, DOMAIN_CHAIN_ID + 1n, ciphertext));
 });
 
 test("a plaintext transaction is rejected as a ciphertext", async () => {
   const { secretKey } = await generateViewingKeyPair();
-  await expectDecryptionFailure(decryptTransaction(secretKey, await signDomainTransaction()));
+  await expectDecryptionFailure(decryptTransaction(secretKey, DOMAIN_CHAIN_ID, await signDomainTransaction()));
 });
 
 test("an invalid viewing key is rejected before encryption", async () => {
   const rawTransaction = await signDomainTransaction();
-  await assert.rejects(
-    encryptTransaction("0xdeadbeef", rawTransaction),
-    (error) => error instanceof EncryptionError,
-  );
+  // Wrong length, then a low-order point.
+  for (const viewingKey of ["0xdeadbeef", `0x${"00".repeat(32)}`] as const) {
+    await assert.rejects(
+      encryptTransaction(viewingKey, DOMAIN_CHAIN_ID, rawTransaction),
+      (error) => error instanceof EncryptionError,
+    );
+  }
 });
 
 test("the wire format matches the domain encryption profile", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
+  const { publicKey } = await generateViewingKeyPair();
   const rawTransaction = await signDomainTransaction();
-  const ciphertext = hexToBytes(await encryptTransaction(publicKey, rawTransaction));
+  const ciphertext = hexToBytes(await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, rawTransaction));
 
-  // enc[65] || AEAD(0x01 || rawTransaction): a 65-byte encapsulated key, then the AEAD output
-  // (16-byte tag) over the version-framed transaction, with no associated data.
-  assert.equal(ciphertext.length, 65 + 1 + hexToBytes(rawTransaction).length + 16);
-  assert.equal(ciphertext[0], 0x04); // the encapsulated key is an uncompressed SEC1 point
+  // enc[32] || AEAD(0x01 || rawTransaction): a 32-byte encapsulated key, then the AEAD output
+  // (16-byte tag) over the version-framed transaction.
+  assert.equal(ciphertext.length, 32 + 1 + hexToBytes(rawTransaction).length + 16);
 
-  // Re-open the ciphertext with the profile spelled out explicitly, exactly as the reference
-  // decrypt does. This pins the layout the execution client depends on.
-  const suite = new CipherSuite({
-    kem: new DhkemP256HkdfSha256(),
-    kdf: new HkdfSha256(),
-    aead: new Aes128Gcm(),
-  });
-  const opened = new Uint8Array(
-    await suite.open(
-      {
-        recipientKey: await suite.kem.deserializePrivateKey(hexToBytes(secretKey)),
-        enc: ciphertext.subarray(0, 65),
-        info: new TextEncoder().encode("private-domain-hpke-rfc9180-v1"),
-      },
-      ciphertext.subarray(65),
-    ),
+  // The same decrypt opens what the execution client opens, which pins the whole profile.
+  assert.equal(
+    await decryptTransaction(viewingSecretKeyFromPem(CLIENT_KEY_PEM), CLIENT_DOMAIN, CLIENT_PAYLOAD),
+    "0x02c0",
   );
-
-  assert.equal(opened[0], 0x01); // the profile's frame byte
-  assert.equal(bytesToHex(opened.subarray(1)), rawTransaction);
 });
 
 // ---------------------------------------------------------------------------
@@ -178,14 +193,13 @@ test("message round trip preserves an empty payload", async () => {
   assert.equal(data, "0x");
 });
 
-test("message wire format is enc[65] || AEAD(0x01 || to[20] || data)", async () => {
+test("message wire format is enc[32] || AEAD(0x01 || to[20] || data)", async () => {
   const { publicKey } = await generateViewingKeyPair();
   const ciphertext = hexToBytes(await encryptMessage(publicKey, TO, MESSAGE_DATA));
 
-  // 65-byte encapsulated key, then the AEAD output (16-byte tag) over the version-framed
-  // `to[20] || data` plaintext, with no associated data. Same profile as transactions.
-  assert.equal(ciphertext.length, 65 + 1 + 20 + hexToBytes(MESSAGE_DATA).length + 16);
-  assert.equal(ciphertext[0], 0x04);
+  // 32-byte encapsulated key, then the AEAD output (16-byte tag) over the version-framed
+  // `to[20] || data` plaintext.
+  assert.equal(ciphertext.length, 32 + 1 + 20 + hexToBytes(MESSAGE_DATA).length + 16);
 });
 
 test("a tampered message ciphertext fails to authenticate", async () => {
@@ -200,8 +214,17 @@ test("a tampered message ciphertext fails to authenticate", async () => {
 test("a plaintext shorter than an address is rejected as a message", async () => {
   const { publicKey, secretKey } = await generateViewingKeyPair();
 
-  // Sealed through the transaction pathway: authenticates fine, but 4 bytes cannot frame a
-  // 20-byte target. The failure is the same opaque error as an authentication failure.
-  const ciphertext = await encryptTransaction(publicKey, "0xdeadbeef");
-  await expectDecryptionFailure(decryptMessage(secretKey, ciphertext));
+  // Sealed with the profile directly: authenticates fine, but 4 bytes cannot frame a 20-byte
+  // target. The failure is the same opaque error as an authentication failure.
+  const suite = new CipherSuite({
+    kem: new DhkemX25519HkdfSha256(),
+    kdf: new HkdfSha256(),
+    aead: new Aes128Gcm(),
+  });
+  const { enc, ct } = await suite.seal(
+    { recipientPublicKey: await suite.kem.deserializePublicKey(hexToBytes(publicKey)) },
+    hexToBytes("0x01deadbeef"),
+  );
+  const ciphertext = concat([new Uint8Array(enc), new Uint8Array(ct)]);
+  await expectDecryptionFailure(decryptMessage(secretKey, bytesToHex(ciphertext)));
 });

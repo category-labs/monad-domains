@@ -34,7 +34,7 @@ export interface SetupConfig {
   /** Gas limit for each seeded domain creation transaction, paid for on the L1. Default 5_000_000. */
   domainGas?: bigint;
   /**
-   * Domain viewing public key (65-byte uncompressed P-256 point). Published on the hub at
+   * Domain viewing public key (32-byte X25519 public key). Published on the hub at
    * registration so senders can read it, and used here to pass the two seeded creation
    * transactions to `sequenceToDomain` as HPKE ciphertext, which the domain execution client
    * decrypts before executing. Required when the client was started with a receiver key for
@@ -180,7 +180,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   // the hub records the HPKE ciphertext of each creation; the execution client decrypts it.
   const sequencingFee = domainGas * (await readDomainGasPrice(publicClient, hub));
   const sequenceSeedTransaction = async (rawTransaction: Hex): Promise<Hex> => {
-    const rlpTx = viewingKey ? await encryptTransaction(viewingKey, rawTransaction) : rawTransaction;
+    const rlpTx = viewingKey ? await encryptTransaction(viewingKey, domainChainId, rawTransaction) : rawTransaction;
     return wallet.writeContract({
       address: hub,
       abi: hubArt.abi,

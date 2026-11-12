@@ -23,7 +23,7 @@ End to end: a sender encrypts a signed domain transaction to the domain's viewin
 
 A domain is identified by its chain ID. A domain is created by calling `registerDomain(domainChainId, validators, quorum, feeRecipient, viewingKey, checkpointInterval)` on the hub. Starting a domain should include the following three steps:
 
-1. **Generate the viewing keypair.** A P-256 key. The secret key goes to every execution client that will serve the domain. The public key is registered on the hub and used by users to encrypt domain transactions.
+1. **Generate the viewing keypair.** An X25519 key. The secret key goes to every execution client that will serve the domain. The public key is registered on the hub and used by users to encrypt domain transactions.
 2. **Configure the execution clients.** Each replica is started with the domain's chain ID, the address its spoke will have, and the key file, plus the hub address as the sequencer contract. Every replica must hold the same secret key to decrypt the ciphertext.
 3. **Deploy the spoke inside the domain.** The spoke is a contract in the domain's own state, not on the L1. Its creation transaction is sequenced through the hub like any other domain transaction.
 
@@ -70,11 +70,11 @@ Every byte a domain executes reaches the L1 as HPKE ciphertext sealed to the dom
 
 | Parameter | Value |
 | --- | --- |
-| KEM | DHKEM(P-256, HKDF-SHA256) |
+| KEM | DHKEM(X25519, HKDF-SHA256) |
 | KDF | HKDF-SHA256 |
 | AEAD | AES-128-GCM |
-| info | the ASCII string `private-domain-hpke-rfc9180-v1` |
-| Associated data | empty |
+| info | empty |
+| Associated data | `abi.encode("monad-transaction-encryption-v1", uint64 domainChainId)` for a sequenced transaction, empty for an encrypted message |
 
 There are two types of encryptions:
 
@@ -88,10 +88,10 @@ Decryption happens inside the execution client, once per L1 block, as the first 
 For each L1 block the client, per served domain:
 
 1. Scans the block's L1 transactions for calls to the hub's `sequenceToDomain` addressed to one of its domains.
-2. Opens each payload with the domain's secret key: deserializes the encapsulated key, runs HPKE open with the fixed info string and empty associated data, verifies the AEAD tag, then checks and strips the frame byte. A payload that fails any of these is dropped with a warning. A plaintext payload is dropped too.
+2. Opens each payload with the domain's secret key: deserializes the encapsulated key, runs HPKE open with the associated data of the call's domain ID, verifies the AEAD tag, then checks and strips the frame byte. A payload that fails any of these is dropped with a warning. A plaintext payload is dropped too.
 3. RLP-decodes the signed transaction, recovers its sender, and requires the signed chain ID to equal the domain ID, zero value, and a gas limit within the L1 envelope. A transaction whose recovered sender is the reserved system relayer is dropped.
 4. Executes the ordinary L1 block against root state.
-5. Scans the hub's receipts for message events of its domains and opens the encrypted ones the same way, recovering target and payload. An undecryptable message is dropped and its nonce is never delivered.
+5. Scans the hub's receipts for message events of its domains and opens the encrypted ones the same way, with empty associated data, recovering target and payload. An undecryptable message is dropped and its nonce is never delivered.
 6. Executes the sequenced transactions, then the system delivery transactions, as one gasless domain block against the domain state at the parent L1 height.
 7. Commits the domain state deltas, transactions and receipts alongside the L1 block. If L1 execution fails, the staged domain changes are discarded with it.
 

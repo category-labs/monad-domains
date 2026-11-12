@@ -17,8 +17,7 @@ contract DomainMessagingTest is DomainTestBase {
     uint256 internal constant K2 = 0xB0B;
     uint256 internal constant K3 = 0xC0DE;
 
-    bytes internal constant VIEWING_KEY =
-        hex"04d31f49ed035afc6c7045c4dd33b6485466fcf6021eb3e01a54a95cbc0b3e5399de67354267cc3cf62b8e933b932af6dfc19ce8e6be68d707c59873e6fb184a50";
+    bytes internal constant VIEWING_KEY = hex"7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
 
     DomainHub internal hub;
     DomainSpoke internal spoke;
@@ -93,15 +92,11 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_register_rejectsMalformedViewingKey() public {
-        // Wrong length.
         vm.expectRevert(DomainHub.InvalidViewingKey.selector);
-        _register(4444, feeRecipient, hex"04c0ffee", 1);
+        _register(4444, feeRecipient, hex"c0ffee", 1);
 
-        // Right length, not an uncompressed-point prefix.
-        bytes memory compressedPrefix = VIEWING_KEY;
-        compressedPrefix[0] = 0x02;
         vm.expectRevert(DomainHub.InvalidViewingKey.selector);
-        _register(4444, feeRecipient, compressedPrefix, 1);
+        _register(4444, feeRecipient, bytes.concat(VIEWING_KEY, hex"00"), 1);
     }
 
     function test_register_storesConfig() public {
