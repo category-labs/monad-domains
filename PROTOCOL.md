@@ -96,3 +96,10 @@ For each L1 block the client, per served domain:
 7. Commits the domain state deltas, transactions and receipts alongside the L1 block. If L1 execution fails, the staged domain changes are discarded with it.
 
 **Access control at execution time.** Before every call frame in a domain, the client makes a synthetic static call to the spoke's `canCall(caller, context, data)` with a 50,000 gas stipend and proceeds only on a canonical ABI true. The spoke forwards the question to the policy contract that the context contract's policy owner named with `setAccessPolicy`, and admits every caller of a contract without one. A policy implements `IDomainAccessPolicy.canCall` and decides from its own storage and the arguments. This is primarily used for RPC read access control.
+
+Policy ownership transfers in two steps per registered contract: the current owner calls
+`transferPolicyOwnership(target, newOwner)`, then the nominated owner calls
+`acceptPolicyOwnership(target)`. The current owner retains authority until acceptance and
+may replace the nomination or cancel it by nominating the zero address. Acceptance clears
+`pendingPolicyOwners[target]` and updates `policyOwners[target]`; the installed policy,
+access rules and explicit reader grants are preserved.

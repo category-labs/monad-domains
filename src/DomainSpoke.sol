@@ -7,6 +7,7 @@ import {MessageLib} from "./libraries/MessageLib.sol";
 
 contract DomainSpoke is IDomainSpoke {
     error NotPolicyOwner();
+    error NotPendingPolicyOwner();
     error NotSystemRelayer();
     error ZeroHub();
     error DomainIsL1();
@@ -56,6 +57,8 @@ contract DomainSpoke is IDomainSpoke {
     /// @notice Accounts besides the policy owner that the domain RPC lets read every log of a
     /// contract.
     mapping(address => mapping(address => bool)) public logReaders;
+    /// @notice Nominated policy owner per target; zero when no transfer is pending.
+    mapping(address => address) public pendingPolicyOwners;
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
@@ -90,6 +93,28 @@ contract DomainSpoke is IDomainSpoke {
         if (deployed == address(0) || deployed.code.length == 0) revert DeploymentFailed();
         policyOwners[deployed] = policyOwner;
         emit ContractDeployed(deployed, msg.sender, policyOwner);
+    }
+
+    /// @notice Nominate the next policy owner of `target`, replacing any pending nomination.
+    /// @dev Only the current policy owner may nominate. It retains authority until acceptance;
+    /// a zero `newOwner` cancels the pending transfer without changing the current owner.
+    /// @param target Registered contract whose policy ownership is being transferred.
+    /// @param newOwner Account that must accept the transfer, or zero to cancel it.
+    function transferPolicyOwnership(address target, address newOwner) external onlyPolicyOwner(target) {
+        pendingPolicyOwners[target] = newOwner;
+        emit PolicyOwnershipTransferStarted(target, msg.sender, newOwner);
+    }
+
+    /// @notice Accept a pending policy ownership transfer for `target` as its nominated owner.
+    /// @dev Clears the nomination and transfers authority without changing policies or reader grants.
+    /// @param target Registered contract whose pending policy ownership the caller accepts.
+    function acceptPolicyOwnership(address target) external {
+        address pendingOwner = pendingPolicyOwners[target];
+        if (pendingOwner == address(0) || msg.sender != pendingOwner) revert NotPendingPolicyOwner();
+        address previousOwner = policyOwners[target];
+        delete pendingPolicyOwners[target];
+        policyOwners[target] = pendingOwner;
+        emit PolicyOwnershipTransferred(target, previousOwner, pendingOwner);
     }
 
     function setAccessPolicy(address target, address policy) external onlyPolicyOwner(target) {
