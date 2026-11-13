@@ -64,7 +64,7 @@ library MessageLib {
     }
 
     /// @notice Decodes a token bridge payload produced by `encodeTransfer`.
-    function decodeTransfer(bytes memory data)
+    function decodeTransfer(bytes calldata data)
         internal
         pure
         returns (address recipient, address l1Token, uint256 amount)
