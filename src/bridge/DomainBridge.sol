@@ -19,6 +19,7 @@ contract DomainBridge is IDomainMessageReceiver {
     error UnknownToken();
 
     IDomainSpoke public immutable SPOKE;
+    uint64 public immutable L1_CHAIN_ID;
 
     /// @notice Counterpart L1Bridge - the only accepted message sender.
     address public immutable L1_BRIDGE;
@@ -33,6 +34,7 @@ contract DomainBridge is IDomainMessageReceiver {
     constructor(IDomainSpoke spoke, address l1Bridge) {
         if (l1Bridge == address(0)) revert ZeroL1Bridge();
         SPOKE = spoke;
+        L1_CHAIN_ID = spoke.L1_CHAIN_ID();
         L1_BRIDGE = l1Bridge;
     }
 
@@ -42,7 +44,7 @@ contract DomainBridge is IDomainMessageReceiver {
     /// anyone can send arbitrary payloads through the hub.
     function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
         if (msg.sender != address(SPOKE)) revert NotSpoke();
-        if (sourceChainId != SPOKE.L1_CHAIN_ID()) revert NotFromL1();
+        if (sourceChainId != L1_CHAIN_ID) revert NotFromL1();
         if (from != L1_BRIDGE) revert NotL1Bridge();
 
         (address recipient, address l1Token, uint256 amount) = MessageLib.decodeTransfer(data);
@@ -66,7 +68,7 @@ contract DomainBridge is IDomainMessageReceiver {
         // Burn before messaging: the withdrawal message must never overstate what was
         // actually destroyed on the domain.
         token.burn(msg.sender, amount);
-        SPOKE.sendDomainMessage(SPOKE.L1_CHAIN_ID(), L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount));
+        SPOKE.sendDomainMessage(L1_CHAIN_ID, L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount));
         emit WithdrawalInitiated(msg.sender, recipient, l1Token, amount);
     }
 
