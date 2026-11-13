@@ -174,7 +174,8 @@ interface IDomainHub {
     /// no value may be attached. Otherwise atomically queues it through the same path as
     /// sendL1Message, with `msg.value` as the destination delivery fee (at least the minimum
     /// for the envelope's data), and returns true; destination execution/retry happens on that
-    /// domain. Messages can arrive in any order.
+    /// domain. Messages can arrive in any order. An L1 target without code counts as a failed
+    /// callback.
     function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
         external
         payable
@@ -182,7 +183,8 @@ interface IDomainHub {
 
     /// @notice Permissionlessly retries an authenticated failed L1 callback with the caller's
     /// gas. A failed retry reverts, preserving the failed mark. Forwarded messages retry on
-    /// their destination spoke using retryL1Message with the shared delivery envelope.
+    /// their destination spoke using retryL1Message with the shared delivery envelope. A retry
+    /// whose target has no code fails.
     function retryDomainMessage(MessageLib.DomainMessage calldata message) external;
 
     /// @notice True once an authenticated message has been attempted on L1 or queued to a domain.
