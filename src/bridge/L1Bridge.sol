@@ -80,9 +80,10 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
 
         // The locked amount must equal the messaged amount, or withdrawals would be
         // undercollateralized - reject fee-on-transfer tokens.
-        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        if (IERC20(token).balanceOf(address(this)) - balanceBefore != amount) revert FeeOnTransferTokenNotSupported();
+        IERC20 asset = IERC20(token);
+        uint256 balanceBefore = asset.balanceOf(address(this));
+        asset.safeTransferFrom(msg.sender, address(this), amount);
+        if (asset.balanceOf(address(this)) - balanceBefore != amount) revert FeeOnTransferTokenNotSupported();
 
         HUB.sendL1Message{value: msg.value}(
             DOMAIN_CHAIN_ID, counterpart, MessageLib.encodeTransfer(recipient, token, amount)
