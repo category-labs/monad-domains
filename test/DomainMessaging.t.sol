@@ -30,7 +30,7 @@ contract DomainMessagingTest is DomainTestBase {
     function setUp() public {
         hub = new DomainHub();
         _registerDomain(hub, CHAIN_ID, _keys(K1, K2, K3), 2);
-        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
+        spoke = new DomainSpoke(CHAIN_ID, uint64(block.chainid), address(hub));
         vm.deal(alice, 100 ether);
     }
 
@@ -313,11 +313,11 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_spokeConstructorRejectsInvalidBindings() public {
         vm.expectRevert(DomainSpoke.ZeroHub.selector);
-        new DomainSpoke(CHAIN_ID, block.chainid, address(0));
+        new DomainSpoke(CHAIN_ID, uint64(block.chainid), address(0));
         vm.expectRevert(DomainSpoke.DomainIsL1.selector);
-        new DomainSpoke(uint64(block.chainid), block.chainid, address(hub));
-        vm.expectRevert(DomainSpoke.L1ChainIdTooLarge.selector);
-        new DomainSpoke(CHAIN_ID, uint256(type(uint64).max) + 1, address(hub));
+        new DomainSpoke(uint64(block.chainid), uint64(block.chainid), address(hub));
+        vm.expectRevert();
+        deployCode("DomainSpoke.sol:DomainSpoke", abi.encode(CHAIN_ID, uint256(type(uint64).max) + 1, address(hub)));
     }
 
     // ---------------------------------------------------------------------

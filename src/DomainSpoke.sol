@@ -10,7 +10,6 @@ contract DomainSpoke is IDomainSpoke {
     error NotSystemRelayer();
     error ZeroHub();
     error DomainIsL1();
-    error L1ChainIdTooLarge();
     error ZeroPolicyOwner();
     error DeploymentFailed();
     error PolicyHasNoCode();
@@ -68,12 +67,11 @@ contract DomainSpoke is IDomainSpoke {
         _;
     }
 
-    constructor(uint64 domainChainId, uint256 l1ChainId, address hub) {
+    constructor(uint64 domainChainId, uint64 l1ChainId, address hub) {
         if (hub == address(0)) revert ZeroHub();
         if (domainChainId == l1ChainId) revert DomainIsL1();
-        if (l1ChainId > type(uint64).max) revert L1ChainIdTooLarge();
         DOMAIN_CHAIN_ID = domainChainId;
-        L1_CHAIN_ID = uint64(l1ChainId);
+        L1_CHAIN_ID = l1ChainId;
         HUB = hub;
     }
 

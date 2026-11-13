@@ -64,7 +64,7 @@ contract BridgeHandler is DomainTestBase {
         // single validator key (quorum 1) and is the fee recipient.
         HUB = new DomainHub();
         _registerDomain(HUB, CHAIN_ID, VALIDATOR_KEY);
-        SPOKE = new DomainSpoke(CHAIN_ID, block.chainid, address(HUB));
+        SPOKE = new DomainSpoke(CHAIN_ID, uint64(block.chainid), address(HUB));
 
         L1_BRIDGE = new L1Bridge(HUB, CHAIN_ID);
         DOMAIN_BRIDGE = new DomainBridge(SPOKE, address(L1_BRIDGE));

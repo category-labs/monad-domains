@@ -77,8 +77,8 @@ contract DomainToDomainTest is DomainTestBase {
         hub = new DomainHub();
         _registerDomain(hub, CHAIN_A, VALIDATOR_KEY);
         _registerDomain(hub, CHAIN_B, VALIDATOR_KEY);
-        spokeA = new DomainSpoke(CHAIN_A, block.chainid, address(hub));
-        spokeB = new DomainSpoke(CHAIN_B, block.chainid, address(hub));
+        spokeA = new DomainSpoke(CHAIN_A, uint64(block.chainid), address(hub));
+        spokeB = new DomainSpoke(CHAIN_B, uint64(block.chainid), address(hub));
 
         // Application: an independent bridge pair per domain, sharing the L1 token.
         l1BridgeA = new L1Bridge(hub, CHAIN_A);

@@ -15,7 +15,7 @@ contract NativeRoutingTest is DomainTestBase {
     uint64 internal constant A = 7777;
     uint64 internal constant B = 8888;
     uint64 internal constant C = 9999;
-    uint256 internal constant L1 = 1;
+    uint64 internal constant L1 = 1;
     uint256 internal constant KEY = 0xA11CE;
     DomainHub internal hub;
     DomainSpoke internal spokeA;

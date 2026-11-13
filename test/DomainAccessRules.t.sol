@@ -27,7 +27,7 @@ contract DomainAccessRulesTest is DomainTestBase {
     DomainAccessRules.AccessMode internal constant READERS_ONLY = DomainAccessRules.AccessMode.ReadersOnly;
 
     function setUp() public {
-        spoke = new DomainSpoke(7777, block.chainid, address(0x1234));
+        spoke = new DomainSpoke(7777, uint64(block.chainid), address(0x1234));
         rules = new DomainAccessRules(spoke);
         token = _governed(policyOwner);
     }
@@ -79,7 +79,7 @@ contract DomainAccessRulesTest is DomainTestBase {
     }
 
     function test_rulesBuiltForAnotherSpokeIgnoreThisSpokesOwners() public {
-        DomainSpoke otherSpoke = new DomainSpoke(7778, block.chainid, address(0x1234));
+        DomainSpoke otherSpoke = new DomainSpoke(7778, uint64(block.chainid), address(0x1234));
         DomainAccessRules foreign = new DomainAccessRules(otherSpoke);
         vm.prank(policyOwner);
         vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
