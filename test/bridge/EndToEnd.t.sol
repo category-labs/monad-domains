@@ -55,7 +55,13 @@ contract DepositEndToEndTest is DomainTestBase {
         assertFalse(
             spoke.failedL1Messages(
                 MessageLib.hashMessage(
-                    MessageLib.Message(uint64(block.chainid), address(l1Bridge), address(domainBridge), data, nonce)
+                    MessageLib.Message({
+                        sourceChainId: uint64(block.chainid),
+                        from: address(l1Bridge),
+                        to: address(domainBridge),
+                        data: data,
+                        nonce: nonce
+                    })
                 )
             ),
             "deposit delivery failed"

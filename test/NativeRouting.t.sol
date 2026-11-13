@@ -84,13 +84,13 @@ contract NativeRoutingTest is DomainTestBase {
             if (logs[i].emitter == address(hub) && logs[i].topics[0] == L1_EVENT) {
                 (uint64 source, bytes memory data, uint256 nonce,, bytes32 hash) =
                     abi.decode(logs[i].data, (uint64, bytes, uint256, uint256, bytes32));
-                envelope = MessageLib.Message(
-                    source,
-                    address(uint160(uint256(logs[i].topics[2]))),
-                    address(uint160(uint256(logs[i].topics[3]))),
-                    data,
-                    nonce
-                );
+                envelope = MessageLib.Message({
+                    sourceChainId: source,
+                    from: address(uint160(uint256(logs[i].topics[2]))),
+                    to: address(uint160(uint256(logs[i].topics[3]))),
+                    data: data,
+                    nonce: nonce
+                });
                 assertEq(uint256(logs[i].topics[1]), B);
                 assertEq(hash, MessageLib.hashMessage(envelope));
                 return envelope;
@@ -144,7 +144,11 @@ contract NativeRoutingTest is DomainTestBase {
         assertEq(l1Receiver.calls(), 1, "forwarding must not execute an L1 operation");
         vm.expectRevert(DomainHub.RetryOnDestinationDomain.selector);
         hub.retryDomainMessage(remote);
-        _deliver(MessageLib.Message(remote.sourceChainId, remote.from, remote.to, remote.data, 0));
+        _deliver(
+            MessageLib.Message({
+                sourceChainId: remote.sourceChainId, from: remote.from, to: remote.to, data: remote.data, nonce: 0
+            })
+        );
         assertEq(receiver.calls(), 1);
         assertEq(receiver.payload(), hex"bb");
     }
@@ -211,7 +215,9 @@ contract NativeRoutingTest is DomainTestBase {
             uint256 deliveryNonce = hub.l1MessageCounts(B);
             assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(message, anchor, proof));
             assertEq(deliveryNonce, i);
-            envelopes[i] = MessageLib.Message(message.sourceChainId, message.from, message.to, message.data, i);
+            envelopes[i] = MessageLib.Message({
+                sourceChainId: message.sourceChainId, from: message.from, to: message.to, data: message.data, nonce: i
+            });
             bool fails = (failures >> i) & 1 == 1;
             receiver.setReject(fails);
             _deliver(envelopes[i]);
@@ -273,7 +279,9 @@ contract NativeRoutingTest is DomainTestBase {
         vm.deal(relayer, 1 ether);
         uint256 before = address(this).balance;
 
-        bytes32 envelopeHash = MessageLib.hashMessage(MessageLib.Message(A, alice, address(receiver), hex"", 0));
+        bytes32 envelopeHash = MessageLib.hashMessage(
+            MessageLib.Message({sourceChainId: A, from: alice, to: address(receiver), data: hex"", nonce: 0})
+        );
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(B, A, alice, address(receiver), hex"", 0, 0.3 ether, envelopeHash);
         vm.prank(relayer);
@@ -324,13 +332,21 @@ contract NativeRoutingTest is DomainTestBase {
         DomainSpoke spokeC = new DomainSpoke(C, L1, address(hub));
         vm.prank(alice);
         spokeC.sendDomainMessage(B, address(receiver), hex"", TEST_SALT);
-        MessageLib.DomainMessage memory second =
-            MessageLib.DomainMessage(C, B, alice, address(receiver), 0, TEST_SALT, hex"");
+        MessageLib.DomainMessage memory second = MessageLib.DomainMessage({
+            sourceChainId: C,
+            destinationChainId: B,
+            from: alice,
+            to: address(receiver),
+            sourceNonce: 0,
+            salt: TEST_SALT,
+            data: hex""
+        });
         bytes32 anchor = _attestBatch(hub, spokeC, KEY);
         uint256 nonce = hub.l1MessageCounts(B);
         assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(second, anchor, new bytes32[](0)));
-        MessageLib.Message memory envelope =
-            MessageLib.Message(second.sourceChainId, second.from, second.to, second.data, nonce);
+        MessageLib.Message memory envelope = MessageLib.Message({
+            sourceChainId: second.sourceChainId, from: second.from, to: second.to, data: second.data, nonce: nonce
+        });
         assertNotEq(_id(first), _id(second));
         _deliver(envelope);
         assertEq(receiver.calls(), 1, "same address on untrusted C must not be accepted");
@@ -402,7 +418,8 @@ contract NativeRoutingTest is DomainTestBase {
         // Even the same sender address on L1 cannot claim source domain A.
         vm.prank(alice);
         hub.sendL1Message{value: DELIVERY_FEE}(B, address(receiver), hex"");
-        MessageLib.Message memory forged = MessageLib.Message(uint64(L1), alice, address(receiver), hex"", 0);
+        MessageLib.Message memory forged =
+            MessageLib.Message({sourceChainId: uint64(L1), from: alice, to: address(receiver), data: hex"", nonce: 0});
         _deliver(forged);
         assertEq(receiver.calls(), 0);
         assertTrue(spokeB.failedL1Messages(MessageLib.hashMessage(forged)));
@@ -422,7 +439,9 @@ contract NativeRoutingTest is DomainTestBase {
         receiver.setPeer(uint64(L1), alice);
         vm.prank(alice);
         hub.sendL1Message{value: DELIVERY_FEE}(B, address(receiver), hex"11");
-        _deliver(MessageLib.Message(uint64(L1), alice, address(receiver), hex"11", 0));
+        _deliver(
+            MessageLib.Message({sourceChainId: uint64(L1), from: alice, to: address(receiver), data: hex"11", nonce: 0})
+        );
         assertEq(receiver.source(), L1);
         assertEq(receiver.sender(), alice);
         _deliver(_route(_send(address(receiver), hex"22")));

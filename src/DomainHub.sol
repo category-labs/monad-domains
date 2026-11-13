@@ -331,7 +331,9 @@ contract DomainHub is IDomainHub, EIP712 {
         if (fee < minDeliveryFee(data.length)) revert DeliveryFeeTooLow();
         _buyGas(domainChainId, fee);
         nonce = l1MessageCounts[domainChainId]++;
-        bytes32 messageHash = MessageLib.hashMessage(MessageLib.Message(sourceChainId, from, to, data, nonce));
+        bytes32 messageHash = MessageLib.hashMessage(
+            MessageLib.Message({sourceChainId: sourceChainId, from: from, to: to, data: data, nonce: nonce})
+        );
         emit L1MessageRecorded(domainChainId, sourceChainId, from, to, data, nonce, fee, messageHash);
     }
 

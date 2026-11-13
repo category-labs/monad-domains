@@ -29,8 +29,11 @@ contract DomainBridgeTest is DomainTestBase {
     {
         uint256 nonce = spoke.nextL1Nonce();
         bytes memory data = MessageLib.encodeTransfer(recipient, l1Token, amount);
-        messageHash =
-            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), from, address(bridge), data, nonce));
+        messageHash = MessageLib.hashMessage(
+            MessageLib.Message({
+                sourceChainId: uint64(block.chainid), from: from, to: address(bridge), data: data, nonce: nonce
+            })
+        );
         vm.prank(spoke.SYSTEM_RELAYER());
         spoke.relayL1Message(uint64(block.chainid), from, address(bridge), data, nonce);
     }

@@ -218,7 +218,13 @@ contract DomainToDomainTest is DomainTestBase {
         assertFalse(
             spoke.failedL1Messages(
                 MessageLib.hashMessage(
-                    MessageLib.Message(uint64(block.chainid), address(fromBridge), address(toBridge), data, nonce)
+                    MessageLib.Message({
+                        sourceChainId: uint64(block.chainid),
+                        from: address(fromBridge),
+                        to: address(toBridge),
+                        data: data,
+                        nonce: nonce
+                    })
                 )
             ),
             "deposit delivery failed"
