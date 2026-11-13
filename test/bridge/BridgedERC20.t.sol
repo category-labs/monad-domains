@@ -12,7 +12,7 @@ contract BridgedERC20Test is Test {
 
     function setUp() public {
         // The test contract plays the bridge (deployer = bridge).
-        token = new BridgedERC20(L1_TOKEN, "Bridged Test", "BRG", 6);
+        token = new BridgedERC20(L1_TOKEN, "Bridged Test", "BRG");
     }
 
     function test_metadata() public view {
@@ -20,7 +20,7 @@ contract BridgedERC20Test is Test {
         assertEq(token.L1_TOKEN(), L1_TOKEN);
         assertEq(token.name(), "Bridged Test");
         assertEq(token.symbol(), "BRG");
-        assertEq(token.decimals(), 6);
+        assertEq(token.decimals(), 18);
     }
 
     function test_mintAndBurn_asBridge() public {

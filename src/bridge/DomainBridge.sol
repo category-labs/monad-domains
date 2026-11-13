@@ -74,7 +74,7 @@ contract DomainBridge is IDomainMessageReceiver {
     /// bridged token address is fully deterministic.
     function _deployBridgedToken(address l1Token) internal returns (BridgedERC20 token) {
         token = new BridgedERC20{salt: bytes32(uint256(uint160(l1Token)))}(
-            l1Token, string.concat("Bridged ", Strings.toHexString(l1Token)), "BRG", 18
+            l1Token, string.concat("Bridged ", Strings.toHexString(l1Token)), "BRG"
         );
         bridgedTokens[l1Token] = token;
         emit BridgedTokenDeployed(l1Token, address(token));
