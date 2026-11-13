@@ -5,6 +5,7 @@ import {
   keccak256,
   parseAbi,
   parseEventLogs,
+  zeroHash,
   type Address,
   type Hex,
   type PublicClient,
@@ -16,7 +17,7 @@ import { encryptTransaction } from "./encryption.js";
 const HUB_SEQUENCING_ABI = parseAbi([
   "function DOMAIN_GAS_PRICE() view returns (uint256)",
   "function sequenceToDomain(uint64 domainChainId, bytes rlpTx) payable",
-  "function viewingKeys(uint64 domainChainId) view returns (bytes)",
+  "function viewingKeys(uint64 domainChainId) view returns (bytes32)",
   "event DomainTransactionSequenced(uint64 indexed domainChainId, bytes rlpTx, uint256 fee)",
 ]);
 
@@ -146,9 +147,9 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
           `(${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
       );
     }
-    if (published !== "0x") encryptionKey = published;
+    if (published !== zeroHash) encryptionKey = published;
   }
-  const rlpTx = encryptionKey
+  const rlpTx = encryptionKey && encryptionKey !== zeroHash
     ? await encryptTransaction(encryptionKey, domainChainId, rawTransaction)
     : rawTransaction;
 

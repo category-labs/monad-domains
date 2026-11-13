@@ -17,7 +17,7 @@ contract DomainMessagingTest is DomainTestBase {
     uint256 internal constant K2 = 0xB0B;
     uint256 internal constant K3 = 0xC0DE;
 
-    bytes internal constant VIEWING_KEY = hex"7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
+    bytes32 internal constant VIEWING_KEY = hex"7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
 
     DomainHub internal hub;
     DomainSpoke internal spoke;
@@ -38,7 +38,7 @@ contract DomainMessagingTest is DomainTestBase {
         return _addresses(_keys(K1, K2, K3));
     }
 
-    function _register(uint64 chainId, address recipient, bytes memory viewingKey, uint64 interval) internal {
+    function _register(uint64 chainId, address recipient, bytes32 viewingKey, uint64 interval) internal {
         hub.registerDomain(chainId, _validators(), 2, recipient, viewingKey, interval);
     }
 
@@ -48,29 +48,29 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_register_rejectsL1ChainId() public {
         vm.expectRevert(DomainHub.L1ChainIdNotAllowed.selector);
-        _register(uint64(block.chainid), feeRecipient, "", 1);
+        _register(uint64(block.chainid), feeRecipient, bytes32(0), 1);
     }
 
     function test_register_rejectsDuplicate() public {
         vm.expectRevert(DomainHub.DomainAlreadyRegistered.selector);
-        _register(CHAIN_ID, feeRecipient, "", 1);
+        _register(CHAIN_ID, feeRecipient, bytes32(0), 1);
     }
 
     function test_register_rejectsZeroQuorum() public {
         vm.expectRevert(DomainHub.ZeroQuorum.selector);
-        hub.registerDomain(4444, _validators(), 0, feeRecipient, "", 1);
+        hub.registerDomain(4444, _validators(), 0, feeRecipient, bytes32(0), 1);
     }
 
     function test_register_rejectsQuorumAboveValidatorCount() public {
         vm.expectRevert(DomainHub.QuorumExceedsValidators.selector);
-        hub.registerDomain(4444, _validators(), 4, feeRecipient, "", 1);
+        hub.registerDomain(4444, _validators(), 4, feeRecipient, bytes32(0), 1);
     }
 
     function test_register_rejectsZeroValidator() public {
         address[] memory validators = new address[](1);
         validators[0] = address(0);
         vm.expectRevert(DomainHub.ZeroValidator.selector);
-        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1);
+        hub.registerDomain(4444, validators, 1, feeRecipient, bytes32(0), 1);
     }
 
     function test_register_rejectsDuplicateValidator() public {
@@ -78,41 +78,33 @@ contract DomainMessagingTest is DomainTestBase {
         validators[0] = vm.addr(K1);
         validators[1] = vm.addr(K1);
         vm.expectRevert(DomainHub.DuplicateValidator.selector);
-        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1);
+        hub.registerDomain(4444, validators, 1, feeRecipient, bytes32(0), 1);
     }
 
     function test_register_rejectsZeroFeeRecipient() public {
         vm.expectRevert(DomainHub.ZeroFeeRecipient.selector);
-        _register(4444, address(0), "", 1);
+        _register(4444, address(0), bytes32(0), 1);
     }
 
     function test_register_rejectsZeroCheckpointInterval() public {
         vm.expectRevert(DomainHub.ZeroCheckpointInterval.selector);
-        _register(4444, feeRecipient, "", 0);
-    }
-
-    function test_register_rejectsMalformedViewingKey() public {
-        vm.expectRevert(DomainHub.InvalidViewingKey.selector);
-        _register(4444, feeRecipient, hex"c0ffee", 1);
-
-        vm.expectRevert(DomainHub.InvalidViewingKey.selector);
-        _register(4444, feeRecipient, bytes.concat(VIEWING_KEY, hex"00"), 1);
+        _register(4444, feeRecipient, bytes32(0), 0);
     }
 
     function test_register_storesConfig() public {
         vm.expectEmit(true, true, false, true, address(hub));
         emit IDomainHub.DomainRegistered(4444, feeRecipient, 25);
         vm.expectEmit(true, false, false, true, address(hub));
-        emit IDomainHub.ViewingKeyRegistered(4444, "");
+        emit IDomainHub.ViewingKeyRegistered(4444, bytes32(0));
         vm.prank(stranger); // registration is permissionless; the caller gets no role
-        _register(4444, feeRecipient, "", 25);
+        _register(4444, feeRecipient, bytes32(0), 25);
 
         assertTrue(hub.isDomainRegistered(4444));
         assertFalse(hub.isDomainRegistered(5555));
         assertEq(hub.feeRecipients(4444), feeRecipient);
         assertEq(hub.checkpointIntervals(4444), 25);
         assertEq(hub.quorums(4444), 2);
-        assertEq(hub.viewingKeys(4444), "");
+        assertEq(hub.viewingKeys(4444), bytes32(0));
         assertEq(hub.getValidators(4444), _validators());
     }
 
@@ -123,7 +115,6 @@ contract DomainMessagingTest is DomainTestBase {
 
         // Senders read the key from the hub to encrypt domain transactions to it.
         assertEq(hub.viewingKeys(4444), VIEWING_KEY);
-        assertEq(hub.viewingKeys(4444).length, hub.VIEWING_KEY_LENGTH());
     }
 
     // ---------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, encodeDeployData, getContractAddress, http, type Address, type Hex } from "viem";
+import { createPublicClient, createWalletClient, encodeDeployData, getContractAddress, http, zeroHash, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadArtifact } from "./artifacts.js";
 import { fetchL1Chain } from "./chain.js";
@@ -82,7 +82,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     allowedToken,
     domainGas = 5_000_000n,
     checkpointInterval = 5n,
-    viewingKey,
+    viewingKey = zeroHash,
   } = config;
 
   if (validators.length === 0) throw new Error("setup: validators must not be empty");
@@ -135,12 +135,12 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
       address: hub,
       abi: hubArt.abi,
       functionName: "registerDomain",
-      args: [domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval],
+      args: [domainChainId, validators, quorum, feeRecipient, viewingKey, checkpointInterval],
     }),
   );
   console.log(
     `  registered chain ${domainChainId} (quorum ${quorum} of ${validators.length}, fee recipient ${feeRecipient}, ` +
-      `checkpoint interval ${checkpointInterval}, viewing key ${viewingKey ? "published" : "none"})`,
+      `checkpoint interval ${checkpointInterval}, viewing key ${viewingKey !== zeroHash ? "published" : "none"})`,
   );
 
   // 2. Deploy the L1 bridge (admin becomes owner).
@@ -180,7 +180,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   // the hub records the HPKE ciphertext of each creation; the execution client decrypts it.
   const sequencingFee = domainGas * (await readDomainGasPrice(publicClient, hub));
   const sequenceSeedTransaction = async (rawTransaction: Hex): Promise<Hex> => {
-    const rlpTx = viewingKey ? await encryptTransaction(viewingKey, domainChainId, rawTransaction) : rawTransaction;
+    const rlpTx = viewingKey !== zeroHash ? await encryptTransaction(viewingKey, domainChainId, rawTransaction) : rawTransaction;
     return wallet.writeContract({
       address: hub,
       abi: hubArt.abi,

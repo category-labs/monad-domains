@@ -11,8 +11,8 @@ interface IDomainHub {
     event DomainRegistered(uint64 indexed domainChainId, address indexed feeRecipient, uint64 checkpointInterval);
 
     /// @notice The viewing public key senders encrypt domain transactions and messages to, as a
-    /// 32-byte X25519 public key.
-    event ViewingKeyRegistered(uint64 indexed domainChainId, bytes viewingKey);
+    /// 32-byte X25519 public key, or zero for none.
+    event ViewingKeyRegistered(uint64 indexed domainChainId, bytes32 viewingKey);
 
     /// @notice One L1-sequenced domain transaction. The domain sender is recovered from the
     /// signed transaction inside `rlpTx`. `fee` is the wei paid: the transaction executes only if
@@ -96,17 +96,16 @@ interface IDomainHub {
 
     /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
     /// validator signatures required to advance the state, the recipient of sequencing fees,
-    /// the viewing public key senders encrypt to (32-byte X25519 public key, or empty)
+    /// the viewing public key senders encrypt to (32-byte X25519 public key, or zero for none)
     /// and the checkpoint interval attested block numbers must be multiples of. MUST reject
     /// the L1 chain id, an already registered chain id, a zero quorum, a quorum exceeding the
-    /// validator count, zero or duplicate validators, a zero fee recipient, a zero interval
-    /// and a viewing key that is neither empty nor 32 bytes.
+    /// validator count, zero or duplicate validators, a zero fee recipient or a zero interval.
     function registerDomain(
         uint64 domainChainId,
         address[] calldata validators,
         uint256 quorum,
         address feeRecipient,
-        bytes calldata viewingKey,
+        bytes32 viewingKey,
         uint64 checkpointInterval
     ) external;
 
@@ -115,8 +114,8 @@ interface IDomainHub {
     function quorums(uint64 domainChainId) external view returns (uint256);
     function feeRecipients(uint64 domainChainId) external view returns (address);
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64);
-    /// @notice The registered viewing public key, or empty bytes.
-    function viewingKeys(uint64 domainChainId) external view returns (bytes memory);
+    /// @notice The registered viewing public key, or zero for none.
+    function viewingKeys(uint64 domainChainId) external view returns (bytes32);
 
     // --- State attestation ---
 

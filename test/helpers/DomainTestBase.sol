@@ -60,7 +60,7 @@ abstract contract DomainTestBase is Test {
     /// @dev Registers `chainId` with the validators behind `keys`, the test contract as fee
     /// recipient, no viewing key and the shared checkpoint interval.
     function _registerDomain(DomainHub hub, uint64 chainId, uint256[] memory keys, uint256 quorum) internal {
-        hub.registerDomain(chainId, _addresses(keys), quorum, address(this), "", CHECKPOINT_INTERVAL);
+        hub.registerDomain(chainId, _addresses(keys), quorum, address(this), bytes32(0), CHECKPOINT_INTERVAL);
     }
 
     /// @dev Single validator, quorum 1.
