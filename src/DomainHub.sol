@@ -201,7 +201,7 @@ contract DomainHub is IDomainHub, EIP712 {
         DomainConfig storage config = _configs[domainChainId];
         if (!config.registered) revert DomainNotRegistered();
         if (domainBlockNumber <= domainBlockNumbers[domainChainId]) revert StaleBlockNumber();
-        if (uint256(domainBlockNumber) >= block.number) revert BlockNumberNotInPast();
+        if (domainBlockNumber >= block.number) revert BlockNumberNotInPast();
         if (domainBlockNumber % config.checkpointInterval != 0) revert BlockNumberOffSchedule();
 
         bytes32 digest = stateTransitionDigest(domainChainId, domainBlockNumber, newStateRoot, domainAnchor);
