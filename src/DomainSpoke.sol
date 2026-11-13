@@ -133,7 +133,8 @@ contract DomainSpoke is IDomainSpoke {
         if (sourceChainId == DOMAIN_CHAIN_ID) revert InvalidSource();
         if (nonce < nextL1Nonce) revert OutOfOrderNonce();
         nextL1Nonce = nonce + 1;
-        MessageLib.Message memory message = MessageLib.Message(sourceChainId, from, to, data, nonce);
+        MessageLib.Message memory message =
+            MessageLib.Message({sourceChainId: sourceChainId, from: from, to: to, data: data, nonce: nonce});
         bytes32 messageHash = MessageLib.hashMessage(message);
         bool success = to.code.length != 0 && _callReceiver(message, DELIVERY_GAS_RESERVE);
         if (!success) failedL1Messages[messageHash] = true;

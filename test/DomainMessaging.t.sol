@@ -165,7 +165,11 @@ contract DomainMessagingTest is DomainTestBase {
             hex"01",
             0,
             DELIVERY_FEE,
-            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
+            MessageLib.hashMessage(
+                MessageLib.Message({
+                    sourceChainId: uint64(block.chainid), from: alice, to: bob, data: hex"01", nonce: 0
+                })
+            )
         );
         vm.prank(alice);
         hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"01");
@@ -179,7 +183,11 @@ contract DomainMessagingTest is DomainTestBase {
             hex"01",
             0,
             DELIVERY_FEE,
-            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
+            MessageLib.hashMessage(
+                MessageLib.Message({
+                    sourceChainId: uint64(block.chainid), from: alice, to: bob, data: hex"01", nonce: 0
+                })
+            )
         );
         vm.prank(alice);
         hub.sendL1Message{value: DELIVERY_FEE}(4444, bob, hex"01");
@@ -193,7 +201,11 @@ contract DomainMessagingTest is DomainTestBase {
             hex"01",
             1,
             DELIVERY_FEE,
-            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 1))
+            MessageLib.hashMessage(
+                MessageLib.Message({
+                    sourceChainId: uint64(block.chainid), from: alice, to: bob, data: hex"01", nonce: 1
+                })
+            )
         );
         vm.prank(alice);
         hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"01");
@@ -214,7 +226,11 @@ contract DomainMessagingTest is DomainTestBase {
             hex"01",
             0,
             0.05 ether,
-            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0))
+            MessageLib.hashMessage(
+                MessageLib.Message({
+                    sourceChainId: uint64(block.chainid), from: alice, to: bob, data: hex"01", nonce: 0
+                })
+            )
         );
         vm.prank(alice);
         hub.sendL1Message{value: 0.05 ether}(4444, bob, hex"01");
@@ -299,7 +315,11 @@ contract DomainMessagingTest is DomainTestBase {
             hex"03",
             2,
             DELIVERY_FEE,
-            MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, bob, hex"03", 2))
+            MessageLib.hashMessage(
+                MessageLib.Message({
+                    sourceChainId: uint64(block.chainid), from: alice, to: bob, data: hex"03", nonce: 2
+                })
+            )
         );
         vm.prank(alice);
         hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"03"); // nonce 2
@@ -361,8 +381,9 @@ contract DomainMessagingTest is DomainTestBase {
     function test_relayL1Message_marksFailedAndAdvancesQueue() public {
         RecordingReceiver receiver = new RecordingReceiver();
         receiver.setRejecting(true);
-        MessageLib.Message memory message =
-            MessageLib.Message(uint64(block.chainid), alice, address(receiver), hex"01", 0);
+        MessageLib.Message memory message = MessageLib.Message({
+            sourceChainId: uint64(block.chainid), from: alice, to: address(receiver), data: hex"01", nonce: 0
+        });
         bytes32 messageHash = MessageLib.hashMessage(message);
 
         vm.expectEmit(address(spoke));
@@ -436,8 +457,11 @@ contract DomainMessagingTest is DomainTestBase {
         address[2] memory targets = [address(new GasExhaustingReceiver()), address(new ReturnBombReceiver())];
 
         for (uint256 i = 0; i < targets.length; i++) {
-            bytes32 messageHash =
-                MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, targets[i], data, i));
+            bytes32 messageHash = MessageLib.hashMessage(
+                MessageLib.Message({
+                    sourceChainId: uint64(block.chainid), from: alice, to: targets[i], data: data, nonce: i
+                })
+            );
             vm.expectEmit(address(spoke));
             emit IDomainSpoke.L1MessageRelayed(messageHash, uint64(block.chainid), alice, targets[i], i, false);
             vm.prank(spoke.SYSTEM_RELAYER());
@@ -458,7 +482,9 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_retryL1Message_rejectsUnknownMessage() public {
         vm.expectRevert(DomainSpoke.NotFailedMessage.selector);
-        spoke.retryL1Message(MessageLib.Message(uint64(block.chainid), alice, bob, hex"01", 0));
+        spoke.retryL1Message(
+            MessageLib.Message({sourceChainId: uint64(block.chainid), from: alice, to: bob, data: hex"01", nonce: 0})
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -466,8 +492,15 @@ contract DomainMessagingTest is DomainTestBase {
     // ---------------------------------------------------------------------
 
     function test_sendDomainMessage_recordsIdByNonceAndEmitsPreimage() public {
-        MessageLib.DomainMessage memory message =
-            MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, 0, TEST_SALT, hex"cafe");
+        MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            sourceChainId: CHAIN_ID,
+            destinationChainId: uint64(block.chainid),
+            from: alice,
+            to: bob,
+            sourceNonce: 0,
+            salt: TEST_SALT,
+            data: hex"cafe"
+        });
         bytes32 expectedHash = MessageLib.hashDomainMessage(message, block.chainid, address(hub));
 
         vm.expectEmit(address(spoke));
@@ -490,9 +523,15 @@ contract DomainMessagingTest is DomainTestBase {
         // Each id is the hash of its envelope, keyed by nonce; an unrecorded nonce reads zero.
         bytes32[] memory ids = _batchLeaves(spoke, 0, 5);
         for (uint256 i = 0; i < 5; i++) {
-            MessageLib.DomainMessage memory message = MessageLib.DomainMessage(
-                CHAIN_ID, uint64(block.chainid), alice, bob, i, TEST_SALT, abi.encodePacked(i)
-            );
+            MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+                sourceChainId: CHAIN_ID,
+                destinationChainId: uint64(block.chainid),
+                from: alice,
+                to: bob,
+                sourceNonce: i,
+                salt: TEST_SALT,
+                data: abi.encodePacked(i)
+            });
             assertEq(ids[i], MessageLib.hashDomainMessage(message, block.chainid, address(hub)));
         }
         assertEq(spoke.domainMessageIds(5), bytes32(0));
