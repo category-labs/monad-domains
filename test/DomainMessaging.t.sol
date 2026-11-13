@@ -202,7 +202,7 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(hub.l1MessageCounts(4444), 1);
     }
 
-    function test_sendL1Message_forwardsFeeAndRecordsIt() public {
+    function test_sendL1Message_holdsFeeAndRecordsIt() public {
         _register(4444, feeRecipient, "", 1);
 
         vm.expectEmit(address(hub));
@@ -219,11 +219,12 @@ contract DomainMessagingTest is DomainTestBase {
         vm.prank(alice);
         hub.sendL1Message{value: 0.05 ether}(4444, bob, hex"01");
 
-        assertEq(feeRecipient.balance, 0.05 ether);
-        assertEq(address(hub).balance, 0);
+        assertEq(hub.accruedFees(4444), 0.05 ether);
+        assertEq(address(hub).balance, 0.05 ether);
+        assertEq(feeRecipient.balance, 0);
     }
 
-    function test_sendEncryptedL1Message_forwardsFeeAndRecordsIt() public {
+    function test_sendEncryptedL1Message_holdsFeeAndRecordsIt() public {
         _register(4444, feeRecipient, "", 1);
 
         vm.expectEmit(address(hub));
@@ -231,15 +232,16 @@ contract DomainMessagingTest is DomainTestBase {
         vm.prank(alice);
         hub.sendEncryptedL1Message{value: 0.02 ether}(4444, hex"c0ffee");
 
-        assertEq(feeRecipient.balance, 0.02 ether);
+        assertEq(hub.accruedFees(4444), 0.02 ether);
     }
 
-    function test_sendL1Message_revertsIfFeeRecipientRejectsFee() public {
+    function test_sendL1Message_doesNotDependOnFeeRecipient() public {
         _register(4444, address(new RejectingFeeRecipient()), "", 1);
 
         vm.prank(alice);
-        vm.expectRevert(DomainHub.FeeTransferFailed.selector);
         hub.sendL1Message{value: DELIVERY_FEE}(4444, bob, hex"01");
+        assertEq(hub.l1MessageCounts(4444), 1);
+        assertEq(hub.accruedFees(4444), DELIVERY_FEE);
     }
 
     function test_sendL1Message_rejectsFeeBelowMinimum() public {
@@ -501,7 +503,7 @@ contract DomainMessagingTest is DomainTestBase {
     // L1-sequenced domain transactions
     // ---------------------------------------------------------------------
 
-    function test_sequenceToDomain_forwardsFeeAndEmits() public {
+    function test_sequenceToDomain_holdsFeeAndEmits() public {
         _register(4444, feeRecipient, "", 1);
 
         vm.expectEmit(address(hub));
@@ -509,8 +511,9 @@ contract DomainMessagingTest is DomainTestBase {
         vm.prank(alice);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
 
-        assertEq(feeRecipient.balance, 0.1 ether);
-        assertEq(address(hub).balance, 0);
+        assertEq(hub.accruedFees(4444), 0.1 ether);
+        assertEq(address(hub).balance, 0.1 ether);
+        assertEq(feeRecipient.balance, 0);
     }
 
     function test_domainBlockGasLimit_boundsEveryDomainPerL1Block() public {
@@ -548,18 +551,106 @@ contract DomainMessagingTest is DomainTestBase {
         hub.sequenceToDomain(9999, hex"01");
     }
 
-    function test_sequenceToDomain_revertsIfFeeRecipientRejectsFee() public {
+    function test_sequenceToDomain_doesNotDependOnFeeRecipient() public {
         address rejecting = address(new RejectingFeeRecipient());
         _register(4444, rejecting, "", 1);
 
+        vm.expectEmit(address(hub));
+        emit IDomainHub.DomainTransactionSequenced(4444, hex"01", 0.1 ether);
         vm.prank(alice);
-        vm.expectRevert(DomainHub.FeeTransferFailed.selector);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"01");
+        assertEq(hub.accruedFees(4444), 0.1 ether);
+    }
+
+    // ---------------------------------------------------------------------
+    // Fee withdrawal
+    // ---------------------------------------------------------------------
+
+    function test_withdrawFees_paysRecipientAndClearsBalance() public {
+        _register(4444, feeRecipient, "", 1);
+        vm.startPrank(alice);
+        hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
+        hub.sendL1Message{value: 0.05 ether}(4444, bob, hex"01");
+        hub.sendEncryptedL1Message{value: 0.02 ether}(4444, hex"c0ffee");
+        vm.stopPrank();
+        assertEq(hub.accruedFees(4444), 0.17 ether);
+
+        vm.expectEmit(address(hub));
+        emit IDomainHub.FeesWithdrawn(4444, feeRecipient, 0.17 ether);
+        vm.prank(stranger); // anyone may trigger the payment; it only ever goes to the recipient
+        hub.withdrawFees(4444);
+
+        assertEq(feeRecipient.balance, 0.17 ether);
+        assertEq(stranger.balance, 0);
+        assertEq(hub.accruedFees(4444), 0);
+        assertEq(address(hub).balance, 0);
+    }
+
+    function test_withdrawFees_keepsDomainsSeparate() public {
+        _register(4444, feeRecipient, "", 1);
+        vm.startPrank(alice);
+        hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
+        hub.sequenceToDomain{value: 0.3 ether}(CHAIN_ID, hex"c0ffee");
+        vm.stopPrank();
+
+        hub.withdrawFees(4444);
+        assertEq(feeRecipient.balance, 0.1 ether);
+        assertEq(hub.accruedFees(CHAIN_ID), 0.3 ether);
+        assertEq(address(hub).balance, 0.3 ether);
+    }
+
+    function test_withdrawFees_rejectsUnregisteredDomain() public {
+        vm.expectRevert(DomainHub.DomainNotRegistered.selector);
+        hub.withdrawFees(9999);
+    }
+
+    function test_withdrawFees_revertsAndKeepsFeesIfRecipientRejects() public {
+        _register(4444, address(new RejectingFeeRecipient()), "", 1);
+        vm.prank(alice);
+        hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
+
+        vm.expectRevert(DomainHub.FeeTransferFailed.selector);
+        hub.withdrawFees(4444);
+        assertEq(hub.accruedFees(4444), 0.1 ether);
+        assertEq(address(hub).balance, 0.1 ether);
+    }
+
+    function test_withdrawFees_reentrantRecipientIsPaidOnce() public {
+        ReentrantFeeRecipient reentrant = new ReentrantFeeRecipient(hub, 4444);
+        _register(4444, address(reentrant), "", 1);
+        vm.startPrank(alice);
+        hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
+        hub.sequenceToDomain{value: 0.3 ether}(CHAIN_ID, hex"c0ffee");
+        vm.stopPrank();
+
+        hub.withdrawFees(4444);
+        assertEq(address(reentrant).balance, 0.1 ether);
+        // The other domain's fees are still in the hub.
+        assertEq(hub.accruedFees(CHAIN_ID), 0.3 ether);
+        assertEq(address(hub).balance, 0.3 ether);
     }
 }
 
-/// @dev Fee recipient without a payable fallback: any fee forwarded to it reverts.
+/// @dev Fee recipient without a payable fallback: any payment to it reverts.
 contract RejectingFeeRecipient {}
+
+/// @dev Fee recipient that asks for its domain's fees again while it is being paid.
+contract ReentrantFeeRecipient {
+    DomainHub internal immutable HUB;
+    uint64 internal immutable DOMAIN;
+    bool internal entered;
+
+    constructor(DomainHub hub, uint64 domainChainId) {
+        HUB = hub;
+        DOMAIN = domainChainId;
+    }
+
+    receive() external payable {
+        if (entered) return;
+        entered = true;
+        HUB.withdrawFees(DOMAIN);
+    }
+}
 
 /// @dev Records the gas it was called with.
 contract GasMeteringReceiver is IDomainMessageReceiver {
