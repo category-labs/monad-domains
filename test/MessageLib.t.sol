@@ -25,12 +25,13 @@ contract MessageLibTest is Test {
             destinationChainId: 31337,
             from: address(0x1000),
             to: address(0x2000),
+            salt: bytes32(uint256(1)),
             sourceNonce: 3,
             data: MessageLib.encodeTransfer(address(0x3000), address(0x4000), 1e18)
         });
         assertEq(
             MessageLib.hashDomainMessage(message, 31337, 0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3),
-            0xe867f835d5347f0a6f0cea6d36500780cd7799407d148df34cc30dde3150a08b
+            0x90210795f990e157687f266f97a85242a7b3212af4662c69150c9719ff3c1071
         );
     }
 }

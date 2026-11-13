@@ -98,7 +98,7 @@ contract DepositEndToEndTest is DomainTestBase {
 
         // 2. Withdrawal: bob burns 40, sending them to carol on the L1.
         vm.prank(bob);
-        domainBridge.bridgeToL1(carol, address(token), 40 ether);
+        domainBridge.bridgeToL1(carol, address(token), 40 ether, TEST_SALT);
 
         // 3. The validator attests the batch at the next checkpoint: anchor recorded on the L1.
         bytes32[] memory leaves = _pendingLeaves(spoke);
@@ -111,8 +111,13 @@ contract DepositEndToEndTest is DomainTestBase {
             from: address(domainBridge),
             to: address(l1Bridge),
             data: MessageLib.encodeTransfer(carol, address(token), 40 ether),
+            salt: TEST_SALT,
             sourceNonce: 0
         });
+        message.salt = bytes32(0);
+        vm.expectRevert(DomainHub.InvalidProof.selector);
+        hub.relayDomainMessage(message, anchor, MerkleTreeLib.getProof(leaves, 0));
+        message.salt = TEST_SALT;
         assertTrue(hub.relayDomainMessage(message, anchor, MerkleTreeLib.getProof(leaves, 0)));
 
         // Collateral and supply stay matched: 60 locked backing 60 bridged.
@@ -127,9 +132,9 @@ contract DepositEndToEndTest is DomainTestBase {
 
         // Three withdrawals land in the same state root update (odd leaf count).
         vm.startPrank(bob);
-        domainBridge.bridgeToL1(bob, address(token), 10 ether);
-        domainBridge.bridgeToL1(carol, address(token), 20 ether);
-        domainBridge.bridgeToL1(bob, address(token), 30 ether);
+        domainBridge.bridgeToL1(bob, address(token), 10 ether, TEST_SALT);
+        domainBridge.bridgeToL1(carol, address(token), 20 ether, TEST_SALT);
+        domainBridge.bridgeToL1(bob, address(token), 30 ether, TEST_SALT);
         vm.stopPrank();
 
         bytes32[] memory leaves = _pendingLeaves(spoke);
@@ -144,6 +149,7 @@ contract DepositEndToEndTest is DomainTestBase {
                 from: address(domainBridge),
                 to: address(l1Bridge),
                 data: MessageLib.encodeTransfer(recipients[i], address(token), amounts[i]),
+                salt: TEST_SALT,
                 sourceNonce: i
             });
             assertTrue(hub.relayDomainMessage(message, anchor, MerkleTreeLib.getProof(leaves, i)));

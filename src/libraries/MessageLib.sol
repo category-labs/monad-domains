@@ -13,6 +13,7 @@ library MessageLib {
         address from;
         address to;
         uint256 sourceNonce;
+        bytes32 salt;
         bytes data;
     }
 
@@ -31,6 +32,7 @@ library MessageLib {
                 message.from,
                 message.to,
                 message.sourceNonce,
+                message.salt,
                 keccak256(message.data)
             )
         );

@@ -21,6 +21,7 @@ contract DomainSpoke is IDomainSpoke {
     error RetryFailed();
     error SameDomain();
     error ZeroTarget();
+    error ZeroSalt();
 
     /// @notice Reserved sender of protocol-injected system transactions.
     address public constant SYSTEM_RELAYER = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
@@ -164,12 +165,13 @@ contract DomainSpoke is IDomainSpoke {
     // Domain-origin messaging (L1 execution or forwarding to another domain)
     // ---------------------------------------------------------------------
 
-    function sendDomainMessage(uint64 destinationChainId, address to, bytes calldata data)
+    function sendDomainMessage(uint64 destinationChainId, address to, bytes calldata data, bytes32 salt)
         external
         returns (bytes32 messageId)
     {
         if (destinationChainId == DOMAIN_CHAIN_ID) revert SameDomain();
         if (to == address(0)) revert ZeroTarget();
+        if (salt == bytes32(0)) revert ZeroSalt();
         uint256 sourceNonce = domainMessageCount++;
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
             sourceChainId: DOMAIN_CHAIN_ID,
@@ -177,6 +179,7 @@ contract DomainSpoke is IDomainSpoke {
             from: msg.sender,
             to: to,
             sourceNonce: sourceNonce,
+            salt: salt,
             data: data
         });
         messageId = MessageLib.hashDomainMessage(message, L1_CHAIN_ID, HUB);

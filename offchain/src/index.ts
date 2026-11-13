@@ -26,6 +26,7 @@ export {
 } from "./viewing-key.js";
 export {
   DOMAIN_MESSAGE_PARAMS,
+  generateMessageSalt,
   decodeDomainMessage,
   decodeTransfer,
   domainDeliveryEnvelope,

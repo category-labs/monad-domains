@@ -168,7 +168,7 @@ contract DomainCheckpointTest is DomainTestBase {
         // Batch 1: three messages, anchored at height 10.
         for (uint256 i = 0; i < 3; i++) {
             vm.prank(alice);
-            spoke.sendDomainMessage(uint64(block.chainid), bob, abi.encodePacked(i));
+            spoke.sendDomainMessage(uint64(block.chainid), bob, abi.encodePacked(i), TEST_SALT);
         }
         bytes32[] memory firstLeaves = _pendingLeaves(spoke);
         bytes32 firstAnchor = _attestBatch(hub, spoke, _keys(K1, K2));
@@ -182,9 +182,9 @@ contract DomainCheckpointTest is DomainTestBase {
 
         // Batch 2 only covers what was recorded since; earlier ids are never re-anchored.
         vm.prank(alice);
-        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"aa");
+        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"aa", TEST_SALT);
         vm.prank(alice);
-        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"bb");
+        spoke.sendDomainMessage(uint64(block.chainid), bob, hex"bb", TEST_SALT);
         bytes32[] memory secondLeaves = _pendingLeaves(spoke);
         assertEq(secondLeaves.length, 2);
         assertEq(secondLeaves[0], spoke.domainMessageIds(3));

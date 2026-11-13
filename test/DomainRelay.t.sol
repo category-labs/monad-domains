@@ -67,7 +67,9 @@ contract DomainRelayTest is DomainTestBase {
     }
 
     function _message(uint256 nonce) internal view returns (MessageLib.DomainMessage memory) {
-        return MessageLib.DomainMessage(CHAIN_A, uint64(block.chainid), sender, address(receiver), nonce, hex"123456");
+        return MessageLib.DomainMessage(
+            CHAIN_A, uint64(block.chainid), sender, address(receiver), nonce, TEST_SALT, hex"123456"
+        );
     }
 
     /// @dev Attests `anchor` for `chainId` at its next scheduled height.
@@ -182,6 +184,10 @@ contract DomainRelayTest is DomainTestBase {
         _anchor(CHAIN_A, _hash(message));
         receiver.setFailure(true);
         assertFalse(_relay(message));
+        message.salt = bytes32(0);
+        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        hub.retryDomainMessage(message);
+        message.salt = TEST_SALT;
         message.sourceChainId = CHAIN_B;
         vm.expectRevert(DomainHub.NotFailedMessage.selector);
         hub.retryDomainMessage(message);

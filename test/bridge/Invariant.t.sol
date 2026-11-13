@@ -129,7 +129,7 @@ contract BridgeHandler is DomainTestBase {
         address recipient = _pickActor(recipientSeed);
 
         vm.prank(actor);
-        DOMAIN_BRIDGE.bridgeToL1(recipient, address(TOKEN), amount);
+        DOMAIN_BRIDGE.bridgeToL1(recipient, address(TOKEN), amount, TEST_SALT);
 
         // Reconstruct the just-recorded message (the handler mirrors the spoke's nonce
         // counter) and attest its single-message batch as the validator at the next
@@ -140,6 +140,7 @@ contract BridgeHandler is DomainTestBase {
             from: address(DOMAIN_BRIDGE),
             to: address(L1_BRIDGE),
             data: MessageLib.encodeTransfer(recipient, address(TOKEN), amount),
+            salt: TEST_SALT,
             sourceNonce: _domainNonce++
         });
         bytes32 anchor = _attestBatch(HUB, SPOKE, VALIDATOR_KEY);

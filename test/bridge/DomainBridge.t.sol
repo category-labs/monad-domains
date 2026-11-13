@@ -103,7 +103,7 @@ contract DomainBridgeTest is DomainTestBase {
         vm.expectEmit(address(bridge));
         emit DomainBridge.WithdrawalInitiated(bob, bob, L1_TOKEN, 40 ether);
         vm.prank(bob);
-        bridge.bridgeToL1(bob, L1_TOKEN, 40 ether);
+        bridge.bridgeToL1(bob, L1_TOKEN, 40 ether, TEST_SALT);
 
         assertEq(token.balanceOf(bob), 60 ether);
         assertEq(token.totalSupply(), 60 ether);
@@ -116,6 +116,7 @@ contract DomainBridgeTest is DomainTestBase {
                 from: address(bridge),
                 to: L1_BRIDGE,
                 data: MessageLib.encodeTransfer(bob, L1_TOKEN, 40 ether),
+                salt: TEST_SALT,
                 sourceNonce: 0
             }),
             block.chainid,
@@ -128,27 +129,37 @@ contract DomainBridgeTest is DomainTestBase {
     function test_bridgeToL1_rejectsUnknownToken() public {
         vm.prank(bob);
         vm.expectRevert(DomainBridge.UnknownToken.selector);
-        bridge.bridgeToL1(bob, makeAddr("neverBridged"), 1 ether);
+        bridge.bridgeToL1(bob, makeAddr("neverBridged"), 1 ether, TEST_SALT);
+    }
+
+    function test_bridgeToL1_zeroSaltDoesNotBurn() public {
+        BridgedERC20 token = _depositedToken();
+        vm.prank(bob);
+        vm.expectRevert(DomainSpoke.ZeroSalt.selector);
+        bridge.bridgeToL1(bob, L1_TOKEN, 40 ether, bytes32(0));
+        assertEq(token.balanceOf(bob), 100 ether);
+        assertEq(token.totalSupply(), 100 ether);
+        assertEq(spoke.domainMessageCount(), 0);
     }
 
     function test_bridgeToL1_rejectsZeroRecipient() public {
         _depositedToken();
         vm.prank(bob);
         vm.expectRevert(DomainBridge.ZeroRecipient.selector);
-        bridge.bridgeToL1(address(0), L1_TOKEN, 1 ether);
+        bridge.bridgeToL1(address(0), L1_TOKEN, 1 ether, TEST_SALT);
     }
 
     function test_bridgeToL1_rejectsZeroAmount() public {
         _depositedToken();
         vm.prank(bob);
         vm.expectRevert(DomainBridge.ZeroAmount.selector);
-        bridge.bridgeToL1(bob, L1_TOKEN, 0);
+        bridge.bridgeToL1(bob, L1_TOKEN, 0, TEST_SALT);
     }
 
     function test_bridgeToL1_rejectsInsufficientBalance() public {
         _depositedToken();
         vm.prank(bob);
         vm.expectRevert(); // ERC20InsufficientBalance
-        bridge.bridgeToL1(bob, L1_TOKEN, 101 ether);
+        bridge.bridgeToL1(bob, L1_TOKEN, 101 ether, TEST_SALT);
     }
 }

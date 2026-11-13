@@ -7,7 +7,7 @@ import { domainMessageDeliveryStatus } from "../src/prover.js";
 const hub = "0x0000000000000000000000000000000000001234" as Address;
 const context = { l1ChainId: 1n, hub };
 const message: DomainMessage = { sourceChainId: 7777n, destinationChainId: 1n,
-  from: hub, to: hub, sourceNonce: 0n, data: "0x" };
+  from: hub, to: hub, sourceNonce: 0n, salt: `0x${"01".repeat(32)}`, data: "0x" };
 const messageHash = hashDomainMessage(message, context);
 
 for (const [relayed, failed, expected] of [

@@ -1,4 +1,6 @@
+import { randomBytes } from "node:crypto";
 import {
+  bytesToHex,
   decodeAbiParameters,
   encodeAbiParameters,
   encodePacked,
@@ -9,7 +11,7 @@ import {
 } from "viem";
 
 export const DOMAIN_MESSAGE_PARAMS = parseAbiParameters(
-  "(uint64 sourceChainId, uint64 destinationChainId, address from, address to, uint256 sourceNonce, bytes data) message",
+  "(uint64 sourceChainId, uint64 destinationChainId, address from, address to, uint256 sourceNonce, bytes32 salt, bytes data) message",
 );
 
 export interface MessageContext {
@@ -23,15 +25,20 @@ export interface DomainMessage {
   from: Address;
   to: Address;
   sourceNonce: bigint;
+  salt: Hex;
   data: Hex;
+}
+
+export function generateMessageSalt(): Hex {
+  return bytesToHex(randomBytes(32));
 }
 
 export function hashDomainMessage(message: DomainMessage, context: MessageContext): Hex {
   return keccak256(encodeAbiParameters(
-    parseAbiParameters("uint256, address, uint64, uint64, address, address, uint256, bytes32"),
+    parseAbiParameters("uint256, address, uint64, uint64, address, address, uint256, bytes32, bytes32"),
     [context.l1ChainId, context.hub,
       message.sourceChainId, message.destinationChainId, message.from, message.to,
-      message.sourceNonce, keccak256(message.data)],
+      message.sourceNonce, message.salt, keccak256(message.data)],
   ));
 }
 

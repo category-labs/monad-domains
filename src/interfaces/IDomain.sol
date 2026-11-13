@@ -275,7 +275,8 @@ interface IDomainSpoke is IDomainAccessControl {
     /// @notice Sends a message to L1 or another domain through the same authenticated
     /// envelope. Source identity and nonce are assigned by this spoke. An L1 destination
     /// executes a callback there; a domain destination is forwarded without an L1 callback.
-    function sendDomainMessage(uint64 destinationChainId, address to, bytes calldata data)
+    /// @param salt Fresh cryptographically random bytes, kept private until relay.
+    function sendDomainMessage(uint64 destinationChainId, address to, bytes calldata data, bytes32 salt)
         external
         returns (bytes32 messageId);
 

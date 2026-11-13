@@ -143,9 +143,10 @@ test("hashDomainMessage matches MessageLib.hashDomainMessage", () => {
       from: toHex(0x1000, { size: 20 }) as Address,
       to: toHex(0x2000, { size: 20 }) as Address,
       sourceNonce: 3n,
+      salt: toHex(1, { size: 32 }),
       data: encodeTransfer(toHex(0x3000, { size: 20 }) as Address, toHex(0x4000, { size: 20 }) as Address, 10n ** 18n),
     },
     VECTOR_CONTEXT,
   );
-  assert.equal(id, "0xe867f835d5347f0a6f0cea6d36500780cd7799407d148df34cc30dde3150a08b");
+  assert.equal(id, "0x90210795f990e157687f266f97a85242a7b3212af4662c69150c9719ff3c1071");
 });

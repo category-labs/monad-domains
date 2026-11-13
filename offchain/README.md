@@ -33,9 +33,10 @@ implements the fixed RFC 9180 Base-mode profile the client expects:
 
 The execution client and senders must use the exact same associated data.
 
-`npm run setup` and `npm run sequence` encrypt whenever `VIEWING_KEY` is set. A node started
-with a receiver key for the domain (`--private-domain <id> <spoke> <key.pem>`) decrypts every
-payload and drops plaintext, so set `VIEWING_KEY` whenever the node has one.
+`npm run setup` publishes `VIEWING_KEY` and uses it to encrypt the deployment transactions.
+`npm run sequence` uses `VIEWING_KEY` or reads the key from the hub. It rejects a missing key
+instead of sending plaintext. A node started with a receiver key for the domain
+(`--private-domain <id> <spoke> <key.pem>`) decrypts every payload and drops plaintext.
 
 The two sides use different key encodings — the client loads an unencrypted PKCS#8 PEM, senders
 use the raw 32-byte public key — and `npm run viewing-key` bridges them:
@@ -61,7 +62,7 @@ own key; the hub advances once a quorum signed the same proposal.
 
 ## Domain messages
 
-All domain-origin operations use `spoke.sendDomainMessage(destinationChainId, to, data)`.
+All domain-origin operations use `spoke.sendDomainMessage(destinationChainId, to, data, salt)`.
 The destination chain ID selects L1 application execution or native forwarding to
 another domain. The spoke stores every message id by nonce; a checkpoint anchors the nonce
 range recorded since the previous checkpoint, so a batch is identified by the two attested

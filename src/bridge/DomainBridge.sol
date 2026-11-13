@@ -57,7 +57,8 @@ contract DomainBridge is IDomainMessageReceiver {
     /// @notice Burns `amount` of the bridged token for `l1Token` and sends a withdrawal
     /// message to the counterpart L1Bridge, which releases the locked L1 tokens to
     /// `recipient` once the message is proven there.
-    function bridgeToL1(address recipient, address l1Token, uint256 amount) external {
+    /// @param salt Fresh cryptographically random bytes, kept private until relay.
+    function bridgeToL1(address recipient, address l1Token, uint256 amount, bytes32 salt) external {
         if (recipient == address(0)) revert ZeroRecipient();
         if (amount == 0) revert ZeroAmount();
         BridgedERC20 token = bridgedTokens[l1Token];
@@ -66,7 +67,9 @@ contract DomainBridge is IDomainMessageReceiver {
         // Burn before messaging: the withdrawal message must never overstate what was
         // actually destroyed on the domain.
         token.burn(msg.sender, amount);
-        SPOKE.sendDomainMessage(SPOKE.L1_CHAIN_ID(), L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount));
+        SPOKE.sendDomainMessage(
+            SPOKE.L1_CHAIN_ID(), L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount), salt
+        );
         emit WithdrawalInitiated(msg.sender, recipient, l1Token, amount);
     }
 

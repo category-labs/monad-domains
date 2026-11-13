@@ -69,6 +69,7 @@ contract GenVectors is Script {
             destinationChainId: VECTOR_CHAIN_ID,
             from: address(0x1000),
             to: address(0x2000),
+            salt: bytes32(uint256(1)),
             sourceNonce: 3,
             data: MessageLib.encodeTransfer(address(0x3000), address(0x4000), 1e18)
         });

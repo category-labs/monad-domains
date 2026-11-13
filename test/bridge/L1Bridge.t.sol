@@ -211,6 +211,7 @@ contract L1BridgeTest is DomainTestBase {
             from: DOMAIN_BRIDGE,
             to: address(bridge),
             data: MessageLib.encodeTransfer(recipient, address(token), amount),
+            salt: TEST_SALT,
             sourceNonce: nonce
         });
         _anchor(CHAIN_ID, _hash(message));
@@ -264,6 +265,7 @@ contract L1BridgeTest is DomainTestBase {
             from: makeAddr("attacker"),
             to: address(bridge),
             data: MessageLib.encodeTransfer(bob, address(token), 40 ether),
+            salt: TEST_SALT,
             sourceNonce: 0
         });
         bytes32 messageHash = _hash(message);
@@ -282,6 +284,7 @@ contract L1BridgeTest is DomainTestBase {
             from: address(0),
             to: address(fresh),
             data: MessageLib.encodeTransfer(bob, address(token), 40 ether),
+            salt: TEST_SALT,
             sourceNonce: 0
         });
         vm.prank(address(hub));

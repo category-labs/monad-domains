@@ -13,6 +13,7 @@ import {MerkleTreeLib} from "./MerkleTreeLib.sol";
 abstract contract DomainTestBase is Test {
     /// @dev Attested L1 heights must be multiples of this.
     uint64 internal constant CHECKPOINT_INTERVAL = 10;
+    bytes32 internal constant TEST_SALT = bytes32(uint256(1));
 
     /// @dev `domainMessageCount` as of the last attestation per domain: the start of the
     /// next batch. Mirrors what a validator reads from the state at the previous checkpoint.
