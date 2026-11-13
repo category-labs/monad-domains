@@ -39,7 +39,7 @@ Everything that enters a domain is pushed by the protocol from L1 events.
 
 **Domain to L1 messages.**
 
-1. A domain contract calls `sendDomainMessage(destinationChainId, to, data)` on the spoke. The spoke builds an envelope of source chain, destination chain, sender, target and the payload.
+1. A domain contract calls `sendDomainMessage(destinationChainId, to, data, salt)` on the spoke. The spoke builds an envelope of source chain, destination chain, sender, target, salt and the payload.
 2. A batch is defined by two consecutive checkpoints: the message IDs recorded between them, in nonce order, are the leaves of a merkle tree whose root is the anchor. The tree hashes sorted pairs with keccak256, so proofs verify with OpenZeppelin `MerkleProof`, and promotes an odd node unchanged to the next level; a single message is its own root.
 3. Validators sign the anchor together with the state root. Once a quorum signed, the hub records the anchor.
 4. Anyone calls `relayDomainMessage(message, anchor, proof)` on the hub to execute the message. A message to another domain is queued there as an L1 to domain message instead, and the caller attaches its delivery fee.

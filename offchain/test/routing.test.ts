@@ -15,9 +15,9 @@ const context = { l1ChainId: 1n, hub: addr(1) };
 const spoke = addr(2);
 const routed: DomainMessage = {
   sourceChainId: 7777n, destinationChainId: 8888n,
-  from: addr(3), to: addr(4), sourceNonce: 9n, data: "0x1234",
+  from: addr(3), to: addr(4), sourceNonce: 9n, salt: `0x${"01".repeat(32)}`, data: "0x1234",
 };
-const legacy: DomainMessage = { ...routed, destinationChainId: 1n, sourceNonce: 8n, data: "0xabcd" };
+const legacy: DomainMessage = { ...routed, destinationChainId: 1n, sourceNonce: 8n, salt: `0x${"02".repeat(32)}`, data: "0xabcd" };
 const routeId = hashDomainMessage(routed, context);
 const legacyId = hashDomainMessage(legacy, context);
 const logs = {
@@ -42,6 +42,7 @@ test("message IDs commit to every field and deployment context", () => {
     { ...routed, sourceChainId: 7778n },
     { ...routed, destinationChainId: 8889n }, { ...routed, from: addr(5) },
     { ...routed, to: addr(5) }, { ...routed, sourceNonce: 10n }, { ...routed, data: "0x1235" as Hex },
+    { ...routed, salt: zeroHash },
   ]) assert.notEqual(hashDomainMessage(message, context), routeId);
   assert.notEqual(hashDomainMessage(routed, { ...context, l1ChainId: 2n }), routeId);
   assert.notEqual(hashDomainMessage(routed, { ...context, hub: addr(5) }), routeId);

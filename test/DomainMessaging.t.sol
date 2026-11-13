@@ -467,13 +467,13 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sendDomainMessage_recordsIdByNonceAndEmitsPreimage() public {
         MessageLib.DomainMessage memory message =
-            MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, 0, hex"cafe");
+            MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, 0, TEST_SALT, hex"cafe");
         bytes32 expectedHash = MessageLib.hashDomainMessage(message, block.chainid, address(hub));
 
         vm.expectEmit(address(spoke));
         emit IDomainSpoke.DomainMessageRecorded(expectedHash, abi.encode(message));
         vm.prank(alice);
-        bytes32 messageId = spoke.sendDomainMessage(uint64(block.chainid), bob, hex"cafe");
+        bytes32 messageId = spoke.sendDomainMessage(uint64(block.chainid), bob, hex"cafe", TEST_SALT);
 
         assertEq(messageId, expectedHash);
         assertEq(spoke.domainMessageCount(), 1);
@@ -483,15 +483,16 @@ contract DomainMessagingTest is DomainTestBase {
     function test_domainMessageIds_storedByNonce() public {
         for (uint256 i = 0; i < 5; i++) {
             vm.prank(alice);
-            spoke.sendDomainMessage(uint64(block.chainid), bob, abi.encodePacked(i));
+            spoke.sendDomainMessage(uint64(block.chainid), bob, abi.encodePacked(i), TEST_SALT);
         }
         assertEq(spoke.domainMessageCount(), 5);
 
         // Each id is the hash of its envelope, keyed by nonce; an unrecorded nonce reads zero.
         bytes32[] memory ids = _batchLeaves(spoke, 0, 5);
         for (uint256 i = 0; i < 5; i++) {
-            MessageLib.DomainMessage memory message =
-                MessageLib.DomainMessage(CHAIN_ID, uint64(block.chainid), alice, bob, i, abi.encodePacked(i));
+            MessageLib.DomainMessage memory message = MessageLib.DomainMessage(
+                CHAIN_ID, uint64(block.chainid), alice, bob, i, TEST_SALT, abi.encodePacked(i)
+            );
             assertEq(ids[i], MessageLib.hashDomainMessage(message, block.chainid, address(hub)));
         }
         assertEq(spoke.domainMessageIds(5), bytes32(0));

@@ -233,7 +233,7 @@ contract DomainToDomainTest is DomainTestBase {
         returns (MessageLib.DomainMessage memory message, bytes32 anchor)
     {
         vm.prank(sender);
-        domainBridgeA.bridgeToL1(recipient, address(token), amount);
+        domainBridgeA.bridgeToL1(recipient, address(token), amount, TEST_SALT);
 
         uint256 nonce = _domainANonce++;
         anchor = _attestBatch(hub, spokeA, VALIDATOR_KEY);
@@ -243,6 +243,7 @@ contract DomainToDomainTest is DomainTestBase {
             from: address(domainBridgeA),
             to: address(l1BridgeA),
             data: MessageLib.encodeTransfer(recipient, address(token), amount),
+            salt: TEST_SALT,
             sourceNonce: nonce
         });
     }

@@ -14,7 +14,7 @@ import { sequenceTransaction, type SequenceConfig } from "./sequence.js";
  *   [GAS=1000000]           \  # domain gas limit (default 1_000_000); the L1 fee is GAS * DOMAIN_GAS_PRICE
  *   [TX_NONCE=0]            \  # domain nonce; required unless DOMAIN_RPC_URL is set
  *   [DOMAIN_RPC_URL=...] \  # if set, the domain nonce is fetched from it
- *   [VIEWING_KEY=0x...]     \  # domain viewing public key; encrypts the domain tx if set
+ *   [VIEWING_KEY=0x...]     \  # domain viewing public key; defaults to the hub's key
  *     npm run sequence
  */
 function required(name: string): string {

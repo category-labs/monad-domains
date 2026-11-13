@@ -61,7 +61,7 @@ export interface SequenceConfig {
   /**
    * Domain viewing public key (32-byte X25519 public key). The signed transaction is
    * HPKE-encrypted to it before sequencing. When omitted, the key the domain published on the
-   * hub is used; the transaction is sequenced in plaintext only if the hub holds none.
+   * hub is used. A missing key is an error.
    */
   viewingKey?: Hex;
 }
@@ -139,8 +139,6 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
         args: [domainChainId],
       });
     } catch (error) {
-      // Never downgrade to plaintext silently: if the hub cannot be read, the caller must
-      // say explicitly what key (if any) to use.
       throw new Error(
         `sequence: could not read the domain's viewing key from hub ${hub}; pass viewingKey explicitly ` +
           `(${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
@@ -148,9 +146,10 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
     }
     if (published !== "0x") encryptionKey = published;
   }
-  const rlpTx = encryptionKey
-    ? await encryptTransaction(encryptionKey, domainChainId, rawTransaction)
-    : rawTransaction;
+  if (!encryptionKey || encryptionKey === "0x") {
+    throw new Error("sequence: domain has no viewing key; register one before submitting private transactions");
+  }
+  const rlpTx = await encryptTransaction(encryptionKey, domainChainId, rawTransaction);
 
   const fee = gas * (await readDomainGasPrice(l1, hub));
   const l1TxHash = await wallet.writeContract({

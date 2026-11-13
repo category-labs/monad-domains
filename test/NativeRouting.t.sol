@@ -60,7 +60,7 @@ contract NativeRoutingTest is DomainTestBase {
         vm.recordLogs();
         vm.chainId(A);
         vm.prank(alice);
-        bytes32 id = spokeA.sendDomainMessage(destination, target, data);
+        bytes32 id = spokeA.sendDomainMessage(destination, target, data, TEST_SALT);
         vm.chainId(L1);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         message = abi.decode(abi.decode(logs[0].data, (bytes)), (MessageLib.DomainMessage));
@@ -159,9 +159,9 @@ contract NativeRoutingTest is DomainTestBase {
 
     function test_senderIdentityIsAssignedAndSameChainAndZeroTargetRejected() public {
         vm.expectRevert(DomainSpoke.SameDomain.selector);
-        spokeA.sendDomainMessage(A, address(receiver), hex"");
+        spokeA.sendDomainMessage(A, address(receiver), hex"", TEST_SALT);
         vm.expectRevert(DomainSpoke.ZeroTarget.selector);
-        spokeA.sendDomainMessage(B, address(0), hex"");
+        spokeA.sendDomainMessage(B, address(0), hex"", TEST_SALT);
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
         assertEq(message.from, alice);
         assertEq(message.sourceChainId, A);
@@ -235,13 +235,14 @@ contract NativeRoutingTest is DomainTestBase {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"abcd");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         _post(hub, C, anchor); // Even reattestation under another source cannot change its identity.
-        field = uint8(bound(field, 0, 5));
+        field = uint8(bound(field, 0, 6));
         if (field == 0) message.sourceChainId = C;
         if (field == 1) message.destinationChainId = C;
         if (field == 2) message.from = address(123);
         if (field == 3) message.to = address(123);
         if (field == 4) message.sourceNonce++;
         if (field == 5) message.data = hex"abce";
+        if (field == 6) message.salt = bytes32(0);
         vm.expectRevert(DomainHub.InvalidProof.selector);
         hub.relayDomainMessage(message, anchor, new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(message.sourceChainId, _id(message)));
@@ -322,8 +323,9 @@ contract NativeRoutingTest is DomainTestBase {
         _deliver(_route(first));
         DomainSpoke spokeC = new DomainSpoke(C, L1, address(hub));
         vm.prank(alice);
-        spokeC.sendDomainMessage(B, address(receiver), hex"");
-        MessageLib.DomainMessage memory second = MessageLib.DomainMessage(C, B, alice, address(receiver), 0, hex"");
+        spokeC.sendDomainMessage(B, address(receiver), hex"", TEST_SALT);
+        MessageLib.DomainMessage memory second =
+            MessageLib.DomainMessage(C, B, alice, address(receiver), 0, TEST_SALT, hex"");
         bytes32 anchor = _attestBatch(hub, spokeC, KEY);
         uint256 nonce = hub.l1MessageCounts(B);
         assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(second, anchor, new bytes32[](0)));
