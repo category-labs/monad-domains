@@ -4,10 +4,19 @@ pragma solidity ^0.8.24;
 /// @notice Canonical encoding of cross-domain messages and of the token bridge payload
 /// carried inside them, shared by the hub, the spoke and both bridges.
 library MessageLib {
+    /// @notice `Plain`: an L1-bound envelope; `to` and `data` are the target and payload.
+    /// `Encrypted`: a domain-bound envelope; `from`, `to` and `salt` are zero and `data` is
+    /// `encodePlaintext(from, to, data)` sealed to the destination's viewing key.
+    enum MessageKind {
+        Plain,
+        Encrypted
+    }
+
     /// @notice An authenticated domain-origin message. The source spoke assigns origin and nonce.
     /// The hub proves this envelope and assigns a separate destination delivery nonce when forwarding.
-    /// The destination selects L1 execution or domain forwarding.
+    /// The destination selects L1 execution or domain forwarding; `kind` names the envelope's shape.
     struct DomainMessage {
+        MessageKind kind;
         uint64 sourceChainId;
         uint64 destinationChainId;
         address from;
@@ -27,6 +36,7 @@ library MessageLib {
             abi.encode(
                 l1ChainId,
                 hub,
+                message.kind,
                 message.sourceChainId,
                 message.destinationChainId,
                 message.from,
@@ -36,6 +46,21 @@ library MessageLib {
                 keccak256(message.data)
             )
         );
+    }
+
+    /// @notice What an `Encrypted` envelope seals: the authenticated sender, the target and its
+    /// payload.
+    function encodePlaintext(address from, address to, bytes memory data) internal pure returns (bytes memory) {
+        return abi.encode(from, to, data);
+    }
+
+    /// @notice Decodes a plaintext produced by `encodePlaintext`.
+    function decodePlaintext(bytes memory plaintext)
+        internal
+        pure
+        returns (address from, address to, bytes memory data)
+    {
+        (from, to, data) = abi.decode(plaintext, (address, address, bytes));
     }
 
     /// @notice Shared delivery envelope for L1-origin and forwarded domain messages.
@@ -61,6 +86,17 @@ library MessageLib {
     /// `from` and `to` as the two bridge contracts.
     function encodeTransfer(address recipient, address l1Token, uint256 amount) internal pure returns (bytes memory) {
         return abi.encode(recipient, l1Token, amount);
+    }
+
+    /// @notice Encodes the payload of the hub's viewing key message to a spoke: the domain a
+    /// key belongs to and the key.
+    function encodeViewingKey(uint64 domainChainId, bytes memory viewingKey) internal pure returns (bytes memory) {
+        return abi.encode(domainChainId, viewingKey);
+    }
+
+    /// @notice Decodes a payload produced by `encodeViewingKey`.
+    function decodeViewingKey(bytes memory data) internal pure returns (uint64 domainChainId, bytes memory viewingKey) {
+        (domainChainId, viewingKey) = abi.decode(data, (uint64, bytes));
     }
 
     /// @notice Decodes a token bridge payload produced by `encodeTransfer`.

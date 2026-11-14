@@ -5,6 +5,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {DomainHub} from "../src/DomainHub.sol";
 import {IDomainHub} from "../src/interfaces/IDomain.sol";
 import {InputQueue} from "../src/libraries/InputQueue.sol";
+import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 /// @dev A fee recipient that records one more input while it is being paid.
@@ -28,6 +29,8 @@ contract ReenteringRecipient {
 
 contract DomainInputQueueTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
+    /// @dev The domain forwarded encrypted messages come from.
+    uint64 internal constant SOURCE_CHAIN_ID = 5555;
     uint256 internal constant VALIDATOR_KEY = 0xA11CE;
 
     /// @dev Words of a block entry: its header and prevrandao.
@@ -43,6 +46,7 @@ contract DomainInputQueueTest is DomainTestBase {
         hub = new DomainHub();
         vm.prevrandao(keccak256("prevrandao"));
         _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
+        _registerDomain(hub, SOURCE_CHAIN_ID, VALIDATOR_KEY);
         vm.deal(alice, 1_000_000 ether);
     }
 
@@ -250,8 +254,10 @@ contract DomainInputQueueTest is DomainTestBase {
         vm.roll(2);
         vm.prank(alice);
         hub.sendL1Message{value: fee}(CHAIN_ID, bob, hex"010203");
+        (MessageLib.DomainMessage memory forwarded, bytes32 anchor) =
+            _attestedSealedMessage(hub, SOURCE_CHAIN_ID, CHAIN_ID, 9, hex"aabbcc");
         vm.prank(alice);
-        hub.sendEncryptedL1Message{value: fee}(CHAIN_ID, hex"aabbcc");
+        hub.relayDomainMessage{value: fee}(forwarded, anchor, new bytes32[](0));
 
         QueueEntry[] memory entries = _inputs(CHAIN_ID);
         assertEq(entries.length, 3);
@@ -263,7 +269,7 @@ contract DomainInputQueueTest is DomainTestBase {
         assertEq(entries[1].payload, abi.encodePacked(uint64(block.chainid), alice, bob, uint64(0), hex"010203"));
         assertEq(entries[2].kind, InputQueue.ENCRYPTED_MESSAGE);
         assertEq(entries[2].fee, fee);
-        assertEq(entries[2].payload, abi.encodePacked(uint64(block.chainid), alice, uint64(1), hex"aabbcc"));
+        assertEq(entries[2].payload, abi.encodePacked(SOURCE_CHAIN_ID, uint64(9), uint64(1), hex"aabbcc"));
     }
 
     function test_firstInputOfAnL1BlockOpensTheNextDomainBlock() public {
@@ -492,13 +498,15 @@ contract DomainInputQueueTest is DomainTestBase {
         // Period 3 is the oldest unattested one: period 6 is three past it.
         uint256 fee = hub.minDeliveryFee(1);
         vm.roll(51);
+        (MessageLib.DomainMessage memory forwarded, bytes32 anchor) =
+            _attestedSealedMessage(hub, SOURCE_CHAIN_ID, 8888, 0, hex"06");
         vm.startPrank(alice);
         vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
         hub.sequenceToDomain{value: _sequencingFee(1)}(8888, hex"06");
         vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
         hub.sendL1Message{value: fee}(8888, bob, hex"06");
         vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
-        hub.sendEncryptedL1Message{value: fee}(8888, hex"06");
+        hub.relayDomainMessage{value: fee}(forwarded, anchor, new bytes32[](0));
         vm.stopPrank();
         assertEq(_inputs(8888).length, 3);
 
@@ -621,13 +629,15 @@ contract DomainInputQueueTest is DomainTestBase {
         _sequence(new bytes((limit - 2) * InputQueue.CHUNK));
         _sequence("");
         assertEq(uint64(_word(CHAIN_ID, 0) >> 128), limit);
+        (MessageLib.DomainMessage memory forwarded, bytes32 anchor) =
+            _attestedSealedMessage(hub, SOURCE_CHAIN_ID, CHAIN_ID, 0, hex"01");
         vm.startPrank(alice);
         vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
         hub.sequenceToDomain{value: _sequencingFee(0)}(CHAIN_ID, "");
         vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
         hub.sendL1Message{value: fee}(CHAIN_ID, bob, hex"01");
         vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
-        hub.sendEncryptedL1Message{value: fee}(CHAIN_ID, hex"01");
+        hub.relayDomainMessage{value: fee}(forwarded, anchor, new bytes32[](0));
         vm.stopPrank();
 
         // The next L1 block starts over.
@@ -700,6 +710,8 @@ contract DomainInputQueueTest is DomainTestBase {
     uint64[] internal modelBlocks;
     uint64[] internal modelInputBlocks;
     bytes32[] internal modelInputHashes;
+    /// @dev Source nonce of the next forwarded encrypted message.
+    uint64 internal modelSourceNonce;
     /// @dev The first block and input the latest attestation does not cover.
     uint256 internal modelFirstBlock;
     uint256 internal modelFirstInput;
@@ -769,7 +781,8 @@ contract DomainInputQueueTest is DomainTestBase {
         }
     }
 
-    /// @dev Records a transaction (`kind` 0 or 1), a message (2) or an encrypted message (3).
+    /// @dev Records a transaction (`kind` 0 or 1), a message (2) or a forwarded encrypted
+    /// message (3).
     function _modelInput(uint256 kind, bytes memory data, uint8 maxUnattestedPeriods) internal {
         uint64 latest = modelBlocks[modelBlocks.length - 1];
         // A new period is refused once it is `maxUnattestedPeriods` past the oldest live one.
@@ -779,13 +792,19 @@ contract DomainInputQueueTest is DomainTestBase {
         uint256 fee = kind < 2 ? _sequencingFee(data.length) : hub.minDeliveryFee(data.length);
         bytes memory payload = data;
         if (kind == 2) payload = abi.encodePacked(uint64(block.chainid), alice, bob, nonce, data);
-        if (kind == 3) payload = abi.encodePacked(uint64(block.chainid), alice, nonce, data);
+        MessageLib.DomainMessage memory forwarded;
+        bytes32 anchor;
+        if (kind == 3) {
+            uint64 sourceNonce = modelSourceNonce++;
+            payload = abi.encodePacked(SOURCE_CHAIN_ID, sourceNonce, nonce, data);
+            (forwarded, anchor) = _attestedSealedMessage(hub, SOURCE_CHAIN_ID, MODEL_CHAIN_ID, sourceNonce, data);
+        }
         if (stalled) vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
         vm.prank(alice);
         if (kind == 2) {
             hub.sendL1Message{value: fee}(MODEL_CHAIN_ID, bob, data);
         } else if (kind == 3) {
-            hub.sendEncryptedL1Message{value: fee}(MODEL_CHAIN_ID, data);
+            hub.relayDomainMessage{value: fee}(forwarded, anchor, new bytes32[](0));
         } else {
             hub.sequenceToDomain{value: fee}(MODEL_CHAIN_ID, data);
         }

@@ -29,6 +29,10 @@ contract DomainHub is IDomainHub, EIP712 {
     error SameDomain();
     error SourceNotRegistered();
     error ZeroTarget();
+    error EncryptedL1Callback();
+    error PlaintextDomainMessage();
+    error EncryptedMessageWithSender();
+    error EncryptedMessageWithTarget();
     error MessageAlreadyRelayed();
     error UnknownAnchor();
     error InvalidProof();
@@ -40,6 +44,7 @@ contract DomainHub is IDomainHub, EIP712 {
     error DomainBlockGasLimitExceeded();
     error DomainBlockSizeLimitExceeded();
     error FeeTransferFailed();
+    error NoViewingKey();
     error DeliveryFeeTooLow();
     error SequencingFeeTooLow();
     error SlotNumberProbeNotDeployed();
@@ -281,17 +286,27 @@ contract DomainHub is IDomainHub, EIP712 {
     {
         if (message.sourceChainId == message.destinationChainId) revert SameDomain();
         if (_queueConfig(message.sourceChainId) == 0) revert SourceNotRegistered();
-        if (message.to == address(0)) revert ZeroTarget();
+        bool toL1 = message.destinationChainId == block.chainid;
+        if (toL1) {
+            if (message.kind != MessageLib.MessageKind.Plain) revert EncryptedL1Callback();
+            if (message.to == address(0)) revert ZeroTarget();
+        } else {
+            // A domain-bound envelope carries only a ciphertext; the destination recovers the
+            // sender and target from it.
+            if (message.kind != MessageLib.MessageKind.Encrypted) revert PlaintextDomainMessage();
+            if (message.from != address(0)) revert EncryptedMessageWithSender();
+            if (message.to != address(0)) revert EncryptedMessageWithTarget();
+        }
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         if (relayedDomainMessages[message.sourceChainId][messageHash]) revert MessageAlreadyRelayed();
         if (!domainAnchors[message.sourceChainId][anchor]) revert UnknownAnchor();
         if (!MerkleProof.verifyCalldata(proof, anchor, messageHash)) revert InvalidProof();
         relayedDomainMessages[message.sourceChainId][messageHash] = true;
 
-        if (message.destinationChainId != block.chainid) {
+        if (!toL1) {
             if (_queueConfig(message.destinationChainId) == 0) revert DestinationNotRegistered();
-            (uint256 deliveryNonce, uint256 config) = _sendL1Message(
-                message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
+            (uint256 deliveryNonce, uint256 config) = _sendEncryptedL1Message(
+                message.destinationChainId, message.sourceChainId, message.sourceNonce, message.data, msg.value
             );
             emit DomainMessageRouted(messageHash, message.sourceChainId, message.destinationChainId, deliveryNonce);
             _payFee(config, msg.value);
@@ -359,6 +374,22 @@ contract DomainHub is IDomainHub, EIP712 {
         _payFee(config, msg.value);
     }
 
+    function sendViewingKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable {
+        if (_queueConfig(domainChainId) == 0) revert DomainNotRegistered();
+        bytes memory viewingKey = _configs[keyChainId].viewingKey;
+        if (viewingKey.length == 0) revert NoViewingKey();
+        // The hub itself is the sender, which is how the spoke recognizes a key message.
+        (, uint256 config) = _sendL1Message(
+            domainChainId,
+            SafeCast.toUint64(block.chainid),
+            address(this),
+            spoke,
+            MessageLib.encodeViewingKey(keyChainId, viewingKey),
+            msg.value
+        );
+        _payFee(config, msg.value);
+    }
+
     /// @dev Charges `fee` for the delivery, assigns the next delivery nonce of `domainChainId` and
     /// records the message for the domain client to deliver. Returns the domain's config word:
     /// the caller pays the fee out once it has nothing left to do.
@@ -387,23 +418,31 @@ contract DomainHub is IDomainHub, EIP712 {
         emit L1MessageRecorded(domainChainId, sourceChainId, from, to, data, nonce, fee, messageHash);
     }
 
-    function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable {
+    /// @dev Charges `fee`, assigns the next delivery nonce of `domainChainId` (shared with
+    /// `sendL1Message`) and records the ciphertext for the destination client to open and
+    /// deliver. Returns the domain's config word: the caller pays the fee out once it has
+    /// nothing left to do.
+    function _sendEncryptedL1Message(
+        uint64 domainChainId,
+        uint64 sourceChainId,
+        uint256 sourceNonce,
+        bytes calldata ciphertext,
+        uint256 fee
+    ) internal returns (uint256 nonce, uint256 config) {
         uint256 queue = InputQueue.base(domainChainId);
-        uint256 config = _registeredConfig(queue);
-        if (msg.value < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow();
-        uint64 sourceChainId = SafeCast.toUint64(block.chainid);
+        config = _registeredConfig(queue);
+        if (fee < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow();
         InputQueue.State memory state = InputQueue.loadState(queue);
-        uint64 nonce = state.messageCount++;
+        nonce = state.messageCount++;
         _recordInput(
             queue,
             config,
             state,
             InputQueue.ENCRYPTED_MESSAGE,
-            msg.value,
-            abi.encodePacked(sourceChainId, msg.sender, nonce, ciphertext)
+            fee,
+            abi.encodePacked(sourceChainId, SafeCast.toUint64(sourceNonce), uint64(nonce), ciphertext)
         );
-        emit EncryptedL1MessageRecorded(domainChainId, sourceChainId, msg.sender, ciphertext, nonce, msg.value);
-        _payFee(config, msg.value);
+        emit EncryptedL1MessageRecorded(domainChainId, sourceChainId, sourceNonce, ciphertext, nonce, fee);
     }
 
     function l1MessageCounts(uint64 domainChainId) external view returns (uint256) {

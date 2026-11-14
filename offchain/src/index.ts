@@ -10,9 +10,7 @@ export { loadArtifact, type Artifact } from "./artifacts.js";
 export { fetchL1Chain } from "./chain.js";
 export {
   EncryptionError,
-  decryptMessage,
   decryptTransaction,
-  encryptMessage,
   encryptTransaction,
   generateViewingKeyPair,
   type ViewingKeyPair,
@@ -28,15 +26,22 @@ export {
   DOMAIN_MESSAGE_PARAMS,
   generateMessageSalt,
   decodeDomainMessage,
+  decodePlaintext,
   decodeTransfer,
+  decodeViewingKey,
   domainDeliveryEnvelope,
   encodeDomainMessage,
+  encodePlaintext,
   encodeTransfer,
+  encodeViewingKey,
   hashDomainMessage,
   hashMessage,
+  isEncryptedDomainMessage,
+  MessageKind,
   type DomainMessage,
   type Message,
   type MessageContext,
+  type MessagePlaintext,
 } from "./message.js";
 export { root, getProof, verify } from "./merkle.js";
 export {
@@ -61,7 +66,9 @@ export {
   type L1DeliveryStatus,
   type DomainDeliveryStatus,
   type RecordedMessage,
+  type MessageOpener,
   type MessageProof,
+  type SealedMessage,
   type UndecryptableMessage,
 } from "./prover.js";
 export {

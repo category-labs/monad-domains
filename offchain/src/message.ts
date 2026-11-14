@@ -10,8 +10,19 @@ import {
   type Hex,
 } from "viem";
 
+/** `MessageLib.MessageKind`: the shape of a domain-origin envelope. Encoded as `uint8`. */
+export enum MessageKind {
+  /** The destination is the L1: `to` and `data` are the target and payload, readable there. */
+  Plain = 0,
+  /**
+   * The destination is another domain: `from`, `to` and `salt` are zero and `data` is
+   * `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
+   */
+  Encrypted = 1,
+}
+
 export const DOMAIN_MESSAGE_PARAMS = parseAbiParameters(
-  "(uint64 sourceChainId, uint64 destinationChainId, address from, address to, uint256 sourceNonce, bytes32 salt, bytes data) message",
+  "(uint8 kind, uint64 sourceChainId, uint64 destinationChainId, address from, address to, uint256 sourceNonce, bytes32 salt, bytes data) message",
 );
 
 export interface MessageContext {
@@ -20,6 +31,7 @@ export interface MessageContext {
 }
 
 export interface DomainMessage {
+  kind: MessageKind;
   sourceChainId: bigint;
   destinationChainId: bigint;
   from: Address;
@@ -35,8 +47,8 @@ export function generateMessageSalt(): Hex {
 
 export function hashDomainMessage(message: DomainMessage, context: MessageContext): Hex {
   return keccak256(encodeAbiParameters(
-    parseAbiParameters("uint256, address, uint64, uint64, address, address, uint256, bytes32, bytes32"),
-    [context.l1ChainId, context.hub,
+    parseAbiParameters("uint256, address, uint8, uint64, uint64, address, address, uint256, bytes32, bytes32"),
+    [context.l1ChainId, context.hub, message.kind,
       message.sourceChainId, message.destinationChainId, message.from, message.to,
       message.sourceNonce, message.salt, keccak256(message.data)],
   ));
@@ -47,15 +59,65 @@ export function encodeDomainMessage(message: DomainMessage): Hex {
 }
 
 export function decodeDomainMessage(data: Hex): DomainMessage {
-  const [message] = decodeAbiParameters(DOMAIN_MESSAGE_PARAMS, data);
+  const [decoded] = decodeAbiParameters(DOMAIN_MESSAGE_PARAMS, data);
+  if (decoded.kind !== MessageKind.Plain && decoded.kind !== MessageKind.Encrypted) {
+    throw new Error(`routing: unknown message kind ${decoded.kind}`);
+  }
+  const message: DomainMessage = { ...decoded, kind: decoded.kind as MessageKind };
   if (encodeDomainMessage(message).toLowerCase() !== data.toLowerCase()) {
     throw new Error("routing: non-canonical envelope");
   }
   return message;
 }
 
-/** Direct application delivery, using the nonce assigned by the destination queue. */
-export function domainDeliveryEnvelope(message: DomainMessage, deliveryNonce: bigint): Message {
+/** True for an envelope sealed for another domain. */
+export function isEncryptedDomainMessage(message: DomainMessage): boolean {
+  return message.kind === MessageKind.Encrypted;
+}
+
+/** What an encrypted envelope seals. Mirrors the arguments of `MessageLib.encodePlaintext`. */
+export interface MessagePlaintext {
+  from: Address;
+  to: Address;
+  data: Hex;
+}
+
+const PLAINTEXT_PARAMS = parseAbiParameters("address from, address to, bytes data");
+
+/** Mirrors `MessageLib.encodePlaintext`. */
+export function encodePlaintext(plaintext: MessagePlaintext): Hex {
+  return encodeAbiParameters(PLAINTEXT_PARAMS, [plaintext.from, plaintext.to, plaintext.data]);
+}
+
+/** Mirrors `MessageLib.decodePlaintext`. */
+export function decodePlaintext(plaintext: Hex): MessagePlaintext {
+  const [from, to, data] = decodeAbiParameters(PLAINTEXT_PARAMS, plaintext);
+  return { from, to, data };
+}
+
+const VIEWING_KEY_PARAMS = parseAbiParameters("uint64 domainChainId, bytes viewingKey");
+
+/** Mirrors `MessageLib.encodeViewingKey`: the payload of the hub's viewing key message to a spoke. */
+export function encodeViewingKey(domainChainId: bigint, viewingKey: Hex): Hex {
+  return encodeAbiParameters(VIEWING_KEY_PARAMS, [domainChainId, viewingKey]);
+}
+
+/** Mirrors `MessageLib.decodeViewingKey`. */
+export function decodeViewingKey(data: Hex): { domainChainId: bigint; viewingKey: Hex } {
+  const [domainChainId, viewingKey] = decodeAbiParameters(VIEWING_KEY_PARAMS, data);
+  return { domainChainId, viewingKey };
+}
+
+/**
+ * Direct application delivery, using the nonce assigned by the destination queue. An
+ * encrypted envelope is delivered as the plaintext it seals, which the caller supplies.
+ */
+export function domainDeliveryEnvelope(message: DomainMessage, deliveryNonce: bigint, plaintext?: MessagePlaintext): Message {
+  if (isEncryptedDomainMessage(message)) {
+    if (!plaintext) throw new Error("routing: encrypted envelope needs its plaintext (from, to, data)");
+    return { sourceChainId: message.sourceChainId, from: plaintext.from,
+      to: plaintext.to, data: plaintext.data, nonce: deliveryNonce };
+  }
   return { sourceChainId: message.sourceChainId, from: message.from,
     to: message.to, data: message.data, nonce: deliveryNonce };
 }

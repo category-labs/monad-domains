@@ -72,6 +72,22 @@ another domain. The spoke stores every message id by nonce; a checkpoint anchors
 range recorded since the previous checkpoint, so a batch is identified by the two attested
 heights.
 
+Every domain-bound message is sealed on chain: the spoke hands
+`encodePlaintext(msg.sender, to, data)` to the execution client's encryption precompile, which
+seals it to the destination's viewing key bound to the source domain, the destination and the
+envelope's nonce. The envelope has kind `Encrypted`, names neither sender nor target and carries
+no salt: the ciphertext already hides its content, so `salt` is ignored for a domain destination
+and only an L1 destination needs one. The hub forwards the envelope as an
+`EncryptedL1MessageRecorded` delivery carrying only the ciphertext, which the destination client
+opens into `(from, to, data)` before deriving the system transaction. A
+spoke learns another domain's key through `hub.sendViewingKey(domainChainId, spoke, keyChainId)`,
+which anyone may call for the delivery fee: the hub records the key as an L1 message from itself
+and the spoke stores it only from such a delivery.
+Tracking such a message needs that plaintext (`encodePlaintext` / `decodePlaintext`; see
+`routedMessageDeliveryStatus` below). `npm run e2e:routing` (`e2e/e2e-routing-cli.ts`) runs the
+route against a fresh two-domain devnet whose client provides the precompile (needs
+`VIEWING_KEY_A` and `VIEWING_KEY_B`).
+
 ```ts
 import {
   findBatchForNonce, fetchDomainBatch, proveMessage, isDomainAnchorRecorded,
@@ -98,11 +114,13 @@ if (message.destinationChainId === L1_CHAIN_ID) {
   // A failed L1 callback is retried with hub.retryDomainMessage(message).
 } else {
   // Read deliveryNonce from DomainMessageRouted; SPOKE_B is local client configuration.
+  // An encrypted envelope (isEncryptedDomainMessage) is delivered as the plaintext its source
+  // spoke sealed, so pass the { from, to, data } it was sent with as the last argument.
   const destinationStatus = await routedMessageDeliveryStatus(
-    domainB, message, SPOKE_B, deliveryNonce,
+    domainB, message, SPOKE_B, deliveryNonce, /* plaintext */
   ); // "pending" | "failed" | "delivered"
   if (destinationStatus === "failed") {
-    const deliveryEnvelope = domainDeliveryEnvelope(message, deliveryNonce);
+    const deliveryEnvelope = domainDeliveryEnvelope(message, deliveryNonce /* , plaintext */);
     // Submit spokeB.retryL1Message(deliveryEnvelope) with enough gas.
   }
 }
@@ -122,6 +140,7 @@ npm install
 npm test          # unit tests, including conformance vectors from script/GenVectors.s.sol
 npm run typecheck
 npm run e2e       # deposit, withdrawal, access control and log access against a live devnet node
+npm run e2e:routing  # sealed domain -> domain route against a two-domain devnet whose client has the precompile
 ```
 
 `npm run e2e` (`e2e/e2e-cli.ts`) expects a fresh single-node devnet started with the domain flags

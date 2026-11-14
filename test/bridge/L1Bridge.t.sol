@@ -206,6 +206,7 @@ contract L1BridgeTest is DomainTestBase {
         returns (MessageLib.DomainMessage memory message)
     {
         message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: DOMAIN_BRIDGE,
@@ -260,6 +261,7 @@ contract L1BridgeTest is DomainTestBase {
         // Anchored message whose `from` is not the counterpart: rejected even though
         // the proof itself is valid.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: makeAddr("attacker"),
@@ -279,6 +281,7 @@ contract L1BridgeTest is DomainTestBase {
     function test_withdraw_rejectsUnregisteredCounterpart() public {
         L1Bridge fresh = new L1Bridge(hub, CHAIN_ID);
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
+            kind: MessageLib.MessageKind.Plain,
             sourceChainId: CHAIN_ID,
             destinationChainId: uint64(block.chainid),
             from: address(0),
