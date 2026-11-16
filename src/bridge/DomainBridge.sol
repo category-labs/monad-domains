@@ -31,6 +31,9 @@ contract DomainBridge is IDomainMessageReceiver {
     address public immutable TOKEN_POLICY_OWNER;
     address public immutable INITIAL_TOKEN_POLICY;
 
+    /// @dev Safe to cache: the spoke's L1 chain id is immutable too.
+    uint64 internal immutable _L1_CHAIN_ID;
+
     /// @notice Bridged token per L1 token address.
     mapping(address => BridgedERC20) public bridgedTokens;
 
@@ -45,6 +48,7 @@ contract DomainBridge is IDomainMessageReceiver {
         if (initialTokenPolicy.code.length == 0) revert PolicyHasNoCode();
         if (initialTokenPolicy == address(spoke)) revert InvalidTokenPolicy();
         SPOKE = spoke;
+        _L1_CHAIN_ID = spoke.L1_CHAIN_ID();
         L1_BRIDGE = l1Bridge;
         TOKEN_POLICY_OWNER = tokenPolicyOwner;
         INITIAL_TOKEN_POLICY = initialTokenPolicy;
@@ -56,7 +60,7 @@ contract DomainBridge is IDomainMessageReceiver {
     /// anyone can send arbitrary payloads through the hub.
     function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
         if (msg.sender != address(SPOKE)) revert NotSpoke();
-        if (sourceChainId != SPOKE.L1_CHAIN_ID()) revert NotFromL1();
+        if (sourceChainId != _L1_CHAIN_ID) revert NotFromL1();
         if (from != L1_BRIDGE) revert NotL1Bridge();
 
         (address recipient, address l1Token, uint256 amount) = MessageLib.decodeTransfer(data);
@@ -81,9 +85,7 @@ contract DomainBridge is IDomainMessageReceiver {
         // Burn before messaging: the withdrawal message must never overstate what was
         // actually destroyed on the domain.
         token.burn(msg.sender, amount);
-        SPOKE.sendDomainMessage(
-            SPOKE.L1_CHAIN_ID(), L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount), salt
-        );
+        SPOKE.sendDomainMessage(_L1_CHAIN_ID, L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount), salt);
         emit WithdrawalInitiated(msg.sender, recipient, l1Token, amount);
     }
 
