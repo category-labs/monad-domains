@@ -468,10 +468,19 @@ contract DomainHub is IDomainHub, EIP712 {
             InputQueue.openPeriod(queue, state, period, uint8(config >> 224));
         }
         // The probe fails on an L1 revision without slot numbers, taking the gas it was given.
-        uint56 slotNumber;
-        (bool success, bytes memory result) = SLOT_NUMBER_PROBE.staticcall{gas: 200}("");
-        if (success && result.length == 32) slotNumber = uint56(uint256(bytes32(result)));
-        InputQueue.pushBlock(queue, state, InputQueue.blockHeader(domainBlockNumber, slotNumber), block.prevrandao);
+        // Its one-word answer is read through scratch space, so nothing is allocated.
+        address probe = SLOT_NUMBER_PROBE;
+        uint256 slotWord;
+        assembly ("memory-safe") {
+            let success := staticcall(200, probe, 0, 0, 0, 0)
+            if and(success, eq(returndatasize(), 32)) {
+                returndatacopy(0, 0, 32)
+                slotWord := mload(0)
+            }
+        }
+        InputQueue.pushBlock(
+            queue, state, InputQueue.blockHeader(domainBlockNumber, uint56(slotWord)), block.prevrandao
+        );
     }
 
     /// @dev The checkpoint period of an L1 block: the first scheduled checkpoint at or above it.
