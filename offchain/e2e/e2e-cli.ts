@@ -453,7 +453,12 @@ async function main() {
     viewingKey: VIEWING_KEY,
   });
   console.log("  sequenced domainBridge.bridgeToL1:", bridgeToL1.domainTxHash);
-  const burnReceipt = await waitForDomainTx(domain, bridgeToL1.domainTxHash, "domainBridge.bridgeToL1");
+  // Bob's receipt leaves out the spoke's log, which names no account, but keeps the bridge's
+  // event with the message ID.
+  const burnReceipt = await waitForDomainTx(domainAs(BOB_KEY), bridgeToL1.domainTxHash, "domainBridge.bridgeToL1");
+  const [withdrawalLog] = parseEventLogs({ abi: domainBridgeArt.abi, eventName: "WithdrawalInitiated", logs: burnReceipt.logs });
+  if (!withdrawalLog) throw new Error("bob's bridgeToL1 receipt has no WithdrawalInitiated log");
+  const { messageId } = withdrawalLog.args as { messageId: Hex };
   const context: MessageContext = { l1ChainId: BigInt(l1ChainId), hub };
 
   // The validator attests the first scheduled checkpoint at or above the burn's block: the
@@ -495,7 +500,7 @@ async function main() {
   if (!batch) throw new Error("no attested batch covers the withdrawal message");
   const withdrawalBatch = await fetchDomainBatch(domain, spoke, batch, context, { scanFromBlock: hubDeployBlock });
   console.log(`  rebuilt batch [${batch.fromNonce}, ${batch.toNonce}) from blocks (${batch.fromBlock}, ${batch.toBlock}]`);
-  const withdrawalProof = proveMessage(withdrawalBatch, withdrawalBatch[0]!.messageHash);
+  const withdrawalProof = proveMessage(withdrawalBatch, messageId);
   if (withdrawalProof.anchor !== checkpoint.anchor) {
     throw new Error(`rebuilt anchor ${withdrawalProof.anchor} differs from the attested ${checkpoint.anchor}`);
   }

@@ -251,14 +251,6 @@ contract DomainBridgeTest is DomainTestBase {
     function test_bridgeToL1_burnsAndSendsMessage() public {
         BridgedERC20 token = _depositedToken();
 
-        vm.expectEmit(address(bridge));
-        emit DomainBridge.WithdrawalInitiated(bob, bob, L1_TOKEN, 40 ether);
-        vm.prank(bob);
-        bridge.bridgeToL1(bob, L1_TOKEN, 40 ether, TEST_SALT);
-
-        assertEq(token.balanceOf(bob), 60 ether);
-        assertEq(token.totalSupply(), 60 ether);
-
         // The recorded message: from this bridge, to the L1 bridge, transfer payload.
         bytes32 expectedHash = MessageLib.hashDomainMessage(
             MessageLib.DomainMessage({
@@ -273,6 +265,14 @@ contract DomainBridgeTest is DomainTestBase {
             block.chainid,
             spoke.HUB()
         );
+
+        vm.expectEmit(address(bridge));
+        emit DomainBridge.WithdrawalInitiated(bob, bob, L1_TOKEN, 40 ether, expectedHash);
+        vm.prank(bob);
+        bridge.bridgeToL1(bob, L1_TOKEN, 40 ether, TEST_SALT);
+
+        assertEq(token.balanceOf(bob), 60 ether);
+        assertEq(token.totalSupply(), 60 ether);
         assertEq(spoke.domainMessageIds(0), expectedHash);
         assertEq(spoke.domainMessageCount(), 1);
     }

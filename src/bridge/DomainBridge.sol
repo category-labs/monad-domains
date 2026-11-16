@@ -39,7 +39,9 @@ contract DomainBridge is IDomainMessageReceiver {
 
     event BridgedTokenDeployed(address indexed l1Token, address token);
     event DepositFinalized(address indexed recipient, address indexed l1Token, uint256 amount);
-    event WithdrawalInitiated(address indexed sender, address recipient, address indexed l1Token, uint256 amount);
+    event WithdrawalInitiated(
+        address indexed sender, address recipient, address indexed l1Token, uint256 amount, bytes32 indexed messageId
+    );
 
     constructor(IDomainSpoke spoke, address l1Bridge, address tokenPolicyOwner, address initialTokenPolicy) {
         if (l1Bridge == address(0)) revert ZeroL1Bridge();
@@ -85,8 +87,10 @@ contract DomainBridge is IDomainMessageReceiver {
         // Burn before messaging: the withdrawal message must never overstate what was
         // actually destroyed on the domain.
         token.burn(msg.sender, amount);
-        SPOKE.sendDomainMessage(_L1_CHAIN_ID, L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount), salt);
-        emit WithdrawalInitiated(msg.sender, recipient, l1Token, amount);
+        bytes32 messageId = SPOKE.sendDomainMessage(
+            _L1_CHAIN_ID, L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount), salt
+        );
+        emit WithdrawalInitiated(msg.sender, recipient, l1Token, amount, messageId);
     }
 
     /// @dev CREATE2 salted by the L1 token address, with metadata derived from it, so the
