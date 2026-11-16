@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
 /// @notice Decides whether a call into a domain contract may run. A contract's policy owner
