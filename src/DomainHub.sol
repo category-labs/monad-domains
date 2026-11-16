@@ -245,7 +245,7 @@ contract DomainHub is IDomainHub, EIP712 {
         if (domainBlockNumber % checkpointInterval != 0) revert BlockNumberOffSchedule();
 
         bytes32 digest = stateTransitionDigest(domainChainId, domainBlockNumber, newStateRoot, domainAnchor);
-        address signer = ECDSA.recover(digest, signature);
+        address signer = ECDSA.recoverCalldata(digest, signature);
         if (!config.isValidator[signer]) revert NotValidator();
         if (hasVotedFor[digest][signer]) revert AlreadyVoted();
 
