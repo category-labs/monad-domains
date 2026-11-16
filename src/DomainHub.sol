@@ -83,30 +83,30 @@ contract DomainHub is IDomainHub, EIP712 {
         address[] validators;
         /// @dev X25519 public key senders encrypt domain transactions to, or empty.
         bytes viewingKey;
-        mapping(address => bool) isValidator;
+        mapping(address account => bool) isValidator;
     }
 
     /// @dev Registration of each domain, by chain id.
-    mapping(uint64 => DomainConfig) internal _configs;
+    mapping(uint64 domainChainId => DomainConfig config) internal _configs;
     /// @notice Latest attested state root of each domain.
-    mapping(uint64 => bytes32) public stateRoots;
+    mapping(uint64 domainChainId => bytes32 stateRoot) public stateRoots;
     /// @notice Attested batch roots of domain-origin messages, by source domain.
-    mapping(uint64 => mapping(bytes32 => bool)) public domainAnchors;
+    mapping(uint64 domainChainId => mapping(bytes32 anchor => bool attested)) public domainAnchors;
     /// @notice Domain-origin messages already relayed, by source domain.
-    mapping(uint64 => mapping(bytes32 => bool)) public relayedDomainMessages;
+    mapping(uint64 sourceChainId => mapping(bytes32 messageHash => bool relayed)) public relayedDomainMessages;
     /// @notice L1 callbacks that failed and await a successful retry, by source domain.
-    mapping(uint64 => mapping(bytes32 => bool)) public failedDomainMessages;
+    mapping(uint64 sourceChainId => mapping(bytes32 messageHash => bool failed)) public failedDomainMessages;
     /// @notice Monotonic per-domain transition counter bound into every digest, so a round's
     /// signatures cannot be replayed against a later transition.
-    mapping(uint64 => uint256) public stateNonces;
+    mapping(uint64 domainChainId => uint256 stateNonce) public stateNonces;
     /// @notice L1 block number of the latest attested state root, not the input queue's domain
     /// block number; strictly increasing. Starts at the last scheduled height below the
     /// registering L1 block.
-    mapping(uint64 => uint64) public domainBlockNumbers;
+    mapping(uint64 domainChainId => uint64 blockNumber) public domainBlockNumbers;
     /// @notice Votes accumulated for a proposal, keyed by its `stateTransitionDigest`.
-    mapping(bytes32 => uint256) public stateVotes;
+    mapping(bytes32 digest => uint256 votes) public stateVotes;
     /// @notice Whether a validator has already voted for a proposal digest.
-    mapping(bytes32 => mapping(address => bool)) public hasVotedFor;
+    mapping(bytes32 digest => mapping(address validator => bool voted)) public hasVotedFor;
 
     constructor() EIP712("MonadDomainHub", "1") {
         // Runtime `SLOTNUM PUSH0 MSTORE PUSH1 32 PUSH0 RETURN` behind the init code that

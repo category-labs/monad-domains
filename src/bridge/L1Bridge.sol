@@ -40,7 +40,7 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
     address public domainBridge;
 
     /// @notice Tokens accepted for new deposits. Never checked on withdrawals.
-    mapping(address => bool) public allowedTokens;
+    mapping(address token => bool allowed) public allowedTokens;
 
     event DomainBridgeRegistered(address bridge);
     event TokenAllowlistUpdated(address indexed token, bool allowed);

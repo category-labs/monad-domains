@@ -34,9 +34,9 @@ contract DomainAccessRules is IDomainAccessPolicy {
     IDomainAccessControl public immutable SPOKE;
 
     /// @notice Rule for each (target, selector); an unset rule is `Open`.
-    mapping(address => mapping(bytes4 => AccessRule)) public accessControl;
+    mapping(address target => mapping(bytes4 selector => AccessRule rule)) public accessControl;
     /// @notice Callers admitted to a (target, selector) under any rule.
-    mapping(address => mapping(bytes4 => mapping(address => bool))) public approvedReaders;
+    mapping(address target => mapping(bytes4 selector => mapping(address reader => bool))) public approvedReaders;
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = SPOKE.policyOwners(target);

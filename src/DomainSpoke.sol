@@ -45,20 +45,20 @@ contract DomainSpoke is IDomainSpoke {
     /// @notice Number of domain-origin messages recorded so far; the nonce the next one gets.
     uint256 public domainMessageCount;
     /// @notice Message ID of every recorded domain-origin message, by source nonce.
-    mapping(uint256 => bytes32) public domainMessageIds;
+    mapping(uint256 sourceNonce => bytes32 messageId) public domainMessageIds;
     /// @notice Account that may name each contract's access policy; zero until the contract
     /// is deployed through `deployContract` or calls `selfRegisterPolicy`.
-    mapping(address => address) public policyOwners;
+    mapping(address target => address policyOwner) public policyOwners;
     /// @notice Policy deciding calls into each contract; zero admits every caller.
-    mapping(address => address) public accessPolicies;
+    mapping(address target => address policy) public accessPolicies;
     /// @notice Minimum nonce the next delivered L1 -> domain message may carry.
     uint256 public nextL1Nonce;
     /// @notice Hashes of delivered messages whose target call failed; retryable via
     /// `retryL1Message`.
-    mapping(bytes32 => bool) public failedL1Messages;
+    mapping(bytes32 messageHash => bool failed) public failedL1Messages;
     /// @notice Accounts besides the policy owner that the domain RPC lets read every log of a
     /// contract.
-    mapping(address => mapping(address => bool)) public logReaders;
+    mapping(address target => mapping(address reader => bool allowed)) public logReaders;
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
