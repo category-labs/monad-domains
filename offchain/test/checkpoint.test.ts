@@ -58,11 +58,11 @@ function hubClient(stateNonce: bigint, attested: bigint, calls: Record<string, u
   } as unknown as PublicClient;
 }
 
-function domainClient(count: bigint, stateRoot: Hex, calls: Record<string, unknown>[] = []): PublicClient {
+function domainClient(count: bigint, blockHash: Hex, calls: Record<string, unknown>[] = []): PublicClient {
   return {
     request: async ({ method }: { method: string }) => {
       assert.equal(method, "monad_getDomainHeader");
-      return { number: "0x8", stateRoot, parentHash: zeroHash, timestamp: "0x0" };
+      return { number: "0x8", hash: blockHash, stateRoot: zeroHash, parentHash: zeroHash, timestamp: "0x0" };
     },
     readContract: async (request: { functionName: string; args?: [bigint]; blockNumber: bigint }) => {
       calls.push(request);
@@ -76,10 +76,10 @@ function domainClient(count: bigint, stateRoot: Hex, calls: Record<string, unkno
 test("buildCheckpoint pins hub reads to one block, never reads state at height 0, and hashes ids read per nonce", async () => {
   const l1Calls: Record<string, unknown>[] = [];
   const domainCalls: Record<string, unknown>[] = [];
-  const stateRoot = keccak256(toHex("state"));
+  const blockHash = keccak256(toHex("block"));
   const checkpoint = await buildCheckpoint({
     l1: hubClient(0n, 0n, l1Calls),
-    domain: domainClient(5n, stateRoot, domainCalls),
+    domain: domainClient(5n, blockHash, domainCalls),
     hub, spoke, domainChainId: 7777n, height: 10n, idPageSize: 2n,
   });
   assert.equal(checkpoint.stateNonce, 0n);
@@ -87,7 +87,7 @@ test("buildCheckpoint pins hub reads to one block, never reads state at height 0
   assert.equal(checkpoint.fromNonce, 0n);
   assert.equal(checkpoint.toNonce, 5n);
   assert.equal(checkpoint.anchor, root(ids));
-  assert.equal(checkpoint.stateRoot, stateRoot);
+  assert.equal(checkpoint.blockHash, blockHash);
   for (const call of l1Calls) assert.equal(call.blockNumber, 99n, "nonce and height come from the same L1 block");
   const countReads = domainCalls.filter((c) => c.functionName === "domainMessageCount");
   assert.deepEqual(countReads.map((c) => c.blockNumber), [10n], "no count read at height 0 before the first attestation");
@@ -119,7 +119,7 @@ test("buildCheckpoint starts the batch at the previous checkpoint's count and an
 
 test("attestCheckpoint refuses a checkpoint built against a hub state the hub has moved past", async () => {
   const checkpoint: Checkpoint = {
-    domainChainId: 7777n, domainBlockNumber: 30n, stateRoot: zeroHash, anchor: root(ids.slice(0, 2)),
+    domainChainId: 7777n, domainBlockNumber: 30n, blockHash: zeroHash, anchor: root(ids.slice(0, 2)),
     fromNonce: 0n, toNonce: 2n, previousBlockNumber: 10n, stateNonce: 0n,
   };
   const l1 = {

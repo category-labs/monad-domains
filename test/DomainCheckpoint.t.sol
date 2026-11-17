@@ -67,19 +67,21 @@ contract DomainCheckpointTest is DomainTestBase {
     }
 
     function test_advancesOnlyAtQuorum() public {
-        bytes32 root = keccak256("state root");
+        bytes32 root = keccak256("block hash");
         bytes32 anchor = keccak256("anchor");
         bytes32 digest = hub.stateTransitionDigest(CHAIN_ID, 10, root, anchor);
 
         _submit(10, root, anchor, K1);
         assertEq(hub.stateVotes(digest), 1);
-        assertEq(hub.stateRoots(CHAIN_ID), bytes32(0));
+        assertEq(hub.blockHashes(CHAIN_ID), bytes32(0));
         assertFalse(hub.domainAnchors(CHAIN_ID, anchor));
         assertEq(hub.stateNonces(CHAIN_ID), 0);
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 0);
 
         _submit(10, root, anchor, K2);
-        assertEq(hub.stateRoots(CHAIN_ID), root);
+        assertEq(hub.blockHashes(CHAIN_ID), root);
+        // The execution client reads the hash from storage: `blockHashes` is slot 3.
+        assertEq(vm.load(address(hub), keccak256(abi.encode(CHAIN_ID, uint256(3)))), root);
         assertTrue(hub.domainAnchors(CHAIN_ID, anchor));
         assertEq(hub.stateNonces(CHAIN_ID), 1);
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 10);
@@ -159,7 +161,7 @@ contract DomainCheckpointTest is DomainTestBase {
         bytes32 root = keccak256("idle root");
         _submit(10, root, bytes32(0), K1);
         _submit(10, root, bytes32(0), K2);
-        assertEq(hub.stateRoots(CHAIN_ID), root);
+        assertEq(hub.blockHashes(CHAIN_ID), root);
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 10);
         assertFalse(hub.domainAnchors(CHAIN_ID, bytes32(0)));
     }
@@ -176,7 +178,7 @@ contract DomainCheckpointTest is DomainTestBase {
         assertTrue(hub.domainAnchors(CHAIN_ID, firstAnchor));
         assertFalse(hub.domainAnchors(8888, firstAnchor));
 
-        // Idle period: the state root advances with no messages and a zero anchor.
+        // Idle period: the block hash is attested again with no messages and a zero anchor.
         assertEq(_attestBatch(hub, spoke, _keys(K1, K2)), bytes32(0));
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 20);
 
@@ -212,7 +214,7 @@ contract DomainCheckpointTest is DomainTestBase {
         assertEq(
             hub.STATE_TRANSITION_TYPEHASH(),
             keccak256(
-                "StateTransition(uint64 domainChainId,uint256 stateNonce,uint64 domainBlockNumber,bytes32 newStateRoot,bytes32 domainAnchor)"
+                "StateTransition(uint64 domainChainId,uint256 stateNonce,uint64 domainBlockNumber,bytes32 newBlockHash,bytes32 domainAnchor)"
             )
         );
         bytes32 separator = keccak256(
@@ -250,7 +252,7 @@ contract DomainCheckpointTest is DomainTestBase {
             assertEq(logs[i].emitter, address(hub));
             assertEq(logs[i].topics.length, 2);
             assertEq(logs[i].topics[1], bytes32(uint256(CHAIN_ID)));
-            // Four non-indexed words, in this order: stateNonce, domainBlockNumber, newStateRoot, domainAnchor.
+            // Four non-indexed words, in this order: stateNonce, domainBlockNumber, newBlockHash, domainAnchor.
             assertEq(logs[i].data.length, 4 * 32);
             (uint256 stateNonce, uint64 blockNumber, bytes32 newRoot, bytes32 newAnchor) =
                 abi.decode(logs[i].data, (uint256, uint64, bytes32, bytes32));

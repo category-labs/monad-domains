@@ -231,7 +231,7 @@ contract DomainToDomainTest is DomainTestBase {
     }
 
     /// @dev Burns `amount` of the bridged token on domain A and has the validator attest the
-    /// resulting batch (with the new state root) onto the hub. Returns the withdrawal message
+    /// resulting batch (with the new block hash) onto the hub. Returns the withdrawal message
     /// + anchor the L1 leg finalizes against.
     function _initiateWithdrawFromA(address sender, address recipient, uint256 amount)
         internal

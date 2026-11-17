@@ -57,7 +57,7 @@ Programmatic equivalents are exported (`generateViewingKeyFiles`, `viewingPublic
 ## Checkpoints
 
 Validators attest the domain on a schedule: at every L1 height that is a multiple of the
-domain's checkpoint interval, each validator reads the domain state root there and the root
+domain's checkpoint interval, each validator reads the hash of the domain's last block there and the root
 of the domain-origin messages recorded since the previous checkpoint, signs the hub's EIP-712
 `StateTransition` digest and submits it. `npm run checkpoint` (`src/checkpoint-cli.ts`) is one
 such pass; `src/checkpoint.ts` exports the pieces (`nextCheckpointHeight`, `buildCheckpoint`,

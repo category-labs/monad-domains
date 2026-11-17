@@ -23,14 +23,14 @@ import type { MessageContext } from "./message.js";
  *
  *   - `H`: the smallest scheduled height above the hub's last attested one, attested once the
  *     validator's own node has finalized it (`nextCheckpointHeight`);
- *   - `stateRoot`: the domain's committed state root as of `H` (`monad_getDomainHeader`);
+ *   - `blockHash`: the hash of the domain's last block as of `H` (`monad_getDomainHeader`);
  *   - `anchor`: the Merkle root of the domain-origin messages recorded since the previous
  *     checkpoint `P`, i.e. over the spoke's message ids with nonce in `[count(P), count(H))`,
  *     where `count(x)` is the spoke's `domainMessageCount` in the domain state at height `x`;
  *     zero if that range is empty.
  *
  * The hub tallies signatures per EIP-712 digest and advances once a quorum signed the same
- * `(H, stateRoot, anchor)` for the current state nonce. The nonce pins the previous
+ * `(H, blockHash, anchor)` for the current state nonce. The nonce pins the previous
  * checkpoint, so a proposal built against a hub state the hub has since moved past is
  * rejected here before it is signed.
  */
@@ -40,8 +40,8 @@ export const HUB_CHECKPOINT_ABI = parseAbi([
   "function checkpointIntervals(uint64 domainChainId) view returns (uint64)",
   "function stateNonces(uint64 domainChainId) view returns (uint256)",
   "function hasVotedFor(bytes32 digest, address validator) view returns (bool)",
-  "function stateTransitionDigest(uint64 domainChainId, uint64 domainBlockNumber, bytes32 newStateRoot, bytes32 domainAnchor) view returns (bytes32)",
-  "function submitStateSignature(uint64 domainChainId, uint64 domainBlockNumber, bytes32 newStateRoot, bytes32 domainAnchor, bytes signature)",
+  "function stateTransitionDigest(uint64 domainChainId, uint64 domainBlockNumber, bytes32 newBlockHash, bytes32 domainAnchor) view returns (bytes32)",
+  "function submitStateSignature(uint64 domainChainId, uint64 domainBlockNumber, bytes32 newBlockHash, bytes32 domainAnchor, bytes signature)",
 ]);
 
 export const SPOKE_BATCH_ABI = parseAbi([
@@ -65,7 +65,7 @@ export const STATE_TRANSITION_TYPES = {
     { name: "domainChainId", type: "uint64" },
     { name: "stateNonce", type: "uint256" },
     { name: "domainBlockNumber", type: "uint64" },
-    { name: "newStateRoot", type: "bytes32" },
+    { name: "newBlockHash", type: "bytes32" },
     { name: "domainAnchor", type: "bytes32" },
   ],
 } as const;
@@ -74,7 +74,7 @@ export interface StateTransition {
   domainChainId: bigint;
   stateNonce: bigint;
   domainBlockNumber: bigint;
-  newStateRoot: Hex;
+  newBlockHash: Hex;
   domainAnchor: Hex;
 }
 
@@ -106,6 +106,7 @@ export async function signStateTransition(validatorKey: Hex, digest: Hex): Promi
 export interface DomainHeader {
   /** L1 height the header was committed at (the last block with domain activity). */
   number: bigint;
+  hash: Hex;
   stateRoot: Hex;
   parentHash: Hex;
   timestamp: bigint;
@@ -113,8 +114,9 @@ export interface DomainHeader {
 
 /**
  * The domain's latest committed header as of `block`. Null while the domain has never
- * executed a transaction. The state root it carries is the domain state at `block`, even
- * when the header's own number is lower (no domain activity since).
+ * executed a transaction. It is the domain's last block as of `block`, so its hash and state
+ * root are the domain's there even when the header's own number is lower (no domain activity
+ * since).
  */
 export async function getDomainHeader(
   domain: PublicClient,
@@ -123,10 +125,11 @@ export async function getDomainHeader(
   const raw = (await domain.request({
     method: "monad_getDomainHeader" as never,
     params: [typeof block === "bigint" ? toHex(block) : block] as never,
-  })) as { number: Hex; stateRoot: Hex; parentHash: Hex; timestamp: Hex } | null;
+  })) as { number: Hex; hash: Hex; stateRoot: Hex; parentHash: Hex; timestamp: Hex } | null;
   if (!raw) return null;
   return {
     number: BigInt(raw.number),
+    hash: raw.hash,
     stateRoot: raw.stateRoot,
     parentHash: raw.parentHash,
     timestamp: BigInt(raw.timestamp),
@@ -220,7 +223,7 @@ export function nextCheckpointHeight(lastAttested: bigint, interval: bigint, fin
 export interface Checkpoint {
   domainChainId: bigint;
   domainBlockNumber: bigint;
-  stateRoot: Hex;
+  blockHash: Hex;
   /** Root of the ids with nonce in `[fromNonce, toNonce)`; zero when the range is empty. */
   anchor: Hex;
   fromNonce: bigint;
@@ -271,7 +274,7 @@ export async function buildCheckpoint(args: {
   return {
     domainChainId,
     domainBlockNumber: height,
-    stateRoot: header.stateRoot,
+    blockHash: header.hash,
     anchor: batchRoot(ids),
     fromNonce,
     toNonce,
@@ -307,7 +310,7 @@ export async function attestCheckpoint(args: {
     domainChainId: checkpoint.domainChainId,
     stateNonce: checkpoint.stateNonce,
     domainBlockNumber: checkpoint.domainBlockNumber,
-    newStateRoot: checkpoint.stateRoot,
+    newBlockHash: checkpoint.blockHash,
     domainAnchor: checkpoint.anchor,
   });
   const hubNonce = BigInt(
@@ -322,7 +325,7 @@ export async function attestCheckpoint(args: {
     address: hub,
     abi: HUB_CHECKPOINT_ABI,
     functionName: "stateTransitionDigest",
-    args: [checkpoint.domainChainId, checkpoint.domainBlockNumber, checkpoint.stateRoot, checkpoint.anchor],
+    args: [checkpoint.domainChainId, checkpoint.domainBlockNumber, checkpoint.blockHash, checkpoint.anchor],
   });
   if (hubDigest.toLowerCase() !== digest.toLowerCase()) {
     throw new Error(`checkpoint: local digest ${digest} differs from the hub's ${hubDigest}`);
@@ -346,7 +349,7 @@ export async function attestCheckpoint(args: {
       address: hub,
       abi: HUB_CHECKPOINT_ABI,
       functionName: "submitStateSignature",
-      args: [checkpoint.domainChainId, checkpoint.domainBlockNumber, checkpoint.stateRoot, checkpoint.anchor, signature],
+      args: [checkpoint.domainChainId, checkpoint.domainBlockNumber, checkpoint.blockHash, checkpoint.anchor, signature],
     });
     const receipt = await l1.waitForTransactionReceipt({ hash });
     if (receipt.status !== "success") {

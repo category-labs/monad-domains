@@ -133,7 +133,7 @@ contract DepositEndToEndTest is DomainTestBase {
     function test_multipleWithdrawalsInOneAnchor() public {
         _finalizedDeposit(bob, 100 ether);
 
-        // Three withdrawals land in the same state root update (odd leaf count).
+        // Three withdrawals land in the same checkpoint (odd leaf count).
         vm.startPrank(bob);
         domainBridge.bridgeToL1(bob, address(token), 10 ether, TEST_SALT);
         domainBridge.bridgeToL1(carol, address(token), 20 ether, TEST_SALT);
