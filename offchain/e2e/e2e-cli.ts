@@ -42,7 +42,7 @@ import { generateMessageSalt, type MessageContext } from "../src/message.js";
  *      derives a system transaction per hub L1MessageRecorded event and injects it
  *      as spoke.relayL1Message), so the CLI only watches the spoke until the mint lands;
  *   3. withdrawal: burn on the domain, validator attests the next scheduled checkpoint
- *      (state root + root of the messages recorded since the previous one) on the hub,
+ *      (block hash + root of the messages recorded since the previous one) on the hub,
  *      rebuild the attested batch, prove and release on the L1;
  *   4. access control: deploy a token through `spoke.deployContract`, name the stock
  *      `DomainAccessRules` policy for it, restrict `balanceOf` to its subject, and check
@@ -463,7 +463,7 @@ async function main() {
   const context: MessageContext = { l1ChainId: BigInt(l1ChainId), hub };
 
   // The validator attests the first scheduled checkpoint at or above the burn's block: the
-  // domain state root there plus the root of every message recorded since the previous
+  // hash of the domain's last block there plus the root of every message recorded since the previous
   // checkpoint. Finality on the devnet trails the head by a few blocks, so wait for the slot
   // to finalize before reading the domain state there.
   const interval = BigInt(
@@ -480,7 +480,7 @@ async function main() {
   if (checkpoint.toNonce !== checkpoint.fromNonce + 1n) {
     throw new Error(`expected exactly one recorded message in the batch, got [${checkpoint.fromNonce}, ${checkpoint.toNonce})`);
   }
-  console.log(`  checkpoint ${checkpointHeight}: state root ${checkpoint.stateRoot}, anchor ${checkpoint.anchor}`);
+  console.log(`  checkpoint ${checkpointHeight}: block hash ${checkpoint.blockHash}, anchor ${checkpoint.anchor}`);
   const attestation = await attestCheckpoint({
     l1, submitter: validatorWallet, chain: l1Chain, hub, checkpoint, validatorKeys: [VALIDATOR_KEY],
   });

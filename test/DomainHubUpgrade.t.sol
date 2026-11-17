@@ -154,7 +154,7 @@ contract DomainHubUpgradeTest is DomainTestBase {
         hub.sequenceToDomain{value: _sequencingFee(64)}(CHAIN_ID, new bytes(64));
         hub.sendL1Message{value: DELIVERY_FEE}(CHAIN_ID, bob, hex"c0ffee");
         vm.stopPrank();
-        bytes32 root = keccak256("state root");
+        bytes32 root = keccak256("block hash");
         bytes32 anchor = keccak256("anchor");
         _attest(hub, CHAIN_ID, 100, root, anchor, _keys(VALIDATOR_KEY));
         vm.prank(alice);
@@ -175,7 +175,7 @@ contract DomainHubUpgradeTest is DomainTestBase {
         assertEq(hub.quorums(CHAIN_ID), 1);
         assertEq(hub.feeRecipients(CHAIN_ID), address(this));
         assertEq(hub.checkpointIntervals(CHAIN_ID), CHECKPOINT_INTERVAL);
-        assertEq(hub.stateRoots(CHAIN_ID), root);
+        assertEq(hub.blockHashes(CHAIN_ID), root);
         assertTrue(hub.domainAnchors(CHAIN_ID, anchor));
         assertEq(hub.stateNonces(CHAIN_ID), 1);
         assertEq(hub.domainBlockNumbers(CHAIN_ID), 100);
@@ -194,7 +194,7 @@ contract DomainHubUpgradeTest is DomainTestBase {
     /// @dev The EIP-712 domain names the proxy, so validators sign the same digest whichever
     /// implementation is behind it.
     function test_signatureMadeBeforeAnUpgradeIsAcceptedAfter() public {
-        bytes32 root = keccak256("state root");
+        bytes32 root = keccak256("block hash");
         bytes32 digest = hub.stateTransitionDigest(CHAIN_ID, 90, root, bytes32(0));
         bytes memory signature = _signTransition(hub, CHAIN_ID, 90, root, bytes32(0), VALIDATOR_KEY);
         (,,,, address verifyingContract,,) = hub.eip712Domain();
@@ -204,7 +204,7 @@ contract DomainHubUpgradeTest is DomainTestBase {
 
         assertEq(hub.stateTransitionDigest(CHAIN_ID, 90, root, bytes32(0)), digest);
         hub.submitStateSignature(CHAIN_ID, 90, root, bytes32(0), signature);
-        assertEq(hub.stateRoots(CHAIN_ID), root);
+        assertEq(hub.blockHashes(CHAIN_ID), root);
     }
 
     /// @dev Each implementation deploys its own slot number probe.

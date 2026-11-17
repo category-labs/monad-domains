@@ -6,7 +6,7 @@ import {MessageLib} from "../libraries/MessageLib.sol";
 
 /// @notice L1-side hub of the domain messaging layer: the single L1 contract every domain connects
 /// through. It registers domains, sequences their transactions, records L1 -> domain messages, and
-/// stores the state roots and domain-origin message anchors each domain's validators attest.
+/// stores the block hashes and domain-origin message anchors each domain's validators attest.
 interface IDomainHub {
     event DomainRegistered(uint64 indexed domainChainId, address indexed feeRecipient, uint64 checkpointInterval);
 
@@ -24,17 +24,18 @@ interface IDomainHub {
         uint64 indexed domainChainId,
         address indexed validator,
         uint64 domainBlockNumber,
-        bytes32 newStateRoot,
+        bytes32 newBlockHash,
         bytes32 domainAnchor,
         uint256 votes
     );
 
-    /// @notice A quorum of validators advanced the domain to `newStateRoot` at `domainBlockNumber`.
+    /// @notice A quorum of validators advanced the domain to the block `newBlockHash` at
+    /// `domainBlockNumber`.
     event DomainStateUpdated(
         uint64 indexed domainChainId,
         uint256 stateNonce,
         uint64 domainBlockNumber,
-        bytes32 newStateRoot,
+        bytes32 newBlockHash,
         bytes32 domainAnchor
     );
 
@@ -130,14 +131,15 @@ interface IDomainHub {
 
     /// @notice The EIP-712 digest a domain validator signs to approve a state transition, bound
     /// to this hub, the L1 chain, the domain, and the current `stateNonces` entry. Signing it
-    /// attests that `newStateRoot` is the domain's state root at block `domainBlockNumber`, and
+    /// attests that `newBlockHash` is the hash of the domain's last block at or before L1 block
+    /// `domainBlockNumber`, and
     /// that `domainAnchor` is the merkle root of the spoke's message IDs with nonce in
     /// `[count(P), count(domainBlockNumber))`, where `P` is the previously attested block and
     /// `count(x)` the spoke's `domainMessageCount` at block `x`; zero if that range is empty.
     function stateTransitionDigest(
         uint64 domainChainId,
         uint64 domainBlockNumber,
-        bytes32 newStateRoot,
+        bytes32 newBlockHash,
         bytes32 domainAnchor
     ) external view returns (bytes32);
 
@@ -150,15 +152,16 @@ interface IDomainHub {
     function submitStateSignature(
         uint64 domainChainId,
         uint64 domainBlockNumber,
-        bytes32 newStateRoot,
+        bytes32 newBlockHash,
         bytes32 domainAnchor,
         bytes calldata signature
     ) external;
 
-    /// @notice The latest attested state root of the domain.
-    function stateRoots(uint64 domainChainId) external view returns (bytes32);
+    /// @notice The latest attested block hash of the domain: of its last block at or before
+    /// `domainBlockNumbers`. Zero until the first attestation.
+    function blockHashes(uint64 domainChainId) external view returns (bytes32);
 
-    /// @notice The L1 block number of the latest attested state root, not the input queue's
+    /// @notice The L1 block number of the latest attested block hash, not the input queue's
     /// domain block number; transitions must attest strictly increasing block numbers. Starts
     /// at the last multiple of the checkpoint interval below the registering L1 block.
     function domainBlockNumbers(uint64 domainChainId) external view returns (uint64);

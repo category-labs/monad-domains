@@ -8,10 +8,10 @@ The core protocol and its actors are as follows:
 
 | Component | Where | Role |
 | --- | --- | --- |
-| DomainHub | L1, one instance | Registry of domains (validator set, quorum, fee recipient, viewing public key, checkpoint interval), transaction sequencer inbox, store of attested state roots and outbound message anchors, L1 inbox and outbox for messages |
+| DomainHub | L1, one instance | Registry of domains (validator set, quorum, fee recipient, viewing public key, checkpoint interval), transaction sequencer inbox, store of attested block hashes and outbound message anchors, L1 inbox and outbox for messages |
 | DomainSpoke | One instance at each domain | Receives L1-origin messages as system transactions, records domain-origin messages by nonce, holds the access-control rules the client enforces |
 | Domain execution client | Off-chain, per domain | Modified Monad node. Derives the domain's blocks from hub events, decrypts payloads with the viewing secret key, executes, serves the domain header |
-| Validators | Off-chain keys, one per replica | Sign checkpoints: the domain state root at a scheduled L1 height together with the root of the domain-origin messages recorded since the previous checkpoint. The hub advances once a quorum signed the same checkpoint |
+| Validators | Off-chain keys, one per replica | Sign checkpoints: the hash of the domain's last block at a scheduled L1 height together with the root of the domain-origin messages recorded since the previous checkpoint. The hub advances once a quorum signed the same checkpoint |
 
 ![Protocol components: hub, client, spoke, validators](assets/protocol-components.png)
 
@@ -41,7 +41,7 @@ Everything that enters a domain is pushed by the protocol from L1 events.
 
 1. A domain contract calls `sendDomainMessage(destinationChainId, to, data, salt)` on the spoke. The spoke builds an envelope of source chain, destination chain, sender, target, salt and the payload.
 2. A batch is defined by two consecutive checkpoints: the message IDs recorded between them, in nonce order, are the leaves of a merkle tree whose root is the anchor. The tree hashes sorted pairs with keccak256, so proofs verify with OpenZeppelin `MerkleProof`, and promotes an odd node unchanged to the next level; a single message is its own root.
-3. Validators sign the anchor together with the state root. Once a quorum signed, the hub records the anchor.
+3. Validators sign the anchor together with the block hash. Once a quorum signed, the hub records the anchor.
 4. Anyone calls `relayDomainMessage(message, anchor, proof)` on the hub to execute the message. A message to another domain is queued there as an L1 to domain message instead, and the caller attaches its delivery fee.
 
 **Receivers.** A receiver must do all its work or revert. The sender does not set the gas of a delivery: on the L1 it is whatever the relayer supplies, in a domain it is what the attached fee bought, and a retry runs with its caller's gas. A callback that reverts leaves the message retryable, while one that returns normally consumes it for good. So a receiver that carries on after a failed inner call can be given just enough gas to finish without that call, and the message is lost.
@@ -59,7 +59,7 @@ StateTransition(
     uint64  domainChainId,
     uint256 stateNonce,         // the hub's current per-domain transition counter
     uint64  domainBlockNumber,  // the checkpoint's L1 height
-    bytes32 newStateRoot,       // domain state root at that height
+    bytes32 newBlockHash,       // hash of the domain's last block at or before that height
     bytes32 domainAnchor        // Merkle root of the batch, or zero
 )
 ```

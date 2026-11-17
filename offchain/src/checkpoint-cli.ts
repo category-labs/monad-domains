@@ -56,7 +56,7 @@ async function main() {
 
   const checkpoint = await buildCheckpoint({ l1, domain, hub, spoke, domainChainId, height });
   console.log(
-    `checkpoint ${checkpoint.domainBlockNumber}: state root ${checkpoint.stateRoot}, ` +
+    `checkpoint ${checkpoint.domainBlockNumber}: block hash ${checkpoint.blockHash}, ` +
       `batch [${checkpoint.fromNonce}, ${checkpoint.toNonce}) anchor ${checkpoint.anchor}`,
   );
   const result = await attestCheckpoint({ l1, submitter, chain: l1Chain, hub, checkpoint, validatorKeys });

@@ -172,8 +172,8 @@ test("findBatchForNonce pairs consecutive attestations with the spoke's counts a
   const anchorB = root([routeId]);
   const l1 = {
     getLogs: async () => [
-      { args: { domainChainId: 7777n, stateNonce: 1n, domainBlockNumber: 20n, newStateRoot: "0x" as Hex, domainAnchor: anchorB }, blockNumber: 21n, logIndex: 0 },
-      { args: { domainChainId: 7777n, stateNonce: 0n, domainBlockNumber: 10n, newStateRoot: "0x" as Hex, domainAnchor: anchorA }, blockNumber: 11n, logIndex: 0 },
+      { args: { domainChainId: 7777n, stateNonce: 1n, domainBlockNumber: 20n, newBlockHash: "0x" as Hex, domainAnchor: anchorB }, blockNumber: 21n, logIndex: 0 },
+      { args: { domainChainId: 7777n, stateNonce: 0n, domainBlockNumber: 10n, newBlockHash: "0x" as Hex, domainAnchor: anchorA }, blockNumber: 11n, logIndex: 0 },
     ],
   } as unknown as PublicClient;
   const countsByHeight: Record<string, bigint> = { "10": 9n, "20": 10n };
@@ -194,7 +194,7 @@ test("findBatchForNonce pairs consecutive attestations with the spoke's counts a
 test("findBatchForNonce rejects a scan range that starts after the first attestation", async () => {
   const l1 = {
     getLogs: async () => [
-      { args: { domainChainId: 7777n, stateNonce: 2n, domainBlockNumber: 30n, newStateRoot: "0x" as Hex, domainAnchor: root([routeId]) }, blockNumber: 31n, logIndex: 0 },
+      { args: { domainChainId: 7777n, stateNonce: 2n, domainBlockNumber: 30n, newBlockHash: "0x" as Hex, domainAnchor: root([routeId]) }, blockNumber: 31n, logIndex: 0 },
     ],
   } as unknown as PublicClient;
   const domain = { readContract: async () => 10n } as unknown as PublicClient;

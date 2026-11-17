@@ -40,7 +40,7 @@ export const DOMAIN_MESSAGE_ROUTED_EVENT = parseAbiItem(
 
 /** Emitted by the hub when a quorum attests a checkpoint; `domainAnchor` is that batch's root. */
 export const DOMAIN_STATE_UPDATED_EVENT = parseAbiItem(
-  "event DomainStateUpdated(uint64 indexed domainChainId, uint256 stateNonce, uint64 domainBlockNumber, bytes32 newStateRoot, bytes32 domainAnchor)",
+  "event DomainStateUpdated(uint64 indexed domainChainId, uint256 stateNonce, uint64 domainBlockNumber, bytes32 newBlockHash, bytes32 domainAnchor)",
 );
 
 const HUB_DELIVERY_ABI = [
