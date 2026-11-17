@@ -33,7 +33,7 @@ contract NativeRoutingTest is DomainTestBase {
 
     function setUp() public {
         vm.chainId(L1);
-        hub = new DomainHub();
+        hub = _deployHub(address(this));
         _register(hub, A);
         _register(hub, B);
         _register(hub, C);
@@ -257,7 +257,7 @@ contract NativeRoutingTest is DomainTestBase {
     function test_proofCannotCrossHubOrL1Deployment() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
-        DomainHub other = new DomainHub();
+        DomainHub other = _deployHub(address(this));
         _register(other, A);
         _register(other, B);
         _post(other, A, anchor);

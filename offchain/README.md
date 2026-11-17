@@ -3,7 +3,7 @@
 ## Domain setup
 
 `npm run setup` (`src/setup.ts`) brings up a fully L1-sequenced domain end-to-end — deploying the
-hub + L1Bridge, registering the validator set, and seeding the spoke, default token policy and bridge by sequencing their
+hub (an upgradeable proxy owned by `HUB_OWNER`, by default the admin) + L1Bridge, registering the validator set, and seeding the spoke, default token policy and bridge by sequencing their
 creation transactions. `TOKEN_POLICY_OWNER` defaults to the admin; `INITIAL_TOKEN_POLICY`
 can supply an existing domain policy instead of deploying `DomainAccessRules`. Its unconfigured
 selectors are open. After a token is created, the policy owner can restrict `balanceOf` with

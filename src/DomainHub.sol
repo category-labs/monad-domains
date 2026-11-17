@@ -5,11 +5,18 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {IDomainHub, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 import {InputQueue} from "./libraries/InputQueue.sol";
 
-contract DomainHub is IDomainHub, EIP712 {
+/// @notice Implementation behind the hub's ERC-1967 proxy (UUPS): the proxy's address is the
+/// hub's and its storage holds the hub's state. The owner replaces the implementation with
+/// `upgradeToAndCall`.
+/// @dev An upgrade must keep the storage layout and only append to it. What the constructor
+/// sets (the EIP-712 name and version, the slot number probe) belongs to the implementation.
+contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     error L1ChainIdNotAllowed();
     error DomainAlreadyRegistered();
     error ZeroQuorum();
@@ -118,7 +125,17 @@ contract DomainHub is IDomainHub, EIP712 {
         }
         if (probe == address(0)) revert SlotNumberProbeNotDeployed();
         SLOT_NUMBER_PROBE = probe;
+        // Only a proxy takes an owner: the implementation itself stays without one.
+        _disableInitializers();
     }
+
+    /// @notice Sets the hub's owner. Called once, by the proxy's constructor.
+    function initialize(address initialOwner) external initializer {
+        __Ownable_init(initialOwner);
+    }
+
+    /// @dev Only the owner upgrades the hub.
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     // ---------------------------------------------------------------------
     // Registration

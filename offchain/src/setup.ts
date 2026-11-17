@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, encodeDeployData, getContractAddress, http, isAddress, zeroAddress, type Address, type Hex } from "viem";
+import { createPublicClient, createWalletClient, encodeDeployData, encodeFunctionData, getContractAddress, http, isAddress, zeroAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadArtifact } from "./artifacts.js";
 import { fetchL1Chain } from "./chain.js";
@@ -12,6 +12,8 @@ export interface SetupConfig {
   adminKey: Hex;
   /** Register on this existing hub instead of deploying one; domains must share a hub to message each other. */
   existingHub?: Address;
+  /** Account that may upgrade the hub deployed here. Defaults to the admin. Unused with `existingHub`. */
+  hubOwner?: Address;
   /** The domain chain id. */
   domainChainId: bigint;
   /** Validator addresses whose signatures attest domain state transitions. */
@@ -74,8 +76,8 @@ export interface SetupResult {
  * (`registerDomainBridge`) be wired immediately.
  *
  * Order:
- *   L1:  deploy/reuse DomainHub -> registerDomain (validators, quorum, fee recipient,
- *        viewing key, checkpoint interval)
+ *   L1:  deploy/reuse DomainHub (its implementation, then the proxy that is the hub) ->
+ *        registerDomain (validators, quorum, fee recipient, viewing key, checkpoint interval)
  *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
  *   -    precompute domain spoke = CREATE(seed, 0), default policy = CREATE(seed, 1), bridge = CREATE(seed, 2)
  *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx)   [nonce 0]
@@ -110,6 +112,10 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const admin = privateKeyToAccount(adminKey);
   const seed = privateKeyToAccount(config.seedDeployerKey ?? adminKey);
   const feeRecipient = config.feeRecipient ?? admin.address;
+  const hubOwner = config.hubOwner ?? admin.address;
+  if (!isAddress(hubOwner) || hubOwner === zeroAddress) {
+    throw new Error("setup: hubOwner must be a nonzero L1 address");
+  }
   const tokenPolicyOwner = config.tokenPolicyOwner ?? admin.address;
   if (!isAddress(tokenPolicyOwner) || tokenPolicyOwner === zeroAddress) {
     throw new Error("setup: tokenPolicyOwner must be a nonzero domain address");
@@ -136,6 +142,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   };
 
   const hubArt = loadArtifact("DomainHub.sol", "DomainHub");
+  const proxyArt = loadArtifact("ERC1967Proxy.sol", "ERC1967Proxy");
   const l1BridgeArt = loadArtifact("L1Bridge.sol", "L1Bridge");
   const spokeArt = loadArtifact("DomainSpoke.sol", "DomainSpoke");
   const domainBridgeArt = loadArtifact("DomainBridge.sol", "DomainBridge");
@@ -143,9 +150,19 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   // 1. Deploy/reuse the hub and register the domain: validator set + quorum, the fee
   // recipient, the viewing public key senders read back from the hub, and the checkpoint
   // interval attested heights must follow.
-  const hub = config.existingHub ?? await deployedAddress(
-    await wallet.deployContract({ abi: hubArt.abi, bytecode: hubArt.bytecode }),
-  );
+  // The hub is an ERC-1967 proxy in front of the DomainHub implementation. The proxy's
+  // constructor initializes it with the owner who may upgrade it.
+  const deployHub = async (): Promise<Address> => {
+    const implementation = await deployedAddress(
+      await wallet.deployContract({ abi: hubArt.abi, bytecode: hubArt.bytecode }),
+    );
+    console.log("DomainHub implementation:", implementation, `(owner ${hubOwner})`);
+    const initialization = encodeFunctionData({ abi: hubArt.abi, functionName: "initialize", args: [hubOwner] });
+    return deployedAddress(
+      await wallet.deployContract({ abi: proxyArt.abi, bytecode: proxyArt.bytecode, args: [implementation, initialization] }),
+    );
+  };
+  const hub = config.existingHub ?? await deployHub();
   if (config.existingHub) {
     // Fail before sending setup transactions if the address is not a hub or already serves
     // this chain id.

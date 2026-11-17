@@ -113,8 +113,8 @@ test("proveMessage builds a proof consumable against the batch anchor", () => {
   assert.throws(() => proveMessage(batch, keccak256(toHex("missing"))), /not in batch/);
 });
 
-/** The hub `script/GenVectors.s.sol` deploys on chain 31337. */
-const VECTOR_CONTEXT = { l1ChainId: 31337n, hub: "0x5aAdFB43eF8dAF45DD80F4676345b7676f1D70e3" as Address };
+/** The hub `script/GenVectors.s.sol` deploys on chain 31337: the address of its proxy. */
+const VECTOR_CONTEXT = { l1ChainId: 31337n, hub: "0xf13D09eD3cbdD1C930d4de74808de1f33B6b3D4f" as Address };
 
 /**
  * EIP-712 state transition digest vector: a fresh hub (stateNonce 0) attesting domain 7777 at
@@ -131,7 +131,7 @@ test("stateTransitionDigest matches DomainHub.stateTransitionDigest", () => {
       domainAnchor: EXPECTED_ROOTS[4]!,
     },
   );
-  assert.equal(digest, "0x0d0b8d03916739143e31e096b5c5be7aa303cbbd90e4ef6a17f6c7e1f4bbff22");
+  assert.equal(digest, "0xbbbc235b9e3d5e53969c15f18c84bf99ab499392282f504e48ee97bbc1316e99");
 });
 
 /** Domain message ID vector: the anchor leaf of a withdrawal-shaped message to the L1. */
@@ -148,5 +148,5 @@ test("hashDomainMessage matches MessageLib.hashDomainMessage", () => {
     },
     VECTOR_CONTEXT,
   );
-  assert.equal(id, "0x90210795f990e157687f266f97a85242a7b3212af4662c69150c9719ff3c1071");
+  assert.equal(id, "0xa0e7d092669d8549053b94ad7d773382718f697c90b97d1518cf69062af286b2");
 });

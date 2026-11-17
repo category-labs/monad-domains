@@ -34,7 +34,7 @@ contract InputGasTest is DomainTestBase {
         vm.roll(1_000);
         // A zero prevrandao would make the block entry's second word a zero write.
         vm.prevrandao(keccak256("prevrandao"));
-        hub = new DomainHub();
+        hub = _deployHub(address(this));
         hub.registerDomain(
             CHAIN_ID, _addresses(_keys(KEY, KEY_2)), 1, feeRecipient, "", CHECKPOINT_INTERVAL, MAX_UNATTESTED_PERIODS
         );

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {MerkleTreeLib} from "../test/helpers/MerkleTreeLib.sol";
 import {DomainHub} from "../src/DomainHub.sol";
@@ -49,7 +50,8 @@ contract GenVectors is Script {
         // EIP-712 state transition digest: a fresh hub (stateNonce 0) at a fixed chain id,
         // attesting block 10 with the root of all five leaves as the anchor.
         vm.chainId(VECTOR_CHAIN_ID);
-        DomainHub hub = new DomainHub();
+        bytes memory initialization = abi.encodeCall(DomainHub.initialize, (msg.sender));
+        DomainHub hub = DomainHub(address(new ERC1967Proxy(address(new DomainHub()), initialization)));
         bytes32 stateRoot = keccak256("state root");
         bytes32 anchor = MerkleTreeLib.root(leaves);
         console.log("hub chain id", VECTOR_CHAIN_ID);

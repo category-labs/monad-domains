@@ -32,7 +32,7 @@ contract DepositEndToEndTest is DomainTestBase {
 
     function setUp() public {
         // Protocol: hub on the L1, spoke for the domain, domain registered.
-        hub = new DomainHub();
+        hub = _deployHub(address(this));
         spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
         _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
 

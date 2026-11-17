@@ -64,7 +64,7 @@ contract BridgeHandler is DomainTestBase {
     constructor() {
         // Protocol + application stack, all deployed by this handler, which holds the
         // single validator key (quorum 1) and is the fee recipient.
-        HUB = new DomainHub();
+        HUB = _deployHub(address(this));
         _registerDomain(HUB, CHAIN_ID, VALIDATOR_KEY);
         SPOKE = new DomainSpoke(CHAIN_ID, block.chainid, address(HUB));
 

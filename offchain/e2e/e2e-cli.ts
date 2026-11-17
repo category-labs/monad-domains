@@ -59,7 +59,7 @@ import { generateMessageSalt, type MessageContext } from "../src/message.js";
  *   DOMAIN_RPC_URL       default `${L1_RPC_URL}/domain/${DOMAIN_CHAIN_ID}`
  *   CHECKPOINT_INTERVAL  registered on the hub, default 5
  *   EXPECTED_HUB         the hub address in the node's `--private-domain-sequencer` flag; must be
- *                        CREATE(admin, 0), default 0x5FbDB2315678afecb367f032d93F642f64180aa3
+ *                        CREATE(admin, 1), default 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
  *   VIEWING_KEY          the domain viewing public key matching the PEM the node was started with
  *                        (`--private-domain <id> <spoke address> <key.pem>`, where the spoke address
  *                        is CREATE(admin, 0) on the domain); every sequenced transaction is
@@ -78,8 +78,9 @@ const CHECKPOINT_INTERVAL = BigInt(process.env.CHECKPOINT_INTERVAL ?? "5");
 const VIEWING_KEY = process.env.VIEWING_KEY as Hex | undefined;
 
 // The hub address the running node's --private-domain-sequencer flag points at.
-// Must equal CREATE(admin, 0), i.e. the admin's first L1 transaction ever.
-const EXPECTED_HUB = (process.env.EXPECTED_HUB ?? "0x5FbDB2315678afecb367f032d93F642f64180aa3") as Address;
+// Must equal CREATE(admin, 1): the admin's first two L1 transactions ever deploy the hub's
+// implementation and then the hub itself, its proxy.
+const EXPECTED_HUB = (process.env.EXPECTED_HUB ?? "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512") as Address;
 
 // Hardhat/Anvil dev keys, funded in the monad devnet genesis alloc.
 const ADMIN_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex; // acct 0: admin/seed/fee recipient

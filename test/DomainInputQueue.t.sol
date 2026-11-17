@@ -40,7 +40,7 @@ contract DomainInputQueueTest is DomainTestBase {
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        hub = new DomainHub();
+        hub = _deployHub(address(this));
         vm.prevrandao(keccak256("prevrandao"));
         _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
         vm.deal(alice, 1_000_000 ether);

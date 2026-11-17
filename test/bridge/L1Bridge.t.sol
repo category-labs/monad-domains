@@ -22,7 +22,7 @@ contract L1BridgeTest is DomainTestBase {
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        hub = new DomainHub();
+        hub = _deployHub(address(this));
         _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
 
         bridge = new L1Bridge(hub, CHAIN_ID);

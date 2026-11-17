@@ -29,7 +29,7 @@ contract DomainMessagingTest is DomainTestBase {
     address internal feeRecipient = makeAddr("feeRecipient");
 
     function setUp() public {
-        hub = new DomainHub();
+        hub = _deployHub(address(this));
         _registerDomain(hub, CHAIN_ID, _keys(K1, K2, K3), 2);
         spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
         vm.deal(alice, 100 ether);

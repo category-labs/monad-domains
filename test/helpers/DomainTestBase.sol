@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {MerkleTreeLib} from "./MerkleTreeLib.sol";
@@ -32,6 +33,12 @@ abstract contract DomainTestBase is Test {
 
     /// @dev Registered as every test domain's fee recipient.
     receive() external payable {}
+
+    /// @dev A hub as it is deployed: a proxy in front of a new implementation, owned by `owner`.
+    function _deployHub(address owner) internal returns (DomainHub) {
+        bytes memory initialization = abi.encodeCall(DomainHub.initialize, (owner));
+        return DomainHub(address(new ERC1967Proxy(address(new DomainHub()), initialization)));
+    }
 
     // ---------------------------------------------------------------------
     // Input queue, read from the hub's storage

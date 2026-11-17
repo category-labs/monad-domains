@@ -60,7 +60,7 @@ contract DomainRelayTest is DomainTestBase {
     address internal sender = address(0x1234);
 
     function setUp() public {
-        hub = new DomainHub();
+        hub = _deployHub(address(this));
         _registerDomain(hub, CHAIN_A, VALIDATOR_KEY);
         _registerDomain(hub, CHAIN_B, VALIDATOR_KEY);
         receiver = new DomainReceiverMock(hub);

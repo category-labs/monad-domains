@@ -28,7 +28,7 @@ contract DomainCheckpointTest is DomainTestBase {
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        hub = new DomainHub();
+        hub = _deployHub(address(this));
         _registerDomain(hub, CHAIN_ID, _keys(K1, K2), 2);
         spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
         // Scheduled heights 10, 20, ... 90 are in the past from here on.
