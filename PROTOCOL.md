@@ -64,6 +64,8 @@ StateTransition(
 )
 ```
 
+**Syncing from a checkpoint.** The attested block hash and the input queue are all an execution client needs from the L1 to start without the domain's history. It gets the domain state at the checkpoint from any source and checks it against the attested hash: the block's header hashes to it, the state has the header's state root, and the hashes of the earlier blocks are in that state. It then derives the blocks after the checkpoint from the input queue. Before the first attestation the queue holds the domain from its registration.
+
 ## Encryption
 
 Every byte a domain executes reaches the L1 as HPKE ciphertext sealed to the domain's viewing key. The L1 orders ciphertext it cannot read, and the execution client is the only party that can open it.
@@ -94,7 +96,7 @@ For each L1 block the client, per served domain:
 3. RLP-decodes the signed transaction, recovers its sender, and requires the signed chain ID to equal the domain ID, zero value, and a gas limit within the L1 envelope. A transaction whose recovered sender is the system relayer, or with an authorization that recovers to it, is dropped.
 4. Executes the ordinary L1 block against root state.
 5. Scans the hub's receipts for message events of its domains and opens the encrypted ones the same way, with empty associated data, recovering target and payload. An undecryptable message is dropped and its nonce is never delivered.
-6. Executes the sequenced transactions, then the system delivery transactions, as one gasless domain block against the domain state at the parent L1 height.
+6. Stores the parent domain block's hash in the domain state, in the block hash history contract of EIP-2935, as an L1 block does, then executes the sequenced transactions and the system delivery transactions as one gasless domain block against the domain state at the parent L1 height. `BLOCKHASH` reads the history contract.
 7. Commits the domain state deltas, transactions and receipts alongside the L1 block. If L1 execution fails, the staged domain changes are discarded with it.
 
 **Access control at execution time.** Before every call frame in a domain, the client makes a synthetic static call to the spoke's `canCall(caller, context, data)` with a 50,000 gas stipend and proceeds only on a canonical ABI true. The spoke forwards the question to the policy contract that the context contract's policy owner named with `setAccessPolicy`, and admits every caller of a contract without one. A policy implements `IDomainAccessPolicy.canCall` and decides from its own storage and the arguments. This is primarily used for RPC read access control.
