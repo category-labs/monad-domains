@@ -5,6 +5,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import {LowLevelCall} from "@openzeppelin/contracts/utils/LowLevelCall.sol";
 import {IDomainHub, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 import {InputQueue} from "./libraries/InputQueue.sol";
@@ -299,12 +300,10 @@ contract DomainHub is IDomainHub, EIP712 {
         }
 
         if (msg.value != 0) revert UnexpectedL1CallbackFee();
-        (success,) = message.to
-            .call(
-                abi.encodeCall(
-                    IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
-                )
-            );
+        success = LowLevelCall.callNoReturn(
+            message.to,
+            abi.encodeCall(IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data))
+        );
         if (!success) failedDomainMessages[message.sourceChainId][messageHash] = true;
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, success
@@ -316,12 +315,10 @@ contract DomainHub is IDomainHub, EIP712 {
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         if (!failedDomainMessages[message.sourceChainId][messageHash]) revert NotFailedMessage();
         delete failedDomainMessages[message.sourceChainId][messageHash];
-        (bool success,) = message.to
-            .call(
-                abi.encodeCall(
-                    IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
-                )
-            );
+        bool success = LowLevelCall.callNoReturn(
+            message.to,
+            abi.encodeCall(IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data))
+        );
         if (!success) revert RetryFailed();
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, true

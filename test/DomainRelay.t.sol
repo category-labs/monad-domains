@@ -51,6 +51,15 @@ contract GasHungryDomainReceiver is IDomainMessageReceiver {
     }
 }
 
+/// @dev Reverts with 7 MiB: about 120k gas to make on Monad, about 800k for the caller to copy.
+contract ReturnBombDomainReceiver is IDomainMessageReceiver {
+    function onDomainMessage(uint64, address, bytes calldata) external pure {
+        assembly {
+            revert(0, 0x700000)
+        }
+    }
+}
+
 contract DomainRelayTest is DomainTestBase {
     uint64 internal constant CHAIN_A = 7777;
     uint64 internal constant CHAIN_B = 8888;
@@ -255,6 +264,17 @@ contract DomainRelayTest is DomainTestBase {
         hub.retryDomainMessage{gas: 3_000_000}(message);
         assertEq(hungry.calls(), 1);
         assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
+    }
+
+    function test_largeReturnDataCannotRunRelayOrRetryOutOfGas() public {
+        MessageLib.DomainMessage memory message = _message(0);
+        message.to = address(new ReturnBombDomainReceiver());
+        bytes32 hash = _hash(message);
+        _anchor(CHAIN_A, hash);
+        assertFalse(hub.relayDomainMessage{gas: 750_000}(message, hash, new bytes32[](0)));
+        assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
+        vm.expectRevert(DomainHub.RetryFailed.selector);
+        hub.retryDomainMessage{gas: 750_000}(message);
     }
 
     function _hash(MessageLib.DomainMessage memory message) internal view returns (bytes32) {
