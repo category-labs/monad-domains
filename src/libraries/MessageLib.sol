@@ -38,6 +38,27 @@ library MessageLib {
         );
     }
 
+    /// @notice `hashDomainMessage` of an envelope in calldata, without copying it to memory.
+    function hashDomainMessageCalldata(DomainMessage calldata message, uint256 l1ChainId, address hub)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                l1ChainId,
+                hub,
+                message.sourceChainId,
+                message.destinationChainId,
+                message.from,
+                message.to,
+                message.sourceNonce,
+                message.salt,
+                keccak256(message.data)
+            )
+        );
+    }
+
     /// @notice Shared delivery envelope for L1-origin and forwarded domain messages.
     /// The hub authenticates sourceChainId/from and assigns a destination queue nonce.
     /// `to` is always the destination application; data is its original payload.
@@ -51,9 +72,17 @@ library MessageLib {
 
     /// @notice Delivery hash binds the authenticated origin, target, payload and queue nonce.
     function hashMessage(Message memory message) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encodePacked(message.sourceChainId, message.from, message.to, keccak256(message.data), message.nonce)
-        );
+        return hashMessage(message.sourceChainId, message.from, message.to, keccak256(message.data), message.nonce);
+    }
+
+    /// @notice `hashMessage` from the envelope's fields and its data's hash, so a caller with
+    /// the data in calldata need not copy it into a `Message`.
+    function hashMessage(uint64 sourceChainId, address from, address to, bytes32 dataHash, uint256 nonce)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encodePacked(sourceChainId, from, to, dataHash, nonce));
     }
 
     /// @notice Encodes the token bridge payload placed in `Message.data`. The recipient

@@ -153,31 +153,36 @@ contract DomainSpoke is IDomainSpoke {
         if (sourceChainId == DOMAIN_CHAIN_ID) revert InvalidSource();
         if (nonce < nextL1Nonce) revert OutOfOrderNonce();
         nextL1Nonce = nonce + 1;
-        MessageLib.Message memory message = MessageLib.Message(sourceChainId, from, to, data, nonce);
-        bytes32 messageHash = MessageLib.hashMessage(message);
-        bool success = to.code.length != 0 && _callReceiver(message, DELIVERY_GAS_RESERVE);
+        bytes32 messageHash = MessageLib.hashMessage(sourceChainId, from, to, keccak256(data), nonce);
+        bool success = to.code.length != 0 && _callReceiver(sourceChainId, from, to, data, DELIVERY_GAS_RESERVE);
         if (!success) failedL1Messages[messageHash] = true;
         emit L1MessageRelayed(messageHash, sourceChainId, from, to, nonce, success);
     }
 
     function retryL1Message(MessageLib.Message calldata message) external {
-        bytes32 messageHash = MessageLib.hashMessage(message);
+        bytes32 messageHash = MessageLib.hashMessage(
+            message.sourceChainId, message.from, message.to, keccak256(message.data), message.nonce
+        );
         if (!failedL1Messages[messageHash]) revert NotFailedMessage();
         delete failedL1Messages[messageHash];
-        if (message.to.code.length == 0 || !_callReceiver(message, 0)) revert RetryFailed();
+        if (
+            message.to.code.length == 0
+                || !_callReceiver(message.sourceChainId, message.from, message.to, message.data, 0)
+        ) revert RetryFailed();
         emit L1MessageRelayed(messageHash, message.sourceChainId, message.from, message.to, message.nonce, true);
     }
 
-    /// @dev Calls the target with every unit of gas but `gasReserve`, measured once the call
-    /// data is built, and copies no return data, so nothing the target does can eat the reserve.
-    function _callReceiver(MessageLib.Message memory message, uint256 gasReserve) internal returns (bool success) {
-        bytes memory input =
-            abi.encodeCall(IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data));
-        address target = message.to;
+    /// @dev Calls `to` with every unit of gas but `gasReserve`, measured once the call data is
+    /// built, and copies no return data, so nothing the target does can eat the reserve.
+    function _callReceiver(uint64 sourceChainId, address from, address to, bytes calldata data, uint256 gasReserve)
+        internal
+        returns (bool success)
+    {
+        bytes memory input = abi.encodeCall(IDomainMessageReceiver.onDomainMessage, (sourceChainId, from, data));
         assembly ("memory-safe") {
             let budget := gas()
             if lt(budget, gasReserve) { revert(0, 0) }
-            success := call(sub(budget, gasReserve), target, 0, add(input, 32), mload(input), 0, 0)
+            success := call(sub(budget, gasReserve), to, 0, add(input, 32), mload(input), 0, 0)
         }
     }
 

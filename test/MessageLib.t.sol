@@ -34,4 +34,23 @@ contract MessageLibTest is Test {
             0x90210795f990e157687f266f97a85242a7b3212af4662c69150c9719ff3c1071
         );
     }
+
+    function hashDomainMessageCalldata(MessageLib.DomainMessage calldata message, uint256 l1ChainId, address hub)
+        external
+        pure
+        returns (bytes32)
+    {
+        return MessageLib.hashDomainMessageCalldata(message, l1ChainId, hub);
+    }
+
+    function testFuzz_hashDomainMessageCalldata_matchesMemory(
+        MessageLib.DomainMessage memory message,
+        uint256 l1ChainId,
+        address hub
+    ) public view {
+        assertEq(
+            this.hashDomainMessageCalldata(message, l1ChainId, hub),
+            MessageLib.hashDomainMessage(message, l1ChainId, hub)
+        );
+    }
 }

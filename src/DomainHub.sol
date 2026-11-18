@@ -300,7 +300,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         if (message.sourceChainId == message.destinationChainId) revert SameDomain();
         if (_queueConfig(message.sourceChainId) == 0) revert SourceNotRegistered();
         if (message.to == address(0)) revert ZeroTarget();
-        bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
+        bytes32 messageHash = MessageLib.hashDomainMessageCalldata(message, block.chainid, address(this));
         if (relayedDomainMessages[message.sourceChainId][messageHash]) revert MessageAlreadyRelayed();
         if (!domainAnchors[message.sourceChainId][anchor]) revert UnknownAnchor();
         if (!MerkleProof.verifyCalldata(proof, anchor, messageHash)) revert InvalidProof();
@@ -331,7 +331,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
     function retryDomainMessage(MessageLib.DomainMessage calldata message) external {
         if (message.destinationChainId != block.chainid) revert RetryOnDestinationDomain();
-        bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
+        bytes32 messageHash = MessageLib.hashDomainMessageCalldata(message, block.chainid, address(this));
         if (!failedDomainMessages[message.sourceChainId][messageHash]) revert NotFailedMessage();
         delete failedDomainMessages[message.sourceChainId][messageHash];
         (bool success,) = message.to
