@@ -10,6 +10,8 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 import {IDomainHub, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 import {InputQueue} from "./libraries/InputQueue.sol";
+import {LatestBlock, LatestBlockLib} from "./libraries/LatestBlock.sol";
+import {QueueConfig, QueueConfigLib} from "./libraries/QueueConfig.sol";
 
 /// @notice Implementation behind the hub's ERC-1967 proxy (UUPS): the proxy's address is the
 /// hub's and its storage holds the hub's state. The owner replaces the implementation with
@@ -153,7 +155,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     ) external {
         if (domainChainId == block.chainid) revert L1ChainIdNotAllowed();
         uint256 queue = InputQueue.base(domainChainId);
-        if (InputQueue.load(queue, InputQueue.CONFIG) != 0) revert DomainAlreadyRegistered();
+        if (InputQueue.loadConfig(queue).isRegistered()) revert DomainAlreadyRegistered();
         if (quorum == 0) revert ZeroQuorum();
         if (quorum > validators.length) revert QuorumExceedsValidators();
         if (feeRecipient == address(0)) revert ZeroFeeRecipient();
@@ -163,11 +165,10 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         }
         if (viewingKey.length != 0 && viewingKey.length != VIEWING_KEY_LENGTH) revert InvalidViewingKey();
 
-        uint256 queueConfig =
-            (uint256(maxUnattestedPeriods) << 224) | (uint256(checkpointInterval) << 160) | uint160(feeRecipient);
-        InputQueue.store(queue, InputQueue.CONFIG, queueConfig);
+        QueueConfig queueConfig = QueueConfigLib.pack(feeRecipient, checkpointInterval, maxUnattestedPeriods);
+        InputQueue.storeConfig(queue, queueConfig);
         // The registering L1 block is the domain's block 0.
-        InputQueue.store(queue, InputQueue.LATEST, uint256(uint64(block.number)) << 64);
+        InputQueue.storeLatest(queue, LatestBlockLib.open(uint64(block.number), 0));
         InputQueue.State memory state;
         _openBlock(queue, state, queueConfig, 0, 0);
         InputQueue.storeState(queue, state);
@@ -191,7 +192,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function isDomainRegistered(uint64 domainChainId) external view returns (bool) {
-        return _queueConfig(domainChainId) != 0;
+        return _queueConfig(domainChainId).isRegistered();
     }
 
     function getValidators(uint64 domainChainId) external view returns (address[] memory) {
@@ -203,21 +204,19 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function feeRecipients(uint64 domainChainId) external view returns (address) {
-        return address(uint160(_queueConfig(domainChainId)));
+        return _queueConfig(domainChainId).feeRecipient();
     }
 
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64) {
-        return uint64(_queueConfig(domainChainId) >> 160);
+        return _queueConfig(domainChainId).checkpointInterval();
     }
 
     function maxUnattestedPeriods(uint64 domainChainId) external view returns (uint8) {
-        return uint8(_queueConfig(domainChainId) >> 224);
+        return _queueConfig(domainChainId).maxUnattestedPeriods();
     }
 
-    /// @dev `maxUnattestedPeriods(8) | checkpointInterval(64) | feeRecipient(160)`; zero for an
-    /// unregistered domain.
-    function _queueConfig(uint64 domainChainId) internal view returns (uint256) {
-        return InputQueue.load(InputQueue.base(domainChainId), InputQueue.CONFIG);
+    function _queueConfig(uint64 domainChainId) internal view returns (QueueConfig) {
+        return InputQueue.loadConfig(InputQueue.base(domainChainId));
     }
 
     function viewingKeys(uint64 domainChainId) external view returns (bytes memory) {
@@ -280,7 +279,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             domainBlockNumbers[domainChainId] = domainBlockNumber;
             // The attested state covers every input up to this height: stop holding them.
             uint256 queue = InputQueue.base(domainChainId);
-            uint64 latestL1Block = uint64(InputQueue.load(queue, InputQueue.LATEST) >> 64);
+            uint64 latestL1Block = InputQueue.loadLatest(queue).l1BlockNumber();
             InputQueue.release(
                 queue, domainBlockNumber / checkpointInterval, _period(latestL1Block, checkpointInterval)
             );
@@ -298,7 +297,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         returns (bool success)
     {
         if (message.sourceChainId == message.destinationChainId) revert SameDomain();
-        if (_queueConfig(message.sourceChainId) == 0) revert SourceNotRegistered();
+        if (!_queueConfig(message.sourceChainId).isRegistered()) revert SourceNotRegistered();
         if (message.to == address(0)) revert ZeroTarget();
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         if (relayedDomainMessages[message.sourceChainId][messageHash]) revert MessageAlreadyRelayed();
@@ -307,8 +306,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         relayedDomainMessages[message.sourceChainId][messageHash] = true;
 
         if (message.destinationChainId != block.chainid) {
-            if (_queueConfig(message.destinationChainId) == 0) revert DestinationNotRegistered();
-            (uint256 deliveryNonce, uint256 config) = _sendL1Message(
+            if (!_queueConfig(message.destinationChainId).isRegistered()) revert DestinationNotRegistered();
+            (uint256 deliveryNonce, QueueConfig config) = _sendL1Message(
                 message.destinationChainId, message.sourceChainId, message.from, message.to, message.data, msg.value
             );
             emit DomainMessageRouted(messageHash, message.sourceChainId, message.destinationChainId, deliveryNonce);
@@ -356,7 +355,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable {
         uint256 queue = InputQueue.base(domainChainId);
-        uint256 config = _registeredConfig(queue);
+        QueueConfig config = _registeredConfig(queue);
         if (msg.value < minSequencingFee(rlpTx.length)) revert SequencingFeeTooLow();
         _recordInput(queue, config, InputQueue.loadState(queue), InputQueue.TRANSACTION, msg.value, rlpTx);
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
@@ -372,7 +371,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable {
-        (, uint256 config) =
+        (, QueueConfig config) =
             _sendL1Message(domainChainId, SafeCast.toUint64(block.chainid), msg.sender, to, data, msg.value);
         _payFee(config, msg.value);
     }
@@ -387,7 +386,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         address to,
         bytes memory data,
         uint256 fee
-    ) internal returns (uint256 nonce, uint256 config) {
+    ) internal returns (uint256 nonce, QueueConfig config) {
         uint256 queue = InputQueue.base(domainChainId);
         config = _registeredConfig(queue);
         if (fee < minDeliveryFee(data.length)) revert DeliveryFeeTooLow();
@@ -407,7 +406,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
     function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable {
         uint256 queue = InputQueue.base(domainChainId);
-        uint256 config = _registeredConfig(queue);
+        QueueConfig config = _registeredConfig(queue);
         if (msg.value < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow();
         uint64 sourceChainId = SafeCast.toUint64(block.chainid);
         InputQueue.State memory state = InputQueue.loadState(queue);
@@ -433,9 +432,9 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     // ---------------------------------------------------------------------
 
     /// @dev The config word of `queue`'s domain, which must be registered.
-    function _registeredConfig(uint256 queue) internal view returns (uint256 config) {
-        config = InputQueue.load(queue, InputQueue.CONFIG);
-        if (config == 0) revert DomainNotRegistered();
+    function _registeredConfig(uint256 queue) internal view returns (QueueConfig config) {
+        config = InputQueue.loadConfig(queue);
+        if (!config.isRegistered()) revert DomainNotRegistered();
     }
 
     /// @dev Records one input in the domain's queue and counts its gas and its words against the
@@ -444,19 +443,19 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     /// may call back in, and an input it records must follow this one in the queue and the logs.
     function _recordInput(
         uint256 queue,
-        uint256 config,
+        QueueConfig config,
         InputQueue.State memory state,
         uint8 kind,
         uint256 fee,
         bytes memory payload
     ) internal {
-        uint256 latest = InputQueue.load(queue, InputQueue.LATEST);
-        uint256 gasSold = latest >> 192;
-        uint256 inputWords = uint64(latest >> 128);
-        if (uint64(latest >> 64) != block.number) {
-            uint64 domainBlockNumber = uint64(latest) + 1;
-            _openBlock(queue, state, config, uint64(latest >> 64), domainBlockNumber);
-            latest = (uint256(uint64(block.number)) << 64) | domainBlockNumber;
+        LatestBlock latest = InputQueue.loadLatest(queue);
+        uint256 gasSold = latest.gasSold();
+        uint256 inputWords = latest.inputWords();
+        if (latest.l1BlockNumber() != block.number) {
+            uint64 domainBlockNumber = latest.domainBlockNumber() + 1;
+            _openBlock(queue, state, config, latest.l1BlockNumber(), domainBlockNumber);
+            latest = LatestBlockLib.open(uint64(block.number), domainBlockNumber);
             gasSold = 0;
             inputWords = 0;
         }
@@ -464,7 +463,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         if (gasSold > DOMAIN_BLOCK_GAS_LIMIT) revert DomainBlockGasLimitExceeded();
         inputWords += InputQueue.inputWords(payload.length);
         if (inputWords > DOMAIN_BLOCK_WORD_LIMIT) revert DomainBlockSizeLimitExceeded();
-        InputQueue.store(queue, InputQueue.LATEST, (gasSold << 192) | (inputWords << 128) | uint128(latest));
+        InputQueue.storeLatest(queue, latest.withUsage(gasSold, inputWords));
 
         // The gas limit above keeps `fee` far below the 88 bits a header holds.
         InputQueue.push(queue, state, InputQueue.inputHeader(kind, fee), payload);
@@ -476,14 +475,14 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     function _openBlock(
         uint256 queue,
         InputQueue.State memory state,
-        uint256 config,
+        QueueConfig config,
         uint64 previousL1Block,
         uint64 domainBlockNumber
     ) internal {
-        uint64 checkpointInterval = uint64(config >> 160);
+        uint64 checkpointInterval = config.checkpointInterval();
         uint64 period = _period(uint64(block.number), checkpointInterval);
         if (state.head == state.tail || period != _period(previousL1Block, checkpointInterval)) {
-            InputQueue.openPeriod(queue, state, period, uint8(config >> 224));
+            InputQueue.openPeriod(queue, state, period, config.maxUnattestedPeriods());
         }
         // The probe fails on an L1 revision without slot numbers, taking the gas it was given.
         uint56 slotNumber;
@@ -498,15 +497,15 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     /// @dev Pays `fee` to the fee recipient in `config`, who must accept it.
-    function _payFee(uint256 config, uint256 fee) internal {
+    function _payFee(QueueConfig config, uint256 fee) internal {
         if (fee == 0) return;
-        (bool success,) = address(uint160(config)).call{value: fee}("");
+        (bool success,) = config.feeRecipient().call{value: fee}("");
         if (!success) revert FeeTransferFailed();
     }
 
     function blockGas(uint64 domainChainId) external view returns (uint64 blockNumber, uint192 gasSold) {
-        uint256 latest = InputQueue.load(InputQueue.base(domainChainId), InputQueue.LATEST);
-        return (uint64(latest >> 64), uint192(latest >> 192));
+        LatestBlock latest = InputQueue.loadLatest(InputQueue.base(domainChainId));
+        return (latest.l1BlockNumber(), latest.gasSold());
     }
 
     function latestDomainBlock(uint64 domainChainId)
@@ -514,8 +513,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         view
         returns (uint64 l1BlockNumber, uint64 domainBlockNumber)
     {
-        uint256 latest = InputQueue.load(InputQueue.base(domainChainId), InputQueue.LATEST);
-        return (uint64(latest >> 64), uint64(latest));
+        LatestBlock latest = InputQueue.loadLatest(InputQueue.base(domainChainId));
+        return (latest.l1BlockNumber(), latest.domainBlockNumber());
     }
 
     function primeInputQueue(uint64 domainChainId, uint256 from, uint256 count) external {

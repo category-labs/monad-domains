@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
+import {LatestBlock} from "./LatestBlock.sol";
+import {QueueConfig} from "./QueueConfig.sol";
+
 /// @notice A domain's input queue in the hub's storage: the inputs its latest attested
 /// checkpoint does not cover yet.
 ///
@@ -9,9 +12,11 @@ pragma solidity ^0.8.24;
 ///
 ///   base            `keccak256(abi.encode(domainChainId, "monad.domains.input-queue"))`, low 7
 ///                   bits cleared
-///   base + 0        latest block: `gasSold(64) | inputWords(64) | l1BlockNumber(64) | domainBlockNumber(64)`
+///   base + 0        latest block (`LatestBlock`): `gasSold(64) | inputWords(64) | l1BlockNumber(64) |
+///                   domainBlockNumber(64)`
 ///   base + 1        queue state: `messageCount(64) | firstPeriod(64) | tail(64) | head(64)`
-///   base + 2        config: `zero(24) | maxUnattestedPeriods(8) | checkpointInterval(64) | feeRecipient(160)`
+///   base + 2        config (`QueueConfig`): `zero(24) | maxUnattestedPeriods(8) | checkpointInterval(64) |
+///                   feeRecipient(160)`
 ///   base + 3..52    checkpoint table: `zero(128) | period(64) | position(64)`, the item of
 ///                   period `p` at `base + 3 + p % 50`
 ///   base + 53..127  unused
@@ -50,9 +55,9 @@ library InputQueue {
     uint8 internal constant BLOCK = 4;
 
     /// @dev Words of the first page.
-    uint256 internal constant LATEST = 0;
-    uint256 internal constant STATE = 1;
-    uint256 internal constant CONFIG = 2;
+    uint256 private constant LATEST = 0;
+    uint256 private constant STATE = 1;
+    uint256 private constant CONFIG = 2;
     uint256 private constant TABLE = 3;
     uint256 private constant DATA = 128;
 
@@ -84,6 +89,33 @@ library InputQueue {
     function store(uint256 queue, uint256 word, uint256 value) internal {
         assembly ("memory-safe") {
             sstore(add(queue, word), value)
+        }
+    }
+
+    // The typed words below skip `load` and `store`: the extra call costs gas in the legacy
+    // pipeline.
+
+    function loadLatest(uint256 queue) internal view returns (LatestBlock latest) {
+        assembly ("memory-safe") {
+            latest := sload(add(queue, LATEST))
+        }
+    }
+
+    function storeLatest(uint256 queue, LatestBlock latest) internal {
+        assembly ("memory-safe") {
+            sstore(add(queue, LATEST), latest)
+        }
+    }
+
+    function loadConfig(uint256 queue) internal view returns (QueueConfig config) {
+        assembly ("memory-safe") {
+            config := sload(add(queue, CONFIG))
+        }
+    }
+
+    function storeConfig(uint256 queue, QueueConfig config) internal {
+        assembly ("memory-safe") {
+            sstore(add(queue, CONFIG), config)
         }
     }
 
