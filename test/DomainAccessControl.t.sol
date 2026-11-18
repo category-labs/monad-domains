@@ -5,7 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {IDomainAccessControl} from "../src/interfaces/IDomainAccessControl.sol";
 import {TestERC20} from "./mocks/TestERC20.sol";
-import {BrokenPolicy, ConstantPolicy, ExpectingPolicy} from "./mocks/AccessPolicies.sol";
+import {BrokenPolicy, CalldataPolicy, ConstantPolicy, ExpectingPolicy} from "./mocks/AccessPolicies.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
 
 contract DeploymentOwnershipExample {
@@ -46,6 +46,30 @@ contract DomainAccessControlTest is DomainTestBase {
 
     function _balance(address subject) internal pure returns (bytes memory) {
         return abi.encodeCall(IERC20.balanceOf, (subject));
+    }
+
+    /// @dev Hand-built `canCall` calldata asking about `_balance(bob)`, with each head word set
+    /// by the test.
+    function _query(bytes32 callerWord, bytes32 contextWord, uint256 offset, uint256 length)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes memory data = _balance(bob);
+        return abi.encodePacked(spoke.canCall.selector, callerWord, contextWord, offset, length, data, bytes28(0));
+    }
+
+    function _assertAnswer(bytes memory query, bool expected) internal view {
+        (bool ok, bytes memory answer) = address(spoke).staticcall(query);
+        assertTrue(ok);
+        assertEq(answer, abi.encode(expected));
+    }
+
+    function _assertAllRevert(bytes[] memory queries) internal view {
+        for (uint256 i = 0; i < queries.length; i++) {
+            (bool ok,) = address(spoke).staticcall(queries[i]);
+            assertFalse(ok);
+        }
     }
 
     // ----- deployment -----
@@ -198,6 +222,35 @@ contract DomainAccessControlTest is DomainTestBase {
         address other = spoke.deployContract(type(TestERC20).creationCode, policyOwner);
         _policy(other, expecting);
         assertFalse(spoke.canCall(alice, other, data));
+    }
+
+    function test_policyReceivesTheSpokesCalldataByteForByte() public {
+        bytes memory query = abi.encodeCall(spoke.canCall, (alice, token, _balance(bob)));
+        // Valid but not canonical: an extra word past the end of the encoding.
+        bytes memory extended = abi.encodePacked(query, bytes32(uint256(0xdead)));
+        _policy(token, address(new CalldataPolicy(extended)));
+        _assertAnswer(extended, true);
+        _assertAnswer(query, false);
+    }
+
+    function test_malformedArgumentsRevertWithOrWithoutAPolicy() public {
+        bytes32 caller = bytes32(uint256(uint160(alice)));
+        bytes32 context = bytes32(uint256(uint160(token)));
+        bytes32 highBit = bytes32(uint256(1) << 160);
+        uint256 length = _balance(bob).length;
+        bytes memory wellFormed = _query(caller, context, 0x60, length);
+        bytes[] memory malformed = new bytes[](4);
+        malformed[0] = _query(caller | highBit, context, 0x60, length);
+        malformed[1] = _query(caller, context | highBit, 0x60, length);
+        malformed[2] = _query(caller, context, 0x1000, length); // offset past the end
+        malformed[3] = _query(caller, context, 0x60, length + 64); // length past the end
+        // No policy: the spoke would answer without asking anyone.
+        _assertAnswer(wellFormed, true);
+        _assertAllRevert(malformed);
+        // A policy that admits everyone: a malformed query must not reach it.
+        _policy(token, allowAll);
+        _assertAnswer(wellFormed, true);
+        _assertAllRevert(malformed);
     }
 
     function test_policyIsLookedUpByContextNotByCode() public {

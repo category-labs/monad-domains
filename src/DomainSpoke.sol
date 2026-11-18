@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import {IDomainSpoke, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
-import {IDomainAccessPolicy} from "./interfaces/IDomainAccessControl.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 
 contract DomainSpoke is IDomainSpoke {
@@ -126,16 +125,20 @@ contract DomainSpoke is IDomainSpoke {
     }
 
     /// @notice Ask the policy named for `context`; no policy means allow.
-    /// @dev Anything but a canonical ABI `true` denies, so a policy that reverts, runs out of
-    /// gas or returns something else fails closed. Only one word of the answer is copied back.
-    function canCall(address caller, address context, bytes calldata data) external view returns (bool) {
+    /// @dev This function has the policy's selector and arguments, so the spoke sends its own
+    /// calldata on unchanged instead of encoding it again; the arguments are still checked
+    /// before the body runs. Anything but a canonical ABI `true` denies, so a policy that
+    /// reverts, runs out of gas or returns something else fails closed. Only one word of the
+    /// answer is copied back.
+    function canCall(address, address context, bytes calldata) external view returns (bool) {
         address policy = accessPolicies[context];
         if (policy == address(0)) return true;
-        bytes memory query = abi.encodeCall(IDomainAccessPolicy.canCall, (caller, context, data));
         bool ok;
         uint256 verdict;
         assembly ("memory-safe") {
-            ok := staticcall(gas(), policy, add(query, 32), mload(query), 0, 32)
+            let query := mload(0x40)
+            calldatacopy(query, 0, calldatasize())
+            ok := staticcall(gas(), policy, query, calldatasize(), 0, 32)
             ok := and(ok, eq(returndatasize(), 32))
             verdict := mload(0)
         }

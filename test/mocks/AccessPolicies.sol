@@ -34,6 +34,20 @@ contract ExpectingPolicy is IDomainAccessPolicy {
     }
 }
 
+/// @notice Admits only the exact calldata fixed at construction, so a test can check that the
+/// spoke passes its own calldata on byte for byte.
+contract CalldataPolicy is IDomainAccessPolicy {
+    bytes32 public immutable CALLDATA_HASH;
+
+    constructor(bytes memory query) {
+        CALLDATA_HASH = keccak256(query);
+    }
+
+    function canCall(address, address, bytes calldata) external view returns (bool) {
+        return keccak256(msg.data) == CALLDATA_HASH;
+    }
+}
+
 /// @notice Misbehaves in the way chosen at construction. The spoke must deny for every variant.
 contract BrokenPolicy {
     enum Fault {
