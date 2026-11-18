@@ -141,6 +141,9 @@ library InputQueue {
     }
 
     /// @dev Appends an entry: `header` with the payload's length, then the payload in chunks.
+    /// Each chunk comes from a 32-byte memory read, so the last one also reads up to 31 bytes
+    /// past the payload's end, which must be zero. Rather than mask them on every chunk, `push`
+    /// zeroes the word after the payload while it writes, then puts that word back.
     function push(uint256 queue, State memory state, uint256 header, bytes memory payload) internal {
         uint256 length = payload.length;
         uint256 chunks = (length + CHUNK - 1) / CHUNK;
@@ -153,16 +156,16 @@ library InputQueue {
             let data := add(queue, DATA)
             sstore(add(data, and(head, mask)), header)
             let ptr := add(payload, 32)
-            for { let i := 0 } lt(i, chunks) { i := add(i, 1) } {
-                let chunk := or(CHUNK_TAG, shr(8, mload(ptr)))
-                if eq(add(i, 1), chunks) {
-                    // Zero whatever follows the payload in memory out of the last chunk.
-                    let used := add(1, sub(length, mul(i, CHUNK)))
-                    chunk := and(chunk, not(shr(mul(8, used), not(0))))
-                }
-                sstore(add(data, and(add(add(head, 1), i), mask)), chunk)
-                ptr := add(ptr, CHUNK)
+            let end := add(ptr, length)
+            // Zeroed for the last chunk; restored below.
+            let after := mload(end)
+            mstore(end, 0)
+            for { let index := add(head, 1) } lt(ptr, end) { ptr := add(ptr, CHUNK) } {
+                // The tag, then the first 31 of the 32 bytes read.
+                sstore(add(data, and(index, mask)), or(CHUNK_TAG, shr(8, mload(ptr))))
+                index := add(index, 1)
             }
+            mstore(end, after)
         }
         state.head = uint64(head + chunks + 1);
     }
