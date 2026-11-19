@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
-import {IDomainMessageReceiver} from "../../src/interfaces/IDomain.sol";
+import {IDomainMessageReceiver} from "../../src/interfaces/IDomainMessageReceiver.sol";
 
 /// @dev Test receiver authenticating the local spoke and the complete remote identity.
 contract CrossDomainReceiver is IDomainMessageReceiver {

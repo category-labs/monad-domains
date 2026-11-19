@@ -33,8 +33,8 @@ contract NativeRoutingTest is DomainTestBase {
     address internal alice = makeAddr("alice");
     bytes32 internal constant L1_EVENT =
         keccak256("L1MessageRecorded(uint64,uint64,address,address,bytes,uint256,uint256,bytes32)");
-    bytes32 internal constant ENCRYPTED_L1_EVENT =
-        keccak256("EncryptedL1MessageRecorded(uint64,uint64,uint256,bytes,uint256,uint256)");
+    bytes32 internal constant ENCRYPTED_EVENT =
+        keccak256("EncryptedMessageRecorded(uint64,uint64,uint256,bytes,uint256,uint256)");
     /// @dev Gas limit of a delivery whose fee bought this much gas.
     uint256 internal constant DELIVERY_GAS = 2_500_000;
 
@@ -110,7 +110,7 @@ contract NativeRoutingTest is DomainTestBase {
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter != address(hub)) continue;
             assertTrue(logs[i].topics[0] != L1_EVENT, "a forwarded message must not record a plaintext delivery");
-            if (logs[i].topics[0] != ENCRYPTED_L1_EVENT) continue;
+            if (logs[i].topics[0] != ENCRYPTED_EVENT) continue;
             assertFalse(found, "one delivery per route");
             found = true;
             assertEq(uint256(logs[i].topics[1]), message.destinationChainId);
@@ -165,7 +165,6 @@ contract NativeRoutingTest is DomainTestBase {
 
     function test_domainBoundSendIsSealedByThePrecompileAndNamesNobody() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"abcd");
-        assertTrue(message.kind == MessageLib.MessageKind.Encrypted);
         assertEq(message.sourceChainId, A);
         assertEq(message.destinationChainId, B);
         assertEq(message.sourceNonce, 0);
@@ -192,7 +191,6 @@ contract NativeRoutingTest is DomainTestBase {
 
     function test_l1BoundSendStaysPlain() public {
         MessageLib.DomainMessage memory message = _sendTo(uint64(L1), address(receiver), hex"aa");
-        assertTrue(message.kind == MessageLib.MessageKind.Plain);
         assertEq(message.from, alice);
         assertEq(message.to, address(receiver));
         assertEq(message.data, hex"aa");
@@ -222,7 +220,7 @@ contract NativeRoutingTest is DomainTestBase {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"1234");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(B, A, 0, message.data, 0, DELIVERY_FEE);
+        emit IDomainHub.EncryptedMessageRecorded(B, A, 0, message.data, 0, DELIVERY_FEE);
         vm.expectEmit(address(hub));
         emit IDomainHub.DomainMessageRouted(_id(message), A, B, 0);
         MessageLib.Message memory envelope = _relay(message, anchor, new bytes32[](0));
@@ -272,7 +270,6 @@ contract NativeRoutingTest is DomainTestBase {
         // Spoke A cannot seal to an unregistered domain, so this is a forgery A's validators
         // attested; the hub still does not consume it.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
-            kind: MessageLib.MessageKind.Encrypted,
             sourceChainId: A,
             destinationChainId: 1234,
             from: address(0),
@@ -306,10 +303,6 @@ contract NativeRoutingTest is DomainTestBase {
         message.to = address(0);
         message.from = alice;
         vm.expectRevert(DomainHub.EncryptedMessageWithSender.selector);
-        hub.relayDomainMessage(message, bytes32(0), new bytes32[](0));
-        message.from = address(0);
-        message.kind = MessageLib.MessageKind.Plain;
-        vm.expectRevert(DomainHub.PlaintextDomainMessage.selector);
         hub.relayDomainMessage(message, bytes32(0), new bytes32[](0));
     }
 
@@ -362,7 +355,7 @@ contract NativeRoutingTest is DomainTestBase {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"abcd");
         bytes32 anchor = _attestBatch(hub, spokeA, KEY);
         _post(hub, C, anchor); // Even reattestation under another source cannot change its identity.
-        field = uint8(bound(field, 0, 7));
+        field = uint8(bound(field, 0, 6));
         bytes4 error = DomainHub.InvalidProof.selector;
         if (field == 0) message.sourceChainId = C;
         if (field == 1) message.destinationChainId = C;
@@ -378,10 +371,6 @@ contract NativeRoutingTest is DomainTestBase {
         if (field == 4) message.sourceNonce++;
         if (field == 5) message.data = hex"abce";
         if (field == 6) {
-            message.kind = MessageLib.MessageKind.Plain;
-            error = DomainHub.PlaintextDomainMessage.selector;
-        }
-        if (field == 7) {
             message.salt = TEST_SALT;
             error = DomainHub.EncryptedMessageWithSalt.selector;
         }
@@ -416,7 +405,7 @@ contract NativeRoutingTest is DomainTestBase {
         uint256 before = address(this).balance;
 
         vm.expectEmit(address(hub));
-        emit IDomainHub.EncryptedL1MessageRecorded(B, A, 0, message.data, 0, 0.3 ether);
+        emit IDomainHub.EncryptedMessageRecorded(B, A, 0, message.data, 0, 0.3 ether);
         vm.prank(relayer);
         assertTrue(hub.relayDomainMessage{value: 0.3 ether}(message, anchor, new bytes32[](0)));
         assertEq(address(this).balance - before, 0.3 ether, "B's fee recipient is paid");
@@ -665,7 +654,6 @@ contract NativeRoutingTest is DomainTestBase {
     /// @dev Rejected before the anchor is consulted, so even an attested forgery is not consumed.
     function test_hubRejectsNonCanonicalEnvelopes() public {
         MessageLib.DomainMessage memory forged = MessageLib.DomainMessage({
-            kind: MessageLib.MessageKind.Encrypted,
             sourceChainId: A,
             destinationChainId: uint64(L1),
             from: address(0),
@@ -674,16 +662,10 @@ contract NativeRoutingTest is DomainTestBase {
             salt: bytes32(0),
             data: hex"c0ffee"
         });
-        _rejectAttested(forged, DomainHub.EncryptedL1Callback.selector);
-
-        forged.kind = MessageLib.MessageKind.Plain;
         _rejectAttested(forged, DomainHub.ZeroTarget.selector);
 
         forged.destinationChainId = B;
         forged.to = address(receiver);
-        _rejectAttested(forged, DomainHub.PlaintextDomainMessage.selector);
-
-        forged.kind = MessageLib.MessageKind.Encrypted;
         _rejectAttested(forged, DomainHub.EncryptedMessageWithTarget.selector);
 
         forged.to = address(0);

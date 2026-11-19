@@ -36,8 +36,6 @@ export {
   encodeViewingKey,
   hashDomainMessage,
   hashMessage,
-  isEncryptedDomainMessage,
-  MessageKind,
   type DomainMessage,
   type Message,
   type MessageContext,
@@ -45,14 +43,13 @@ export {
 } from "./message.js";
 export { root, getProof, verify } from "./merkle.js";
 export {
-  ENCRYPTED_L1_MESSAGE_RECORDED_EVENT,
+  ENCRYPTED_MESSAGE_RECORDED_EVENT,
   L1_MESSAGE_RECORDED_EVENT,
   L1_MESSAGE_RELAYED_EVENT,
   DOMAIN_MESSAGE_RECORDED_EVENT,
   DOMAIN_MESSAGE_RELAYED_EVENT,
   DOMAIN_MESSAGE_ROUTED_EVENT,
   DOMAIN_STATE_UPDATED_EVENT,
-  fetchEncryptedL1Messages,
   fetchL1Messages,
   fetchDomainMessages,
   fetchDomainBatch,
@@ -66,10 +63,7 @@ export {
   type L1DeliveryStatus,
   type DomainDeliveryStatus,
   type RecordedMessage,
-  type MessageOpener,
   type MessageProof,
-  type SealedMessage,
-  type UndecryptableMessage,
 } from "./prover.js";
 export {
   HUB_CHECKPOINT_ABI,

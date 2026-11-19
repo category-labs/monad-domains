@@ -269,7 +269,6 @@ abstract contract DomainTestBase is Test {
         bytes memory ciphertext
     ) internal returns (MessageLib.DomainMessage memory message, bytes32 anchor) {
         message = MessageLib.DomainMessage({
-            kind: MessageLib.MessageKind.Encrypted,
             sourceChainId: sourceChainId,
             destinationChainId: destinationChainId,
             from: address(0),

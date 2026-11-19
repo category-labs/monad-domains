@@ -2,7 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {DomainHub} from "../src/DomainHub.sol";
-import {IDomainHub, IDomainMessageReceiver} from "../src/interfaces/IDomain.sol";
+import {IDomainHub} from "../src/interfaces/IDomain.sol";
+import {IDomainMessageReceiver} from "../src/interfaces/IDomainMessageReceiver.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
@@ -68,14 +69,7 @@ contract DomainRelayTest is DomainTestBase {
 
     function _message(uint256 nonce) internal view returns (MessageLib.DomainMessage memory) {
         return MessageLib.DomainMessage(
-            MessageLib.MessageKind.Plain,
-            CHAIN_A,
-            uint64(block.chainid),
-            sender,
-            address(receiver),
-            nonce,
-            TEST_SALT,
-            hex"123456"
+            CHAIN_A, uint64(block.chainid), sender, address(receiver), nonce, TEST_SALT, hex"123456"
         );
     }
 
