@@ -1,6 +1,5 @@
 import { parseAbiItem, type Address, type Hex, type PublicClient } from "viem";
 import { batchRoot, domainMessageCountAt, fetchDomainMessageIds } from "./checkpoint.js";
-import { decryptMessage } from "./encryption.js";
 import {
   decodeDomainMessage,
   domainDeliveryEnvelope,
@@ -9,6 +8,7 @@ import {
   type DomainMessage,
   type Message,
   type MessageContext,
+  type MessagePlaintext,
 } from "./message.js";
 import { getProof, root } from "./merkle.js";
 
@@ -16,8 +16,8 @@ export const L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
   "event L1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, address indexed to, bytes data, uint256 nonce, uint256 fee, bytes32 messageHash)",
 );
 
-export const ENCRYPTED_L1_MESSAGE_RECORDED_EVENT = parseAbiItem(
-  "event EncryptedL1MessageRecorded(uint64 indexed domainChainId, uint64 sourceChainId, address indexed from, bytes ciphertext, uint256 nonce, uint256 fee)",
+export const ENCRYPTED_MESSAGE_RECORDED_EVENT = parseAbiItem(
+  "event EncryptedMessageRecorded(uint64 indexed domainChainId, uint64 indexed sourceChainId, uint256 sourceNonce, bytes ciphertext, uint256 nonce, uint256 fee)",
 );
 
 export const DOMAIN_MESSAGE_RECORDED_EVENT = parseAbiItem(
@@ -110,64 +110,6 @@ export async function fetchL1Messages(
     ...range,
   });
   return sortByPosition(logs.map(toRecorded));
-}
-
-/** An encrypted message event whose ciphertext the viewing key could not open. */
-export interface UndecryptableMessage {
-  nonce: bigint;
-  blockNumber: bigint;
-  logIndex: number;
-}
-
-/**
- * Fetches all encrypted L1 -> domain messages recorded for `domainChainId` in the
- * block range and decrypts them with the domain viewing secret key, in recording order.
- * A decrypted message is returned in the exact shape the plaintext stream yields — its
- * `messageHash` is the plaintext hash the spoke derives at delivery — so
- * `l1MessageDeliveryStatus` works on it unchanged.
- *
- * The protocol's full derivation stream is the nonce-ordered union of this stream and
- * `fetchL1Messages`: both draw from one per-domain nonce sequence.
- *
- * A ciphertext that fails to decrypt still consumed its nonce on the hub, so it is surfaced
- * under `undecryptable` rather than dropped; the client never delivers that nonce, and the
- * spoke accepts the gap (delivery nonces are strictly increasing rather than gapless).
- */
-export async function fetchEncryptedL1Messages(
-  client: PublicClient,
-  domainChainId: bigint,
-  range: { fromBlock: bigint; toBlock: bigint },
-  hub: Address,
-  viewingSecretKey: Hex,
-): Promise<{ messages: RecordedMessage[]; undecryptable: UndecryptableMessage[] }> {
-  const logs = await client.getLogs({
-    address: hub,
-    event: ENCRYPTED_L1_MESSAGE_RECORDED_EVENT,
-    args: { domainChainId },
-    ...range,
-  });
-
-  const messages: RecordedMessage[] = [];
-  const undecryptable: UndecryptableMessage[] = [];
-  for (const log of logs) {
-    const { sourceChainId, from, ciphertext, nonce } = log.args;
-    if (sourceChainId === undefined || !from || ciphertext === undefined || nonce === undefined) {
-      throw new Error("prover: incomplete event log");
-    }
-    try {
-      const { to, data } = await decryptMessage(viewingSecretKey, ciphertext);
-      const message: Message = { sourceChainId, from, to, data, nonce };
-      messages.push({
-        message,
-        messageHash: hashMessage(message),
-        blockNumber: log.blockNumber,
-        logIndex: log.logIndex,
-      });
-    } catch {
-      undecryptable.push({ nonce, blockNumber: log.blockNumber, logIndex: log.logIndex });
-    }
-  }
-  return { messages: sortByPosition(messages), undecryptable };
 }
 
 /**
@@ -406,15 +348,17 @@ export async function l1MessageDeliveryStatus(
 
 /**
  * Execution status of a forwarded domain message on its destination spoke, which the caller
- * configures locally. Read `deliveryNonce` from the hub's `DomainMessageRouted` event.
+ * configures locally. Read `deliveryNonce` from the hub's `DomainMessageRouted` event. The
+ * message is tracked by the plaintext its envelope seals, which the caller supplies.
  */
 export async function routedMessageDeliveryStatus(
   client: PublicClient,
   message: DomainMessage,
   destinationSpoke: Address,
   deliveryNonce: bigint,
+  plaintext: MessagePlaintext,
 ): Promise<L1DeliveryStatus> {
-  const messageHash = hashMessage(domainDeliveryEnvelope(message, deliveryNonce));
+  const messageHash = hashMessage(domainDeliveryEnvelope(message, deliveryNonce, plaintext));
   return l1MessageDeliveryStatus(client, { messageHash }, destinationSpoke);
 }
 

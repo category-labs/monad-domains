@@ -19,6 +19,11 @@ export interface MessageContext {
   hub: Address;
 }
 
+/**
+ * A domain-origin envelope. Bound for the L1, `from`, `to` and `data` are the sender, target and
+ * payload. Bound for another domain, `from`, `to` and `salt` are zero and `data` is
+ * `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
+ */
 export interface DomainMessage {
   sourceChainId: bigint;
   destinationChainId: bigint;
@@ -54,10 +59,46 @@ export function decodeDomainMessage(data: Hex): DomainMessage {
   return message;
 }
 
-/** Direct application delivery, using the nonce assigned by the destination queue. */
-export function domainDeliveryEnvelope(message: DomainMessage, deliveryNonce: bigint): Message {
-  return { sourceChainId: message.sourceChainId, from: message.from,
-    to: message.to, data: message.data, nonce: deliveryNonce };
+/** What a domain-bound envelope seals. Mirrors the arguments of `MessageLib.encodePlaintext`. */
+export interface MessagePlaintext {
+  from: Address;
+  to: Address;
+  data: Hex;
+}
+
+const PLAINTEXT_PARAMS = parseAbiParameters("address from, address to, bytes data");
+
+/** Mirrors `MessageLib.encodePlaintext`. */
+export function encodePlaintext(plaintext: MessagePlaintext): Hex {
+  return encodeAbiParameters(PLAINTEXT_PARAMS, [plaintext.from, plaintext.to, plaintext.data]);
+}
+
+/** Decodes a plaintext produced by `encodePlaintext`, as the destination client does. */
+export function decodePlaintext(plaintext: Hex): MessagePlaintext {
+  const [from, to, data] = decodeAbiParameters(PLAINTEXT_PARAMS, plaintext);
+  return { from, to, data };
+}
+
+const VIEWING_KEY_PARAMS = parseAbiParameters("uint64 domainChainId, bytes32 viewingKey");
+
+/** Mirrors `MessageLib.encodeViewingKey`: the payload of the hub's viewing key message to a spoke. */
+export function encodeViewingKey(domainChainId: bigint, viewingKey: Hex): Hex {
+  return encodeAbiParameters(VIEWING_KEY_PARAMS, [domainChainId, viewingKey]);
+}
+
+/** Mirrors `MessageLib.decodeViewingKey`. */
+export function decodeViewingKey(data: Hex): { domainChainId: bigint; viewingKey: Hex } {
+  const [domainChainId, viewingKey] = decodeAbiParameters(VIEWING_KEY_PARAMS, data);
+  return { domainChainId, viewingKey };
+}
+
+/**
+ * The delivery a forwarded envelope becomes on its destination, under the nonce the destination
+ * queue assigned. The envelope is sealed, so the caller supplies the plaintext.
+ */
+export function domainDeliveryEnvelope(message: DomainMessage, deliveryNonce: bigint, plaintext: MessagePlaintext): Message {
+  return { sourceChainId: message.sourceChainId, from: plaintext.from,
+    to: plaintext.to, data: plaintext.data, nonce: deliveryNonce };
 }
 
 /**

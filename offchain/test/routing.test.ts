@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { zeroHash, type Address, type Hex, type PublicClient } from "viem";
+import { zeroAddress, zeroHash, type Address, type Hex, type PublicClient } from "viem";
 import {
-  decodeDomainMessage, encodeDomainMessage, hashMessage, hashDomainMessage,
+  decodeDomainMessage, decodePlaintext, encodeDomainMessage, encodePlaintext, hashMessage, hashDomainMessage,
   domainDeliveryEnvelope, type DomainMessage,
 } from "../src/message.js";
 import {
@@ -15,9 +15,13 @@ const context = { l1ChainId: 1n, hub: addr(1) };
 const spoke = addr(2);
 const routed: DomainMessage = {
   sourceChainId: 7777n, destinationChainId: 8888n,
-  from: addr(3), to: addr(4), sourceNonce: 9n, salt: `0x${"01".repeat(32)}`, data: "0x1234",
+  from: zeroAddress, to: zeroAddress, sourceNonce: 9n, salt: zeroHash, data: "0x04c0ffee",
 };
-const legacy: DomainMessage = { ...routed, destinationChainId: 1n, sourceNonce: 8n, salt: `0x${"02".repeat(32)}`, data: "0xabcd" };
+const plaintext = { from: addr(3), to: addr(4), data: "0x1234" as Hex };
+const legacy: DomainMessage = {
+  sourceChainId: 7777n, destinationChainId: 1n,
+  from: addr(3), to: addr(4), sourceNonce: 8n, salt: `0x${"02".repeat(32)}`, data: "0xabcd",
+};
 const routeId = hashDomainMessage(routed, context);
 const legacyId = hashDomainMessage(legacy, context);
 const logs = {
@@ -41,8 +45,8 @@ test("message IDs commit to every field and deployment context", () => {
   for (const message of [
     { ...routed, sourceChainId: 7778n },
     { ...routed, destinationChainId: 8889n }, { ...routed, from: addr(5) },
-    { ...routed, to: addr(5) }, { ...routed, sourceNonce: 10n }, { ...routed, data: "0x1235" as Hex },
-    { ...routed, salt: zeroHash },
+    { ...routed, to: addr(5) }, { ...routed, sourceNonce: 10n }, { ...routed, data: "0x04c0ffef" as Hex },
+    { ...routed, salt: `0x${"01".repeat(32)}` as Hex },
   ]) assert.notEqual(hashDomainMessage(message, context), routeId);
   assert.notEqual(hashDomainMessage(routed, { ...context, l1ChainId: 2n }), routeId);
   assert.notEqual(hashDomainMessage(routed, { ...context, hub: addr(5) }), routeId);
@@ -79,10 +83,10 @@ for (const [success, expected] of [
         return success === undefined ? [] : [{ args: { success }, blockNumber: 41n, logIndex: 0 }];
       },
     } as unknown as PublicClient;
-    assert.equal(await routedMessageDeliveryStatus(client, routed, spoke, 3n), expected);
+    assert.equal(await routedMessageDeliveryStatus(client, routed, spoke, 3n, plaintext), expected);
     assert.equal(queries.length, 1);
     const query = queries[0]!;
-    assert.deepEqual(query.args, { messageHash: hashMessage(domainDeliveryEnvelope(routed, 3n)) });
+    assert.deepEqual(query.args, { messageHash: hashMessage(domainDeliveryEnvelope(routed, 3n, plaintext)) });
     assert.equal(query.address, spoke);
     assert.equal(query.fromBlock, 0n);
     assert.equal(query.toBlock, 42n);
@@ -90,6 +94,23 @@ for (const [success, expected] of [
     assert.equal((query.event as { name: string }).name, "L1MessageRelayed");
   });
 }
+
+// ---------------------------------------------------------------------------
+// Sealed envelopes: naming nobody, delivered as the sealed plaintext
+// ---------------------------------------------------------------------------
+
+test("plaintext encoding round-trips the sender, target and payload", () => {
+  const encoded = encodePlaintext(plaintext);
+  assert.deepEqual(decodePlaintext(encoded), plaintext);
+  assert.notEqual(encodePlaintext({ ...plaintext, from: addr(5) }), encoded);
+  assert.deepEqual(decodePlaintext(encodePlaintext({ ...plaintext, data: "0x" })), { ...plaintext, data: "0x" });
+});
+
+test("a forwarded envelope delivers as its plaintext", () => {
+  assert.deepEqual(domainDeliveryEnvelope(routed, 3n, plaintext), {
+    sourceChainId: routed.sourceChainId, from: plaintext.from, to: plaintext.to, data: plaintext.data, nonce: 3n,
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Attested batches: nonce ranges between consecutive checkpoints

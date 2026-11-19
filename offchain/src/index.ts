@@ -10,9 +10,7 @@ export { loadArtifact, type Artifact } from "./artifacts.js";
 export { fetchL1Chain } from "./chain.js";
 export {
   EncryptionError,
-  decryptMessage,
   decryptTransaction,
-  encryptMessage,
   encryptTransaction,
   generateViewingKeyPair,
   type ViewingKeyPair,
@@ -28,26 +26,30 @@ export {
   DOMAIN_MESSAGE_PARAMS,
   generateMessageSalt,
   decodeDomainMessage,
+  decodePlaintext,
   decodeTransfer,
+  decodeViewingKey,
   domainDeliveryEnvelope,
   encodeDomainMessage,
+  encodePlaintext,
   encodeTransfer,
+  encodeViewingKey,
   hashDomainMessage,
   hashMessage,
   type DomainMessage,
   type Message,
   type MessageContext,
+  type MessagePlaintext,
 } from "./message.js";
 export { root, getProof, verify } from "./merkle.js";
 export {
-  ENCRYPTED_L1_MESSAGE_RECORDED_EVENT,
+  ENCRYPTED_MESSAGE_RECORDED_EVENT,
   L1_MESSAGE_RECORDED_EVENT,
   L1_MESSAGE_RELAYED_EVENT,
   DOMAIN_MESSAGE_RECORDED_EVENT,
   DOMAIN_MESSAGE_RELAYED_EVENT,
   DOMAIN_MESSAGE_ROUTED_EVENT,
   DOMAIN_STATE_UPDATED_EVENT,
-  fetchEncryptedL1Messages,
   fetchL1Messages,
   fetchDomainMessages,
   fetchDomainBatch,
@@ -62,7 +64,6 @@ export {
   type DomainDeliveryStatus,
   type RecordedMessage,
   type MessageProof,
-  type UndecryptableMessage,
 } from "./prover.js";
 export {
   HUB_CHECKPOINT_ABI,

@@ -6,7 +6,10 @@ pragma solidity ^0.8.24;
 library MessageLib {
     /// @notice An authenticated domain-origin message. The source spoke assigns origin and nonce.
     /// The hub proves this envelope and assigns a separate destination delivery nonce when forwarding.
-    /// The destination selects L1 execution or domain forwarding.
+    /// The destination selects L1 execution or domain forwarding, and with it the envelope's shape.
+    /// Bound for the L1, `from`, `to` and `data` are the sender, target and payload of the callback.
+    /// Bound for another domain, `from`, `to` and `salt` are zero and `data` is
+    /// `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
     struct DomainMessage {
         uint64 sourceChainId;
         uint64 destinationChainId;
@@ -38,8 +41,15 @@ library MessageLib {
         );
     }
 
-    /// @notice Shared delivery envelope for L1-origin and forwarded domain messages.
-    /// The hub authenticates sourceChainId/from and assigns a destination queue nonce.
+    /// @notice What a domain-bound envelope seals: the authenticated sender, the target and its
+    /// payload.
+    function encodePlaintext(address from, address to, bytes memory data) internal pure returns (bytes memory) {
+        return abi.encode(from, to, data);
+    }
+
+    /// @notice Shared delivery envelope for L1-origin and forwarded domain messages. The hub
+    /// authenticates sourceChainId and assigns a destination queue nonce; `from` is the L1 sender
+    /// the hub recorded, or the sender a forwarded ciphertext opens to.
     /// `to` is always the destination application; data is its original payload.
     struct Message {
         uint64 sourceChainId;
@@ -61,6 +71,17 @@ library MessageLib {
     /// `from` and `to` as the two bridge contracts.
     function encodeTransfer(address recipient, address l1Token, uint256 amount) internal pure returns (bytes memory) {
         return abi.encode(recipient, l1Token, amount);
+    }
+
+    /// @notice Encodes the payload of the hub's viewing key message to a spoke: the domain a
+    /// key belongs to and the key.
+    function encodeViewingKey(uint64 domainChainId, bytes32 viewingKey) internal pure returns (bytes memory) {
+        return abi.encode(domainChainId, viewingKey);
+    }
+
+    /// @notice Decodes a payload produced by `encodeViewingKey`.
+    function decodeViewingKey(bytes memory data) internal pure returns (uint64 domainChainId, bytes32 viewingKey) {
+        (domainChainId, viewingKey) = abi.decode(data, (uint64, bytes32));
     }
 
     /// @notice Decodes a token bridge payload produced by `encodeTransfer`.

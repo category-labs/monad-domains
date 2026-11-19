@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IDomainSpoke, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
 import {IDomainAccessPolicy} from "./interfaces/IDomainAccessControl.sol";
+import {IDomainEncryption, DOMAIN_ENCRYPTION_PRECOMPILE} from "./interfaces/IDomainEncryption.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 
 contract DomainSpoke is IDomainSpoke {
@@ -21,6 +22,10 @@ contract DomainSpoke is IDomainSpoke {
     error OutOfOrderNonce();
     error NotFailedMessage();
     error RetryFailed();
+    error NotDelivery();
+    error NotFromHub();
+    error NoViewingKey();
+    error InvalidCiphertext();
     error SameDomain();
     error ZeroTarget();
     error ZeroSalt();
@@ -40,7 +45,8 @@ contract DomainSpoke is IDomainSpoke {
     address public immutable HUB;
 
     // Storage layout: the domain RPC reads `policyOwners` (slot 2) and `logReaders` (slot 6)
-    // directly from state, so these declarations must not be reordered.
+    // and the encryption precompile reads `viewingKeys` (slot 7) directly from state, so these
+    // declarations must not be reordered.
 
     /// @notice Number of domain-origin messages recorded so far; the nonce the next one gets.
     uint256 public domainMessageCount;
@@ -59,6 +65,8 @@ contract DomainSpoke is IDomainSpoke {
     /// @notice Accounts besides the policy owner that the domain RPC lets read every log of a
     /// contract.
     mapping(address target => mapping(address reader => bool allowed)) public logReaders;
+    /// @notice Viewing key of each other domain, as the hub last sent it.
+    mapping(uint64 domainChainId => bytes32 viewingKey) public viewingKeys;
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
@@ -182,6 +190,20 @@ contract DomainSpoke is IDomainSpoke {
     }
 
     // ---------------------------------------------------------------------
+    // Hub messages to this spoke
+    // ---------------------------------------------------------------------
+
+    /// @notice Stores a viewing key the hub sent. Reached only through this spoke's own
+    /// delivery of a message whose source is the L1 and whose sender is the hub.
+    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
+        if (msg.sender != address(this)) revert NotDelivery();
+        if (sourceChainId != L1_CHAIN_ID || from != HUB) revert NotFromHub();
+        (uint64 domainChainId, bytes32 viewingKey) = MessageLib.decodeViewingKey(data);
+        viewingKeys[domainChainId] = viewingKey;
+        emit ViewingKeySet(domainChainId, viewingKey);
+    }
+
+    // ---------------------------------------------------------------------
     // Domain-origin messaging (L1 execution or forwarding to another domain)
     // ---------------------------------------------------------------------
 
@@ -191,12 +213,31 @@ contract DomainSpoke is IDomainSpoke {
     {
         if (destinationChainId == DOMAIN_CHAIN_ID) revert SameDomain();
         if (to == address(0)) revert ZeroTarget();
-        if (salt == bytes32(0)) revert ZeroSalt();
+        if (destinationChainId == L1_CHAIN_ID) {
+            if (salt == bytes32(0)) revert ZeroSalt();
+            return _recordDomainMessage(destinationChainId, msg.sender, to, data, salt);
+        }
+        if (viewingKeys[destinationChainId] == bytes32(0)) revert NoViewingKey();
+        // The sender travels inside the sealed plaintext, so the envelope names nobody. The
+        // ciphertext already hides the content, so the envelope carries no salt and `salt` is unused.
+        bytes memory plaintext = MessageLib.encodePlaintext(msg.sender, to, data);
+        bytes memory ciphertext = IDomainEncryption(DOMAIN_ENCRYPTION_PRECOMPILE)
+            .sealMessage(destinationChainId, domainMessageCount, plaintext);
+        // A ciphertext is longer than what it seals: an empty or echoed result is not one.
+        if (ciphertext.length <= plaintext.length) revert InvalidCiphertext();
+        messageId = _recordDomainMessage(destinationChainId, address(0), address(0), ciphertext, bytes32(0));
+    }
+
+    /// @dev Assigns the next source nonce, stores the message ID and emits the full envelope.
+    function _recordDomainMessage(uint64 destinationChainId, address from, address to, bytes memory data, bytes32 salt)
+        internal
+        returns (bytes32 messageId)
+    {
         uint256 sourceNonce = domainMessageCount++;
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
             sourceChainId: DOMAIN_CHAIN_ID,
             destinationChainId: destinationChainId,
-            from: msg.sender,
+            from: from,
             to: to,
             sourceNonce: sourceNonce,
             salt: salt,

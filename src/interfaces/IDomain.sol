@@ -4,14 +4,25 @@ pragma solidity ^0.8.24;
 import {IDomainAccessControl} from "./IDomainAccessControl.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
 
+/// @notice Shared hook for L1-origin and domain-origin messages. Authenticate msg.sender
+/// (the hub on L1, local spoke on a domain), sourceChainId and from together.
+/// @dev Do all the work or revert. Whoever relays, pays for or retries a delivery chooses the
+/// gas this call gets. A revert leaves the message retryable; returning normally consumes it
+/// for good. A receiver that carries on after a failed inner call (`try/catch`, an unchecked
+/// low-level call) can be given just enough gas to finish without that call, so it must
+/// first check that `gasleft()` covers it.
+interface IDomainMessageReceiver {
+    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external;
+}
+
 /// @notice L1-side hub of the domain messaging layer: the single L1 contract every domain connects
 /// through. It registers domains, sequences their transactions, records L1 -> domain messages, and
 /// stores the block hashes and domain-origin message anchors each domain's validators attest.
 interface IDomainHub {
     event DomainRegistered(uint64 indexed domainChainId, address indexed feeRecipient, uint64 checkpointInterval);
 
-    /// @notice The viewing public key senders encrypt domain transactions and messages to, as a
-    /// 32-byte X25519 public key.
+    /// @notice The viewing public key domain transactions and messages from other domains are
+    /// encrypted to, as a 32-byte X25519 public key.
     event ViewingKeyRegistered(uint64 indexed domainChainId, bytes viewingKey);
 
     /// @notice One L1-sequenced domain transaction. The domain sender is recovered from the
@@ -55,8 +66,9 @@ interface IDomainHub {
         bool success
     );
 
-    /// @notice Emitted for every recorded L1 -> domain message. This event stream is the
-    /// protocol's derivation source for system delivery transactions.
+    /// @notice Emitted for every recorded L1 -> domain message. This event stream and
+    /// `EncryptedMessageRecorded` are the protocol's derivation source for system delivery
+    /// transactions.
     event L1MessageRecorded(
         uint64 indexed domainChainId,
         uint64 sourceChainId,
@@ -68,11 +80,14 @@ interface IDomainHub {
         bytes32 messageHash
     );
 
-    /// @notice Emitted for every recorded encrypted L1 -> domain message.
-    event EncryptedL1MessageRecorded(
+    /// @notice Emitted for every encrypted domain -> domain message `relayDomainMessage`
+    /// forwards. The destination client opens `ciphertext`, sealed with `sourceChainId` and
+    /// `sourceNonce` bound in, into the sender, target and payload. Draws from the same nonce
+    /// sequence as `L1MessageRecorded`.
+    event EncryptedMessageRecorded(
         uint64 indexed domainChainId,
-        uint64 sourceChainId,
-        address indexed from,
+        uint64 indexed sourceChainId,
+        uint256 sourceNonce,
         bytes ciphertext,
         uint256 nonce,
         uint256 fee
@@ -103,7 +118,8 @@ interface IDomainHub {
     /// validator signatures required to advance the state, the recipient of sequencing fees,
     /// the viewing public key senders encrypt to (32-byte X25519 public key, or empty),
     /// the checkpoint interval attested block numbers must be multiples of, and how many
-    /// checkpoint periods may be unattested before the domain stops accepting inputs. MUST
+    /// checkpoint periods may be unattested before the domain stops accepting inputs. A domain
+    /// without a viewing key cannot receive messages from other domains. MUST
     /// reject the L1 chain id, an already registered chain id, a zero quorum, a quorum
     /// exceeding the validator count, zero or duplicate validators, a zero fee recipient, a
     /// zero interval, a period limit outside 1 to 50 and a viewing key that is neither empty
@@ -181,12 +197,14 @@ interface IDomainHub {
 
     // --- Delivery of domain messages ---
 
-    /// @notice Proves any domain-origin message against its source anchor. If its destination
-    /// is L1, invokes onDomainMessage and returns callback success (failure is retryable here);
-    /// no value may be attached. Otherwise atomically queues it through the same path as
-    /// sendL1Message, with `msg.value` as the destination delivery fee (at least the minimum
-    /// for the envelope's data), and returns true; destination execution/retry happens on that
-    /// domain. Messages can arrive in any order.
+    /// @notice Proves any domain-origin message against its source anchor. An L1 destination
+    /// takes an envelope with a target: the hub invokes onDomainMessage and returns callback
+    /// success (failure is retryable here); no value may be attached. A domain destination
+    /// takes a sealed envelope, with zero `from`, `to` and `salt`: the hub queues the
+    /// ciphertext for that domain, with `msg.value` as the delivery fee (at least the minimum
+    /// for the ciphertext), and returns true; execution/retry happens on that domain. Any other
+    /// shape is rejected before the anchor is consulted. MUST reject a destination without a
+    /// viewing key, which no spoke can have sealed to. Messages can arrive in any order.
     function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
         external
         payable
@@ -227,14 +245,15 @@ interface IDomainHub {
     /// `minDeliveryFee(data.length)`.
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable;
 
-    /// @notice Records an encrypted message to the target domain, drawing from the same nonce
-    /// sequence as `sendL1Message`. The client decrypts `abi.encodePacked(to, data)` out of
-    /// `ciphertext`; a ciphertext it cannot decrypt still consumes its nonce. `msg.value` is the
-    /// delivery fee, at least `minDeliveryFee(ciphertext.length)`.
-    function sendEncryptedL1Message(uint64 domainChainId, bytes calldata ciphertext) external payable;
+    /// @notice Sends `keyChainId`'s registered viewing key to `spoke` on `domainChainId` as an
+    /// L1 message from the hub itself, carrying `MessageLib.encodeViewingKey(keyChainId, key)`.
+    /// Anyone may call it; `msg.value` is the delivery fee. The spoke accepts the key only from
+    /// a delivery whose source is the L1 and whose sender is the hub. MUST reject an
+    /// unregistered `domainChainId` and a `keyChainId` without a viewing key.
+    function sendViewingKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable;
 
-    /// @notice Number of L1 -> domain messages recorded for `domainChainId`, plaintext,
-    /// encrypted and forwarded alike; equals the nonce the next message will be assigned.
+    /// @notice Number of deliveries recorded for `domainChainId`, L1 messages and forwarded
+    /// encrypted domain messages alike; equals the nonce the next one will be assigned.
     function l1MessageCounts(uint64 domainChainId) external view returns (uint256);
 
     // --- Input queue ---
@@ -262,10 +281,14 @@ interface IDomainHub {
 /// @notice Domain-side spoke, deployed in each domain's state. Mirror image of the hub: it
 /// records domain-origin messages by nonce and receives the L1 -> domain messages the domain
 /// client delivers as system transactions. It also holds the access-control configuration the
-/// domain client and RPC enforce.
-interface IDomainSpoke is IDomainAccessControl {
+/// domain client and RPC enforce, and the viewing keys of other domains the encryption
+/// precompile seals to.
+interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
     /// @notice Full encoded domain-origin envelope, whether addressed to L1 or another domain.
     event DomainMessageRecorded(bytes32 indexed messageId, bytes message);
+
+    /// @notice A viewing key of another domain was stored, from a hub message.
+    event ViewingKeySet(uint64 indexed domainChainId, bytes32 viewingKey);
 
     /// @notice Emitted for every protocol-delivered L1 -> domain message. `success` is the
     /// outcome of the target call; a failed delivery is retryable via `retryL1Message`.
@@ -287,14 +310,25 @@ interface IDomainSpoke is IDomainAccessControl {
     function L1_CHAIN_ID() external view returns (uint64);
     function HUB() external view returns (address);
 
+    // --- Viewing keys of other domains ---
+
+    /// @notice Viewing key of `domainChainId` as the hub last sent it, or zero. Set only by
+    /// `onDomainMessage` on a delivery this spoke makes to itself whose source is the L1 and
+    /// whose sender is the hub (`sendViewingKey` on the hub); any other caller or origin is
+    /// rejected. The encryption precompile reads this mapping to seal messages to
+    /// `domainChainId`.
+    function viewingKeys(uint64 domainChainId) external view returns (bytes32);
+
     // --- Delivery of L1 messages (protocol system transactions) ---
 
-    /// @notice Delivers one L1 -> domain message. Callable ONLY from the protocol's system
-    /// transactions, which the client derives from the hub's `L1MessageRecorded` and
-    /// `EncryptedL1MessageRecorded` events with the gas limit the recorded fee bought. Nonces
-    /// must arrive strictly increasing; a gap is a message the client never delivers (an
-    /// undecryptable ciphertext or an unpaid delivery), consumed for good by the delivery that
-    /// jumps it. The client must derive sourceChainId/from from authenticated hub events. The
+    /// @notice Delivers one message the hub recorded for this domain. Callable ONLY from the
+    /// protocol's system transactions, which the client derives with the gas limit the recorded
+    /// fee bought: from `L1MessageRecorded` events as recorded, and from
+    /// `EncryptedMessageRecorded` events by opening the ciphertext into `(from, to, data)`.
+    /// Nonces must arrive strictly increasing; a gap is a message the client never delivers (a
+    /// ciphertext it cannot open or an unpaid delivery), consumed for good by the delivery that
+    /// jumps it. The client must take sourceChainId and from from the hub event or the opened
+    /// plaintext, never from a caller. The
     /// spoke calls to.onDomainMessage(sourceChainId, from, data) with all gas but
     /// `DELIVERY_GAS_RESERVE`, copying no return data; a failing target, or one without code, is
     /// marked failed instead of reverting.
@@ -311,10 +345,17 @@ interface IDomainSpoke is IDomainAccessControl {
 
     // --- Messaging: domain -> L1 or another domain ---
 
-    /// @notice Sends a message to L1 or another domain through the same authenticated
-    /// envelope. Source identity and nonce are assigned by this spoke. An L1 destination
-    /// executes a callback there; a domain destination is forwarded without an L1 callback.
-    /// @param salt Fresh cryptographically random bytes, kept private until relay.
+    /// @notice Sends a message to the L1 or another domain; this spoke assigns the source
+    /// identity and nonce. An L1 destination records an envelope naming the sender, `to` and
+    /// `data`, executed as a callback there. A domain destination records a sealed envelope: the
+    /// spoke seals `encodePlaintext(msg.sender, to, data)` through the encryption precompile,
+    /// bound to this domain, the destination and the nonce, and the envelope carries only the
+    /// ciphertext. MUST reject the local domain, a zero target, a domain destination whose
+    /// viewing key this spoke does not hold, and a precompile result no longer than the
+    /// plaintext.
+    /// @param salt Fresh cryptographically random bytes, kept private until relay. MUST be
+    /// nonzero for an L1 destination. Ignored for a domain destination, whose envelope carries
+    /// a zero salt because the ciphertext already hides its content.
     function sendDomainMessage(uint64 destinationChainId, address to, bytes calldata data, bytes32 salt)
         external
         returns (bytes32 messageId);
@@ -325,15 +366,4 @@ interface IDomainSpoke is IDomainAccessControl {
     /// @notice Recorded message ID by source nonce. Never cleared, so an attested batch can
     /// always be rebuilt from state.
     function domainMessageIds(uint256 sourceNonce) external view returns (bytes32);
-}
-
-/// @notice Shared hook for L1-origin and domain-origin messages. Authenticate msg.sender
-/// (the hub on L1, local spoke on a domain), sourceChainId and from together.
-/// @dev Do all the work or revert. Whoever relays, pays for or retries a delivery chooses the
-/// gas this call gets. A revert leaves the message retryable; returning normally consumes it
-/// for good. A receiver that carries on after a failed inner call (`try/catch`, an unchecked
-/// low-level call) can be given just enough gas to finish without that call, so it must
-/// first check that `gasleft()` covers it.
-interface IDomainMessageReceiver {
-    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external;
 }

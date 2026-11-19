@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { keccak256, toHex, type Address, type Hex } from "viem";
-import { encodeTransfer, hashDomainMessage, hashMessage, type Message } from "../src/message.js";
+import {
+  decodePlaintext, decodeViewingKey, encodePlaintext, encodeTransfer, encodeViewingKey, hashDomainMessage, hashMessage,
+  type DomainMessage, type Message,
+} from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
 import { proveMessage, type RecordedMessage } from "../src/prover.js";
 import { stateTransitionDigest } from "../src/checkpoint.js";
@@ -134,19 +137,43 @@ test("stateTransitionDigest matches DomainHub.stateTransitionDigest", () => {
   assert.equal(digest, "0xd77443a084ac6dc2079c8be19b955cef936d23dd7b67c590f798896f20732f6f");
 });
 
-/** Domain message ID vector: the anchor leaf of a withdrawal-shaped message to the L1. */
+/**
+ * Domain message ID vectors: the anchor leaves of a withdrawal-shaped message to the L1 and of a
+ * sealed envelope to another domain.
+ */
 test("hashDomainMessage matches MessageLib.hashDomainMessage", () => {
-  const id = hashDomainMessage(
-    {
-      sourceChainId: 7777n,
-      destinationChainId: 31337n,
-      from: toHex(0x1000, { size: 20 }) as Address,
-      to: toHex(0x2000, { size: 20 }) as Address,
-      sourceNonce: 3n,
-      salt: toHex(1, { size: 32 }),
-      data: encodeTransfer(toHex(0x3000, { size: 20 }) as Address, toHex(0x4000, { size: 20 }) as Address, 10n ** 18n),
-    },
-    VECTOR_CONTEXT,
-  );
-  assert.equal(id, "0xa0e7d092669d8549053b94ad7d773382718f697c90b97d1518cf69062af286b2");
+  const toL1: DomainMessage = {
+    sourceChainId: 7777n,
+    destinationChainId: 31337n,
+    from: toHex(0x1000, { size: 20 }) as Address,
+    to: toHex(0x2000, { size: 20 }) as Address,
+    sourceNonce: 3n,
+    salt: toHex(1, { size: 32 }),
+    data: encodeTransfer(toHex(0x3000, { size: 20 }) as Address, toHex(0x4000, { size: 20 }) as Address, 10n ** 18n),
+  };
+  assert.equal(hashDomainMessage(toL1, VECTOR_CONTEXT), "0xa0e7d092669d8549053b94ad7d773382718f697c90b97d1518cf69062af286b2");
+  const toDomain: DomainMessage = {
+    ...toL1,
+    destinationChainId: 8888n,
+    from: toHex(0, { size: 20 }) as Address,
+    to: toHex(0, { size: 20 }) as Address,
+    salt: toHex(0, { size: 32 }),
+    data: "0x04c0ffee",
+  };
+  assert.equal(hashDomainMessage(toDomain, VECTOR_CONTEXT), "0x0006269e652eae44fcce4ec4b8c40d704df704e015584ce0749d3fe1eac3c4ef");
+});
+
+/** Plaintext vector: a message from 0x1000 to 0x2000 carrying 0x1234. */
+test("encodePlaintext matches MessageLib.encodePlaintext", () => {
+  const plaintext = { from: toHex(0x1000, { size: 20 }) as Address, to: toHex(0x2000, { size: 20 }) as Address, data: "0x1234" as Hex };
+  const encoded = encodePlaintext(plaintext);
+  assert.equal(keccak256(encoded), "0x7a9c9eb956b730e4846f08c2553b355ef73f56830298acb60d4666b3b5f8b0ef");
+  assert.deepEqual(decodePlaintext(encoded), plaintext);
+});
+
+test("encodeViewingKey matches MessageLib.encodeViewingKey", () => {
+  const viewingKey = keccak256(toHex("viewing key"));
+  const data = encodeViewingKey(8888n, viewingKey);
+  assert.equal(keccak256(data), "0xc94518b602b208060b5fe015a92d0442be3ae61b05396f639d647da9721e10b8");
+  assert.deepEqual(decodeViewingKey(data), { domainChainId: 8888n, viewingKey });
 });
