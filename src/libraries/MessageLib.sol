@@ -4,19 +4,13 @@ pragma solidity ^0.8.24;
 /// @notice Canonical encoding of cross-domain messages and of the token bridge payload
 /// carried inside them, shared by the hub, the spoke and both bridges.
 library MessageLib {
-    /// @notice `Plain`: an L1-bound envelope; `to` and `data` are the target and payload.
-    /// `Encrypted`: a domain-bound envelope; `from`, `to` and `salt` are zero and `data` is
-    /// `encodePlaintext(from, to, data)` sealed to the destination's viewing key.
-    enum MessageKind {
-        Plain,
-        Encrypted
-    }
-
     /// @notice An authenticated domain-origin message. The source spoke assigns origin and nonce.
     /// The hub proves this envelope and assigns a separate destination delivery nonce when forwarding.
-    /// The destination selects L1 execution or domain forwarding; `kind` names the envelope's shape.
+    /// The destination selects L1 execution or domain forwarding, and with it the envelope's shape.
+    /// Bound for the L1, `from`, `to` and `data` are the sender, target and payload of the callback.
+    /// Bound for another domain, `from`, `to` and `salt` are zero and `data` is
+    /// `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
     struct DomainMessage {
-        MessageKind kind;
         uint64 sourceChainId;
         uint64 destinationChainId;
         address from;
@@ -36,7 +30,6 @@ library MessageLib {
             abi.encode(
                 l1ChainId,
                 hub,
-                message.kind,
                 message.sourceChainId,
                 message.destinationChainId,
                 message.from,
@@ -48,7 +41,7 @@ library MessageLib {
         );
     }
 
-    /// @notice What an `Encrypted` envelope seals: the authenticated sender, the target and its
+    /// @notice What a domain-bound envelope seals: the authenticated sender, the target and its
     /// payload.
     function encodePlaintext(address from, address to, bytes memory data) internal pure returns (bytes memory) {
         return abi.encode(from, to, data);

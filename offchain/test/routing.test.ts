@@ -3,11 +3,10 @@ import { test } from "node:test";
 import { zeroAddress, zeroHash, type Address, type Hex, type PublicClient } from "viem";
 import {
   decodeDomainMessage, decodePlaintext, encodeDomainMessage, encodePlaintext, hashMessage, hashDomainMessage,
-  domainDeliveryEnvelope, isEncryptedDomainMessage, MessageKind, type DomainMessage,
+  domainDeliveryEnvelope, type DomainMessage,
 } from "../src/message.js";
 import {
-  fetchDomainBatch, fetchDomainMessages, fetchEncryptedL1Messages, findBatchForNonce, proveMessage,
-  routedMessageDeliveryStatus, type SealedMessage,
+  fetchDomainBatch, fetchDomainMessages, findBatchForNonce, proveMessage, routedMessageDeliveryStatus,
 } from "../src/prover.js";
 import { verify, root } from "../src/merkle.js";
 
@@ -15,10 +14,14 @@ const addr = (n: number) => `0x${n.toString(16).padStart(40,"0")}` as Address;
 const context = { l1ChainId: 1n, hub: addr(1) };
 const spoke = addr(2);
 const routed: DomainMessage = {
-  kind: MessageKind.Plain, sourceChainId: 7777n, destinationChainId: 8888n,
-  from: addr(3), to: addr(4), sourceNonce: 9n, salt: `0x${"01".repeat(32)}`, data: "0x1234",
+  sourceChainId: 7777n, destinationChainId: 8888n,
+  from: zeroAddress, to: zeroAddress, sourceNonce: 9n, salt: zeroHash, data: "0x04c0ffee",
 };
-const legacy: DomainMessage = { ...routed, destinationChainId: 1n, sourceNonce: 8n, salt: `0x${"02".repeat(32)}`, data: "0xabcd" };
+const plaintext = { from: addr(3), to: addr(4), data: "0x1234" as Hex };
+const legacy: DomainMessage = {
+  sourceChainId: 7777n, destinationChainId: 1n,
+  from: addr(3), to: addr(4), sourceNonce: 8n, salt: `0x${"02".repeat(32)}`, data: "0xabcd",
+};
 const routeId = hashDomainMessage(routed, context);
 const legacyId = hashDomainMessage(legacy, context);
 const logs = {
@@ -40,11 +43,10 @@ test("routed envelope round-trips and rejects non-canonical encodings", () => {
 
 test("message IDs commit to every field and deployment context", () => {
   for (const message of [
-    { ...routed, kind: MessageKind.Encrypted },
     { ...routed, sourceChainId: 7778n },
     { ...routed, destinationChainId: 8889n }, { ...routed, from: addr(5) },
-    { ...routed, to: addr(5) }, { ...routed, sourceNonce: 10n }, { ...routed, data: "0x1235" as Hex },
-    { ...routed, salt: zeroHash },
+    { ...routed, to: addr(5) }, { ...routed, sourceNonce: 10n }, { ...routed, data: "0x04c0ffef" as Hex },
+    { ...routed, salt: `0x${"01".repeat(32)}` as Hex },
   ]) assert.notEqual(hashDomainMessage(message, context), routeId);
   assert.notEqual(hashDomainMessage(routed, { ...context, l1ChainId: 2n }), routeId);
   assert.notEqual(hashDomainMessage(routed, { ...context, hub: addr(5) }), routeId);
@@ -81,10 +83,10 @@ for (const [success, expected] of [
         return success === undefined ? [] : [{ args: { success }, blockNumber: 41n, logIndex: 0 }];
       },
     } as unknown as PublicClient;
-    assert.equal(await routedMessageDeliveryStatus(client, routed, spoke, 3n), expected);
+    assert.equal(await routedMessageDeliveryStatus(client, routed, spoke, 3n, plaintext), expected);
     assert.equal(queries.length, 1);
     const query = queries[0]!;
-    assert.deepEqual(query.args, { messageHash: hashMessage(domainDeliveryEnvelope(routed, 3n)) });
+    assert.deepEqual(query.args, { messageHash: hashMessage(domainDeliveryEnvelope(routed, 3n, plaintext)) });
     assert.equal(query.address, spoke);
     assert.equal(query.fromBlock, 0n);
     assert.equal(query.toBlock, 42n);
@@ -94,14 +96,8 @@ for (const [success, expected] of [
 }
 
 // ---------------------------------------------------------------------------
-// Encrypted envelopes: naming nobody, delivered as the sealed plaintext
+// Sealed envelopes: naming nobody, delivered as the sealed plaintext
 // ---------------------------------------------------------------------------
-
-const encrypted: DomainMessage = {
-  ...routed, kind: MessageKind.Encrypted, from: zeroAddress, to: zeroAddress, sourceNonce: 11n, salt: zeroHash,
-  data: "0x04c0ffee",
-};
-const plaintext = { from: addr(3), to: addr(4), data: "0x1234" as Hex };
 
 test("plaintext encoding round-trips the sender, target and payload", () => {
   const encoded = encodePlaintext(plaintext);
@@ -110,67 +106,10 @@ test("plaintext encoding round-trips the sender, target and payload", () => {
   assert.deepEqual(decodePlaintext(encodePlaintext({ ...plaintext, data: "0x" })), { ...plaintext, data: "0x" });
 });
 
-test("encrypted envelopes round-trip and unknown kinds are rejected", () => {
-  assert.ok(isEncryptedDomainMessage(encrypted));
-  assert.ok(!isEncryptedDomainMessage(routed));
-  assert.deepEqual(decodeDomainMessage(encodeDomainMessage(encrypted)), encrypted);
-  assert.notEqual(hashDomainMessage(encrypted, context), hashDomainMessage({ ...encrypted, data: "0x04c0ffef" }, context));
-  const unknownKind = encodeDomainMessage({ ...encrypted, kind: 2 as MessageKind });
-  assert.throws(() => decodeDomainMessage(unknownKind), /unknown message kind/);
-});
-
-test("an encrypted envelope delivers as its plaintext", () => {
-  assert.throws(() => domainDeliveryEnvelope(encrypted, 3n), /plaintext/);
-  // The sender comes out of the plaintext.
-  assert.deepEqual(domainDeliveryEnvelope(encrypted, 3n, plaintext), {
-    sourceChainId: encrypted.sourceChainId, from: plaintext.from, to: plaintext.to, data: plaintext.data, nonce: 3n,
+test("a forwarded envelope delivers as its plaintext", () => {
+  assert.deepEqual(domainDeliveryEnvelope(routed, 3n, plaintext), {
+    sourceChainId: routed.sourceChainId, from: plaintext.from, to: plaintext.to, data: plaintext.data, nonce: 3n,
   });
-  // Same delivery hash as a plaintext route of the same content.
-  assert.equal(
-    hashMessage(domainDeliveryEnvelope(encrypted, 3n, plaintext)),
-    hashMessage(domainDeliveryEnvelope({ ...routed, to: plaintext.to, data: plaintext.data }, 3n)),
-  );
-  assert.deepEqual(domainDeliveryEnvelope(routed, 3n, plaintext), domainDeliveryEnvelope(routed, 3n));
-});
-
-test("encrypted routed delivery status queries by the plaintext delivery hash", async () => {
-  const queries: Record<string, unknown>[] = [];
-  const client = {
-    getBlockNumber: async () => 42n,
-    getLogs: async (request: Record<string, unknown>) => {
-      queries.push(request);
-      return [{ args: { success: true }, blockNumber: 41n, logIndex: 0 }];
-    },
-  } as unknown as PublicClient;
-  await assert.rejects(routedMessageDeliveryStatus(client, encrypted, spoke, 3n), /plaintext/);
-  assert.equal(queries.length, 0);
-  assert.equal(await routedMessageDeliveryStatus(client, encrypted, spoke, 3n, plaintext), "delivered");
-  assert.deepEqual(queries[0]!.args, { messageHash: hashMessage(domainDeliveryEnvelope(encrypted, 3n, plaintext)) });
-});
-
-test("forwarded ciphertexts are opened into deliveries and unopenable ones surface as gaps", async () => {
-  const opened: SealedMessage[] = [];
-  const event = (sourceNonce: bigint, ciphertext: Hex, nonce: bigint, logIndex: number) => ({
-    args: { domainChainId: 8888n, sourceChainId: 7777n, sourceNonce, ciphertext, nonce, fee: 1n },
-    blockNumber: 20n, logIndex,
-  });
-  const client = {
-    getLogs: async (request: { event: { name: string } }) => {
-      assert.equal(request.event.name, "EncryptedL1MessageRecorded");
-      return [event(11n, "0x04c0ffee", 6n, 2), event(12n, "0x04bad0", 5n, 1)];
-    },
-  } as unknown as PublicClient;
-  const open = async (sealed: SealedMessage) => {
-    opened.push(sealed);
-    if (sealed.ciphertext !== "0x04c0ffee") throw new Error("cannot open");
-    return encodePlaintext(plaintext);
-  };
-  const { messages, undecryptable } = await fetchEncryptedL1Messages(client, 8888n, { fromBlock: 0n, toBlock: 20n }, addr(1), open);
-  assert.deepEqual(opened.map((s) => [s.sourceChainId, s.destinationChainId, s.sourceNonce]), [[7777n, 8888n, 11n], [7777n, 8888n, 12n]]);
-  assert.equal(messages.length, 1);
-  assert.deepEqual(messages[0]!.message, { sourceChainId: 7777n, ...plaintext, nonce: 6n });
-  assert.equal(messages[0]!.messageHash, hashMessage(domainDeliveryEnvelope(encrypted, 6n, plaintext)));
-  assert.deepEqual(undecryptable, [{ nonce: 5n, blockNumber: 20n, logIndex: 1 }]);
 });
 
 // ---------------------------------------------------------------------------
