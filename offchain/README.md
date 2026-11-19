@@ -75,10 +75,10 @@ heights.
 Every domain-bound message is sealed on chain: the spoke hands
 `encodePlaintext(msg.sender, to, data)` to the execution client's encryption precompile, which
 seals it to the destination's viewing key bound to the source domain, the destination and the
-envelope's nonce. The envelope has kind `Encrypted`, names neither sender nor target and carries
+envelope's nonce. The envelope names neither sender nor target and carries
 no salt: the ciphertext already hides its content, so `salt` is ignored for a domain destination
 and only an L1 destination needs one. The hub forwards the envelope as an
-`EncryptedL1MessageRecorded` delivery carrying only the ciphertext, which the destination client
+`EncryptedMessageRecorded` delivery carrying only the ciphertext, which the destination client
 opens into `(from, to, data)` before deriving the system transaction. A
 spoke learns another domain's key through `hub.sendViewingKey(domainChainId, spoke, keyChainId)`,
 which anyone may call for the delivery fee: the hub records the key as an L1 message from itself
@@ -115,13 +115,13 @@ if (message.destinationChainId === L1_CHAIN_ID) {
   // A failed L1 callback is retried with hub.retryDomainMessage(message).
 } else {
   // Read deliveryNonce from DomainMessageRouted; SPOKE_B is local client configuration.
-  // An encrypted envelope (isEncryptedDomainMessage) is delivered as the plaintext its source
-  // spoke sealed, so pass the { from, to, data } it was sent with as the last argument.
+  // The envelope is delivered as the plaintext its source spoke sealed: `plaintext` is the
+  // { from, to, data } it was sent with.
   const destinationStatus = await routedMessageDeliveryStatus(
-    domainB, message, SPOKE_B, deliveryNonce, /* plaintext */
+    domainB, message, SPOKE_B, deliveryNonce, plaintext,
   ); // "pending" | "failed" | "delivered"
   if (destinationStatus === "failed") {
-    const deliveryEnvelope = domainDeliveryEnvelope(message, deliveryNonce /* , plaintext */);
+    const deliveryEnvelope = domainDeliveryEnvelope(message, deliveryNonce, plaintext);
     // Submit spokeB.retryL1Message(deliveryEnvelope) with enough gas.
   }
 }

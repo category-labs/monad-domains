@@ -2,7 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
-import {IDomainMessageReceiver, IDomainSpoke} from "../interfaces/IDomain.sol";
+import {IDomainSpoke} from "../interfaces/IDomain.sol";
+import {IDomainMessageReceiver} from "../interfaces/IDomainMessageReceiver.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
 import {BridgedERC20} from "./BridgedERC20.sol";
 

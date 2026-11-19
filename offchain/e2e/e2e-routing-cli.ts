@@ -20,14 +20,12 @@ import { readDomainGasPrice, sequenceTransaction } from "../src/sequence.js";
 import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI } from "../src/checkpoint.js";
 import {
   decodeDomainMessage,
-  isEncryptedDomainMessage,
-  MessageKind,
   type DomainMessage,
   type MessageContext,
   type MessagePlaintext,
 } from "../src/message.js";
 import {
-  ENCRYPTED_L1_MESSAGE_RECORDED_EVENT,
+  ENCRYPTED_MESSAGE_RECORDED_EVENT,
   fetchDomainBatch,
   fetchL1Messages,
   findBatchForNonce,
@@ -247,12 +245,12 @@ async function main() {
     if (!args?.messageId || !args.message) throw new Error(`${send.label}: no DomainMessageRecorded log in the domain receipt`);
     const message = decodeDomainMessage(args.message);
     if (message.sourceChainId !== DOMAIN_A || message.destinationChainId !== DOMAIN_B) throw new Error(`${send.label}: unexpected envelope origin/destination`);
-    if (!isEncryptedDomainMessage(message) || message.from !== zeroAddress || message.to !== zeroAddress) {
-      throw new Error(`${send.label}: expected an Encrypted envelope naming nobody, got kind ${MessageKind[message.kind]} from ${message.from} to ${message.to}`);
+    if (message.from !== zeroAddress || message.to !== zeroAddress) {
+      throw new Error(`${send.label}: expected a sealed envelope naming nobody, got from ${message.from} to ${message.to}`);
     }
     if (message.data === "0x") throw new Error(`${send.label}: envelope carries no ciphertext`);
     recorded.push({ message, messageId: args.messageId, plaintext: send.plaintext, blockNumber: receipt.blockNumber });
-    console.log(`  recorded nonce ${message.sourceNonce} (kind ${MessageKind[message.kind]}, ${(message.data.length - 2) / 2}-byte ciphertext, no sender or target)`);
+    console.log(`  recorded nonce ${message.sourceNonce} (${(message.data.length - 2) / 2}-byte ciphertext, no sender or target)`);
   }
 
   // -------------------------------------------------------------------------
@@ -293,17 +291,17 @@ async function main() {
     );
     const routed = parseEventLogs({ abi: hubArt.abi, eventName: "DomainMessageRouted", logs: receipt.logs });
     const plain = parseEventLogs({ abi: hubArt.abi, eventName: "L1MessageRecorded", logs: receipt.logs });
-    const sealed = parseEventLogs({ abi: hubArt.abi, eventName: "EncryptedL1MessageRecorded", logs: receipt.logs });
+    const sealed = parseEventLogs({ abi: hubArt.abi, eventName: "EncryptedMessageRecorded", logs: receipt.logs });
     const routedArgs = routed[0]?.args as { destinationChainId?: bigint; deliveryNonce?: bigint } | undefined;
     if (routed.length !== 1 || routedArgs?.destinationChainId !== DOMAIN_B || routedArgs.deliveryNonce === undefined) throw new Error("expected one DomainMessageRouted to B");
     deliveryNonces.push(routedArgs.deliveryNonce);
     if (plain.length !== 0 || sealed.length !== 1) throw new Error(`route emitted ${plain.length} plaintext and ${sealed.length} encrypted events`);
     const args = sealed[0]!.args as { domainChainId: bigint; sourceChainId: bigint; sourceNonce: bigint; ciphertext: Hex; nonce: bigint };
     if (args.domainChainId !== DOMAIN_B || args.sourceChainId !== DOMAIN_A || args.sourceNonce !== entry.message.sourceNonce) {
-      throw new Error("EncryptedL1MessageRecorded carries the wrong origin");
+      throw new Error("EncryptedMessageRecorded carries the wrong origin");
     }
-    if (args.ciphertext.toLowerCase() !== entry.message.data.toLowerCase() || args.nonce !== routedArgs.deliveryNonce) throw new Error("EncryptedL1MessageRecorded payload mismatch");
-    console.log(`  delivery nonce ${args.nonce}: EncryptedL1MessageRecorded(B, A, source nonce ${args.sourceNonce}, ${(args.ciphertext.length - 2) / 2}-byte ciphertext)`);
+    if (args.ciphertext.toLowerCase() !== entry.message.data.toLowerCase() || args.nonce !== routedArgs.deliveryNonce) throw new Error("EncryptedMessageRecorded payload mismatch");
+    console.log(`  delivery nonce ${args.nonce}: EncryptedMessageRecorded(B, A, source nonce ${args.sourceNonce}, ${(args.ciphertext.length - 2) / 2}-byte ciphertext)`);
   }
 
   // L1 view of B's inbox: two ciphertexts from domain A.
@@ -313,7 +311,7 @@ async function main() {
     async () => {
       const l1Head = await l1.getBlockNumber();
       const plaintext = await fetchL1Messages(l1, DOMAIN_B, { fromBlock: hubDeployBlock, toBlock: l1Head }, hub);
-      const encrypted = await l1.getLogs({ address: hub, event: ENCRYPTED_L1_MESSAGE_RECORDED_EVENT, args: { domainChainId: DOMAIN_B }, fromBlock: hubDeployBlock, toBlock: l1Head });
+      const encrypted = await l1.getLogs({ address: hub, event: ENCRYPTED_MESSAGE_RECORDED_EVENT, args: { domainChainId: DOMAIN_B }, fromBlock: hubDeployBlock, toBlock: l1Head });
       return { plaintext: plaintext.length, encrypted: encrypted.length };
     },
     (view) => view.plaintext + view.encrypted >= recorded.length,

@@ -7,7 +7,8 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import {IDomainHub, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
+import {IDomainHub} from "./interfaces/IDomain.sol";
+import {IDomainMessageReceiver} from "./interfaces/IDomainMessageReceiver.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
 import {InputQueue} from "./libraries/InputQueue.sol";
 
@@ -36,8 +37,6 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     error SameDomain();
     error SourceNotRegistered();
     error ZeroTarget();
-    error EncryptedL1Callback();
-    error PlaintextDomainMessage();
     error EncryptedMessageWithSender();
     error EncryptedMessageWithTarget();
     error EncryptedMessageWithSalt();
@@ -308,12 +307,10 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         if (_queueConfig(message.sourceChainId) == 0) revert SourceNotRegistered();
         bool toL1 = message.destinationChainId == block.chainid;
         if (toL1) {
-            if (message.kind != MessageLib.MessageKind.Plain) revert EncryptedL1Callback();
             if (message.to == address(0)) revert ZeroTarget();
         } else {
             // A domain-bound envelope carries only a ciphertext; the destination recovers the
             // sender and target from it.
-            if (message.kind != MessageLib.MessageKind.Encrypted) revert PlaintextDomainMessage();
             if (message.from != address(0)) revert EncryptedMessageWithSender();
             if (message.to != address(0)) revert EncryptedMessageWithTarget();
             if (message.salt != bytes32(0)) revert EncryptedMessageWithSalt();
@@ -328,7 +325,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             if (_queueConfig(message.destinationChainId) == 0) revert DestinationNotRegistered();
             // No spoke can have sealed to a domain without a viewing key.
             if (_configs[message.destinationChainId].viewingKey.length == 0) revert NoViewingKey();
-            (uint256 deliveryNonce, uint256 config) = _sendEncryptedL1Message(
+            (uint256 deliveryNonce, uint256 config) = _sendEncryptedMessage(
                 message.destinationChainId, message.sourceChainId, message.sourceNonce, message.data, msg.value
             );
             emit DomainMessageRouted(messageHash, message.sourceChainId, message.destinationChainId, deliveryNonce);
@@ -444,7 +441,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     /// `sendL1Message`) and records the ciphertext for the destination client to open and
     /// deliver. Returns the domain's config word: the caller pays the fee out once it has
     /// nothing left to do.
-    function _sendEncryptedL1Message(
+    function _sendEncryptedMessage(
         uint64 domainChainId,
         uint64 sourceChainId,
         uint256 sourceNonce,
@@ -464,7 +461,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             fee,
             abi.encodePacked(sourceChainId, SafeCast.toUint64(sourceNonce), uint64(nonce), ciphertext)
         );
-        emit EncryptedL1MessageRecorded(domainChainId, sourceChainId, sourceNonce, ciphertext, nonce, fee);
+        emit EncryptedMessageRecorded(domainChainId, sourceChainId, sourceNonce, ciphertext, nonce, fee);
     }
 
     function l1MessageCounts(uint64 domainChainId) external view returns (uint256) {

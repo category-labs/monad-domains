@@ -4,7 +4,8 @@ pragma solidity ^0.8.24;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IDomainHub, IDomainMessageReceiver} from "../interfaces/IDomain.sol";
+import {IDomainHub} from "../interfaces/IDomain.sol";
+import {IDomainMessageReceiver} from "../interfaces/IDomainMessageReceiver.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
 
 /// @notice L1 side of the lock-and-mint token bridge. Locks ERC20 tokens and

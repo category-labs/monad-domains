@@ -65,10 +65,9 @@ contract GenVectors is Script {
         console.log("stateTransitionDigest");
         console.logBytes32(hub.stateTransitionDigest(VECTOR_DOMAIN, VECTOR_BLOCK, blockHash, anchor));
 
-        // Domain message IDs (anchor leaves): a withdrawal-shaped plain message to the L1 and an
-        // encrypted envelope to another domain.
+        // Domain message IDs (anchor leaves): a withdrawal-shaped message to the L1 and a sealed
+        // envelope to another domain.
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
-            kind: MessageLib.MessageKind.Plain,
             sourceChainId: VECTOR_DOMAIN,
             destinationChainId: VECTOR_CHAIN_ID,
             from: address(0x1000),
@@ -77,18 +76,17 @@ contract GenVectors is Script {
             sourceNonce: 3,
             data: MessageLib.encodeTransfer(address(0x3000), address(0x4000), 1e18)
         });
-        console.log("hashDomainMessage (plain)");
+        console.log("hashDomainMessage (to the L1)");
         console.logBytes32(MessageLib.hashDomainMessage(message, VECTOR_CHAIN_ID, address(hub)));
-        message.kind = MessageLib.MessageKind.Encrypted;
         message.destinationChainId = 8888;
         message.from = address(0);
         message.to = address(0);
         message.salt = bytes32(0);
         message.data = hex"04c0ffee";
-        console.log("hashDomainMessage (encrypted)");
+        console.log("hashDomainMessage (to a domain)");
         console.logBytes32(MessageLib.hashDomainMessage(message, VECTOR_CHAIN_ID, address(hub)));
 
-        // Plaintext of an encrypted envelope.
+        // Plaintext of a sealed envelope.
         console.log("keccak256(encodePlaintext(0x1000, 0x2000, 0x1234))");
         console.logBytes32(keccak256(MessageLib.encodePlaintext(address(0x1000), address(0x2000), hex"1234")));
 

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { keccak256, toHex, type Address, type Hex } from "viem";
 import {
   decodePlaintext, decodeViewingKey, encodePlaintext, encodeTransfer, encodeViewingKey, hashDomainMessage, hashMessage,
-  MessageKind, type DomainMessage, type Message,
+  type DomainMessage, type Message,
 } from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
 import { proveMessage, type RecordedMessage } from "../src/prover.js";
@@ -138,12 +138,11 @@ test("stateTransitionDigest matches DomainHub.stateTransitionDigest", () => {
 });
 
 /**
- * Domain message ID vectors: the anchor leaves of a withdrawal-shaped plain message to the L1 and
- * of an encrypted envelope to another domain.
+ * Domain message ID vectors: the anchor leaves of a withdrawal-shaped message to the L1 and of a
+ * sealed envelope to another domain.
  */
 test("hashDomainMessage matches MessageLib.hashDomainMessage", () => {
-  const plain: DomainMessage = {
-    kind: MessageKind.Plain,
+  const toL1: DomainMessage = {
     sourceChainId: 7777n,
     destinationChainId: 31337n,
     from: toHex(0x1000, { size: 20 }) as Address,
@@ -152,17 +151,16 @@ test("hashDomainMessage matches MessageLib.hashDomainMessage", () => {
     salt: toHex(1, { size: 32 }),
     data: encodeTransfer(toHex(0x3000, { size: 20 }) as Address, toHex(0x4000, { size: 20 }) as Address, 10n ** 18n),
   };
-  assert.equal(hashDomainMessage(plain, VECTOR_CONTEXT), "0xe79d4e948dbdbdd01e63728a29d724f5823306e40bb02a6e05d766407f08dd30");
-  const encrypted: DomainMessage = {
-    ...plain,
-    kind: MessageKind.Encrypted,
+  assert.equal(hashDomainMessage(toL1, VECTOR_CONTEXT), "0xa0e7d092669d8549053b94ad7d773382718f697c90b97d1518cf69062af286b2");
+  const toDomain: DomainMessage = {
+    ...toL1,
     destinationChainId: 8888n,
     from: toHex(0, { size: 20 }) as Address,
     to: toHex(0, { size: 20 }) as Address,
     salt: toHex(0, { size: 32 }),
     data: "0x04c0ffee",
   };
-  assert.equal(hashDomainMessage(encrypted, VECTOR_CONTEXT), "0xdf56c316df7dbbdf23cd96eb19799965ac988313dcbacabf66ec0cb8b72c3201");
+  assert.equal(hashDomainMessage(toDomain, VECTOR_CONTEXT), "0x0006269e652eae44fcce4ec4b8c40d704df704e015584ce0749d3fe1eac3c4ef");
 });
 
 /** Plaintext vector: a message from 0x1000 to 0x2000 carrying 0x1234. */

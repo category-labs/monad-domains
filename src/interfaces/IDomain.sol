@@ -2,18 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {IDomainAccessControl} from "./IDomainAccessControl.sol";
+import {IDomainMessageReceiver} from "./IDomainMessageReceiver.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
-
-/// @notice Shared hook for L1-origin and domain-origin messages. Authenticate msg.sender
-/// (the hub on L1, local spoke on a domain), sourceChainId and from together.
-/// @dev Do all the work or revert. Whoever relays, pays for or retries a delivery chooses the
-/// gas this call gets. A revert leaves the message retryable; returning normally consumes it
-/// for good. A receiver that carries on after a failed inner call (`try/catch`, an unchecked
-/// low-level call) can be given just enough gas to finish without that call, so it must
-/// first check that `gasleft()` covers it.
-interface IDomainMessageReceiver {
-    function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external;
-}
 
 /// @notice L1-side hub of the domain messaging layer: the single L1 contract every domain connects
 /// through. It registers domains, sequences their transactions, records L1 -> domain messages, and
@@ -21,8 +11,8 @@ interface IDomainMessageReceiver {
 interface IDomainHub {
     event DomainRegistered(uint64 indexed domainChainId, address indexed feeRecipient, uint64 checkpointInterval);
 
-    /// @notice The viewing public key senders encrypt domain transactions and messages to, as a
-    /// 32-byte X25519 public key.
+    /// @notice The viewing public key domain transactions and messages from other domains are
+    /// encrypted to, as a 32-byte X25519 public key.
     event ViewingKeyRegistered(uint64 indexed domainChainId, bytes viewingKey);
 
     /// @notice One L1-sequenced domain transaction. The domain sender is recovered from the
@@ -66,8 +56,9 @@ interface IDomainHub {
         bool success
     );
 
-    /// @notice Emitted for every recorded L1 -> domain message. This event stream is the
-    /// protocol's derivation source for system delivery transactions.
+    /// @notice Emitted for every recorded L1 -> domain message. This event stream and
+    /// `EncryptedMessageRecorded` are the protocol's derivation source for system delivery
+    /// transactions.
     event L1MessageRecorded(
         uint64 indexed domainChainId,
         uint64 sourceChainId,
@@ -83,7 +74,7 @@ interface IDomainHub {
     /// forwards. The destination client opens `ciphertext`, sealed with `sourceChainId` and
     /// `sourceNonce` bound in, into the sender, target and payload. Draws from the same nonce
     /// sequence as `L1MessageRecorded`.
-    event EncryptedL1MessageRecorded(
+    event EncryptedMessageRecorded(
         uint64 indexed domainChainId,
         uint64 indexed sourceChainId,
         uint256 sourceNonce,
@@ -197,14 +188,13 @@ interface IDomainHub {
     // --- Delivery of domain messages ---
 
     /// @notice Proves any domain-origin message against its source anchor. An L1 destination
-    /// takes a `Plain` envelope with a target: the hub invokes onDomainMessage and returns
-    /// callback success (failure is retryable here); no value may be attached. A domain
-    /// destination takes an `Encrypted` envelope with zero `from`, `to` and `salt`: the hub
-    /// queues the ciphertext through the same path as sendL1Message, with `msg.value` as the
-    /// delivery fee (at least the minimum for the ciphertext), and returns true;
-    /// execution/retry happens on that domain. Any other shape is rejected before the anchor
-    /// is consulted. MUST reject a destination without a viewing key, which no spoke can have
-    /// sealed to. Messages can arrive in any order.
+    /// takes an envelope with a target: the hub invokes onDomainMessage and returns callback
+    /// success (failure is retryable here); no value may be attached. A domain destination
+    /// takes a sealed envelope, with zero `from`, `to` and `salt`: the hub queues the
+    /// ciphertext for that domain, with `msg.value` as the delivery fee (at least the minimum
+    /// for the ciphertext), and returns true; execution/retry happens on that domain. Any other
+    /// shape is rejected before the anchor is consulted. MUST reject a destination without a
+    /// viewing key, which no spoke can have sealed to. Messages can arrive in any order.
     function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
         external
         payable
@@ -324,7 +314,7 @@ interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
     /// @notice Delivers one message the hub recorded for this domain. Callable ONLY from the
     /// protocol's system transactions, which the client derives with the gas limit the recorded
     /// fee bought: from `L1MessageRecorded` events as recorded, and from
-    /// `EncryptedL1MessageRecorded` events by opening the ciphertext into `(from, to, data)`.
+    /// `EncryptedMessageRecorded` events by opening the ciphertext into `(from, to, data)`.
     /// Nonces must arrive strictly increasing; a gap is a message the client never delivers (a
     /// ciphertext it cannot open or an unpaid delivery), consumed for good by the delivery that
     /// jumps it. The client must take sourceChainId and from from the hub event or the opened
@@ -346,8 +336,8 @@ interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
     // --- Messaging: domain -> L1 or another domain ---
 
     /// @notice Sends a message to the L1 or another domain; this spoke assigns the source
-    /// identity and nonce. An L1 destination records a `Plain` envelope naming `to` and `data`,
-    /// executed as a callback there. A domain destination records an `Encrypted` envelope: the
+    /// identity and nonce. An L1 destination records an envelope naming the sender, `to` and
+    /// `data`, executed as a callback there. A domain destination records a sealed envelope: the
     /// spoke seals `encodePlaintext(msg.sender, to, data)` through the encryption precompile,
     /// bound to this domain, the destination and the nonce, and the envelope carries only the
     /// ciphertext. MUST reject the local domain, a zero target, a domain destination whose

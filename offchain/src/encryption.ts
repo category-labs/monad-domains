@@ -70,7 +70,7 @@ export async function generateViewingKeyPair(): Promise<ViewingKeyPair> {
 }
 
 /** Encrypts `0x01 || plaintext` to the viewing key and returns `enc[32] || aead_output`. */
-async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array, aad?: Uint8Array): Promise<Hex> {
+async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array, aad: Uint8Array): Promise<Hex> {
   const publicKeyBytes = hexToBytes(viewingPublicKey);
   if (publicKeyBytes.length !== PUBLIC_KEY_SIZE) {
     throw new EncryptionError("viewing public key must be a 32-byte X25519 public key");
@@ -99,9 +99,9 @@ async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array, aad?: Uint8
 /**
  * Authenticates and decrypts one encrypted payload, returning the frame-stripped plaintext.
  * The caller must wipe the returned buffer once done with it. Throws on any failure; the
- * public wrappers collapse every cause into one opaque error.
+ * public wrapper collapses every cause into one opaque error.
  */
-async function decrypt(viewingSecretKey: Hex, ciphertext: Hex, aad?: Uint8Array): Promise<Uint8Array> {
+async function decrypt(viewingSecretKey: Hex, ciphertext: Hex, aad: Uint8Array): Promise<Uint8Array> {
   const secretKeyBytes = hexToBytes(viewingSecretKey);
   const ciphertextBytes = hexToBytes(ciphertext);
 

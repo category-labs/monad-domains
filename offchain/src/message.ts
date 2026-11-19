@@ -10,19 +10,8 @@ import {
   type Hex,
 } from "viem";
 
-/** `MessageLib.MessageKind`: the shape of a domain-origin envelope. Encoded as `uint8`. */
-export enum MessageKind {
-  /** The destination is the L1: `to` and `data` are the target and payload, readable there. */
-  Plain = 0,
-  /**
-   * The destination is another domain: `from`, `to` and `salt` are zero and `data` is
-   * `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
-   */
-  Encrypted = 1,
-}
-
 export const DOMAIN_MESSAGE_PARAMS = parseAbiParameters(
-  "(uint8 kind, uint64 sourceChainId, uint64 destinationChainId, address from, address to, uint256 sourceNonce, bytes32 salt, bytes data) message",
+  "(uint64 sourceChainId, uint64 destinationChainId, address from, address to, uint256 sourceNonce, bytes32 salt, bytes data) message",
 );
 
 export interface MessageContext {
@@ -30,8 +19,12 @@ export interface MessageContext {
   hub: Address;
 }
 
+/**
+ * A domain-origin envelope. Bound for the L1, `from`, `to` and `data` are the sender, target and
+ * payload. Bound for another domain, `from`, `to` and `salt` are zero and `data` is
+ * `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
+ */
 export interface DomainMessage {
-  kind: MessageKind;
   sourceChainId: bigint;
   destinationChainId: bigint;
   from: Address;
@@ -47,8 +40,8 @@ export function generateMessageSalt(): Hex {
 
 export function hashDomainMessage(message: DomainMessage, context: MessageContext): Hex {
   return keccak256(encodeAbiParameters(
-    parseAbiParameters("uint256, address, uint8, uint64, uint64, address, address, uint256, bytes32, bytes32"),
-    [context.l1ChainId, context.hub, message.kind,
+    parseAbiParameters("uint256, address, uint64, uint64, address, address, uint256, bytes32, bytes32"),
+    [context.l1ChainId, context.hub,
       message.sourceChainId, message.destinationChainId, message.from, message.to,
       message.sourceNonce, message.salt, keccak256(message.data)],
   ));
@@ -59,23 +52,14 @@ export function encodeDomainMessage(message: DomainMessage): Hex {
 }
 
 export function decodeDomainMessage(data: Hex): DomainMessage {
-  const [decoded] = decodeAbiParameters(DOMAIN_MESSAGE_PARAMS, data);
-  if (decoded.kind !== MessageKind.Plain && decoded.kind !== MessageKind.Encrypted) {
-    throw new Error(`routing: unknown message kind ${decoded.kind}`);
-  }
-  const message: DomainMessage = { ...decoded, kind: decoded.kind as MessageKind };
+  const [message] = decodeAbiParameters(DOMAIN_MESSAGE_PARAMS, data);
   if (encodeDomainMessage(message).toLowerCase() !== data.toLowerCase()) {
     throw new Error("routing: non-canonical envelope");
   }
   return message;
 }
 
-/** True for an envelope sealed for another domain. */
-export function isEncryptedDomainMessage(message: DomainMessage): boolean {
-  return message.kind === MessageKind.Encrypted;
-}
-
-/** What an encrypted envelope seals. Mirrors the arguments of `MessageLib.encodePlaintext`. */
+/** What a domain-bound envelope seals. Mirrors the arguments of `MessageLib.encodePlaintext`. */
 export interface MessagePlaintext {
   from: Address;
   to: Address;
@@ -109,17 +93,12 @@ export function decodeViewingKey(data: Hex): { domainChainId: bigint; viewingKey
 }
 
 /**
- * Direct application delivery, using the nonce assigned by the destination queue. An
- * encrypted envelope is delivered as the plaintext it seals, which the caller supplies.
+ * The delivery a forwarded envelope becomes on its destination, under the nonce the destination
+ * queue assigned. The envelope is sealed, so the caller supplies the plaintext.
  */
-export function domainDeliveryEnvelope(message: DomainMessage, deliveryNonce: bigint, plaintext?: MessagePlaintext): Message {
-  if (isEncryptedDomainMessage(message)) {
-    if (!plaintext) throw new Error("routing: encrypted envelope needs its plaintext (from, to, data)");
-    return { sourceChainId: message.sourceChainId, from: plaintext.from,
-      to: plaintext.to, data: plaintext.data, nonce: deliveryNonce };
-  }
-  return { sourceChainId: message.sourceChainId, from: message.from,
-    to: message.to, data: message.data, nonce: deliveryNonce };
+export function domainDeliveryEnvelope(message: DomainMessage, deliveryNonce: bigint, plaintext: MessagePlaintext): Message {
+  return { sourceChainId: message.sourceChainId, from: plaintext.from,
+    to: plaintext.to, data: plaintext.data, nonce: deliveryNonce };
 }
 
 /**

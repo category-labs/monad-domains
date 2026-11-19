@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
-import {IDomainSpoke, IDomainMessageReceiver} from "./interfaces/IDomain.sol";
+import {IDomainSpoke} from "./interfaces/IDomain.sol";
+import {IDomainMessageReceiver} from "./interfaces/IDomainMessageReceiver.sol";
 import {IDomainAccessPolicy} from "./interfaces/IDomainAccessControl.sol";
 import {IDomainEncryption, DOMAIN_ENCRYPTION_PRECOMPILE} from "./interfaces/IDomainEncryption.sol";
 import {MessageLib} from "./libraries/MessageLib.sol";
@@ -215,7 +216,7 @@ contract DomainSpoke is IDomainSpoke {
         if (to == address(0)) revert ZeroTarget();
         if (destinationChainId == L1_CHAIN_ID) {
             if (salt == bytes32(0)) revert ZeroSalt();
-            return _recordDomainMessage(MessageLib.MessageKind.Plain, destinationChainId, msg.sender, to, data, salt);
+            return _recordDomainMessage(destinationChainId, msg.sender, to, data, salt);
         }
         if (viewingKeys[destinationChainId] == bytes32(0)) revert NoViewingKey();
         // The sender travels inside the sealed plaintext, so the envelope names nobody. The
@@ -225,23 +226,16 @@ contract DomainSpoke is IDomainSpoke {
             .sealMessage(destinationChainId, domainMessageCount, plaintext);
         // A ciphertext is longer than what it seals: an empty or echoed result is not one.
         if (ciphertext.length <= plaintext.length) revert InvalidCiphertext();
-        messageId = _recordDomainMessage(
-            MessageLib.MessageKind.Encrypted, destinationChainId, address(0), address(0), ciphertext, bytes32(0)
-        );
+        messageId = _recordDomainMessage(destinationChainId, address(0), address(0), ciphertext, bytes32(0));
     }
 
     /// @dev Assigns the next source nonce, stores the message ID and emits the full envelope.
-    function _recordDomainMessage(
-        MessageLib.MessageKind kind,
-        uint64 destinationChainId,
-        address from,
-        address to,
-        bytes memory data,
-        bytes32 salt
-    ) internal returns (bytes32 messageId) {
+    function _recordDomainMessage(uint64 destinationChainId, address from, address to, bytes memory data, bytes32 salt)
+        internal
+        returns (bytes32 messageId)
+    {
         uint256 sourceNonce = domainMessageCount++;
         MessageLib.DomainMessage memory message = MessageLib.DomainMessage({
-            kind: kind,
             sourceChainId: DOMAIN_CHAIN_ID,
             destinationChainId: destinationChainId,
             from: from,
