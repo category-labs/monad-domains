@@ -9,7 +9,7 @@ import { generateViewingKeyFiles, viewingPublicKeyFromPem } from "./viewing-key.
  *   npm run viewing-key -- public <key.pem>     # prints VIEWING_KEY for an existing public- or
  *                                               # private-key PEM (e.g. one made with openssl)
  *
- * Start the execution client with `--private-domain <chain id> <spoke address> <key.pem>` and give the printed
+ * Start the execution client with `monad-domain --domain <chain id> <key.pem>` and give the printed
  * VIEWING_KEY to every sender (offchain .env, the frontend's viewing-keys.json).
  */
 function usage(): never {
@@ -26,7 +26,7 @@ function main() {
       const files = generateViewingKeyFiles();
       writeFileSync(path, files.privateKeyPem, { mode: 0o600, flag: "wx" });
       console.log(`wrote ${path} (unencrypted PKCS#8 X25519 private key; keep it with the domain execution client)`);
-      console.log(`  client flag:  --private-domain <chain id> <spoke address> ${path}`);
+      console.log(`  client flag:  monad-domain --domain <chain id> <spoke address> ${path}`);
       console.log(`  VIEWING_KEY=${files.publicKey}`);
       break;
     }

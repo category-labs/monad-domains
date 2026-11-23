@@ -1,13 +1,21 @@
 export { setupDomain, type SetupConfig, type SetupResult } from "./setup.js";
 export {
   domainFeeCaps,
+  HUB_INPUT_GAS_HEADROOM,
   readDomainGasPrice,
   sequenceTransaction,
   type SequenceConfig,
   type SequenceResult,
 } from "./sequence.js";
 export { loadArtifact, type Artifact } from "./artifacts.js";
-export { fetchL1Chain } from "./chain.js";
+export {
+  DOMAIN_RPC_AUTH_HEADER,
+  DOMAIN_SPOKE,
+  domainTransport,
+  domainTransportFor,
+  fetchL1Chain,
+  signDomainAccessToken,
+} from "./chain.js";
 export {
   EncryptionError,
   decryptTransaction,
@@ -42,6 +50,13 @@ export {
   type MessagePlaintext,
 } from "./message.js";
 export { root, getProof, verify } from "./merkle.js";
+export { HUB_RELAY_ABI, relayPending, type RelayConfig, type RelayedMessage, type RelayState } from "./relay.js";
+export {
+  DomainRelayer,
+  type DomainRelayerConfig,
+  type DomainRelayerDomain,
+  type DomainRelayerStatus,
+} from "./relayer.js";
 export {
   ENCRYPTED_MESSAGE_RECORDED_EVENT,
   L1_MESSAGE_RECORDED_EVENT,
@@ -53,12 +68,15 @@ export {
   fetchL1Messages,
   fetchDomainMessages,
   fetchDomainBatch,
+  fetchAttestations,
+  fetchBatches,
   findBatchForNonce,
   proveMessage,
   l1MessageDeliveryStatus,
   domainMessageDeliveryStatus,
   routedMessageDeliveryStatus,
   isDomainAnchorRecorded,
+  type Attestation,
   type DomainBatch,
   type L1DeliveryStatus,
   type DomainDeliveryStatus,
@@ -67,18 +85,22 @@ export {
 } from "./prover.js";
 export {
   HUB_CHECKPOINT_ABI,
+  QUORUM_VOTE_GAS_HEADROOM,
   SPOKE_BATCH_ABI,
   STATE_TRANSITION_TYPES,
   hubTypedDataDomain,
   stateTransitionDigest,
   signStateTransition,
   getDomainHeader,
+  domainBlockAt,
   domainMessageCountAt,
   nextCheckpointHeight,
   buildCheckpoint,
   attestCheckpoint,
   type StateTransition,
+  type DomainBlockRef,
   type DomainHeader,
+  type DomainSource,
   type Checkpoint,
   type AttestResult,
 } from "./checkpoint.js";

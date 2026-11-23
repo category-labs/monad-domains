@@ -2,8 +2,10 @@
 
 ## Setting up a domain
 
-Brings up a fully L1-sequenced domain end-to-end. Every domain transaction flows
-through `DomainHub.sequenceToDomain`, so the system contracts are created by *sequencing* 
+Brings up a fully L1-sequenced domain end-to-end. The execution client puts the `DomainSpoke`
+in the domain's genesis state, at the same address on every domain
+(`0x000000000000000000446f6d61696E53706f6B65`). Every other domain transaction flows through
+`DomainHub.sequenceToDomain`, so the token policy and the bridge are created by *sequencing*
 their deployment transactions as the seed deployer's first two domain transactions.
 
 The setup tool (`offchain/src/setup.ts`, run via `npm run setup`) performs, in order:
@@ -12,15 +14,16 @@ The setup tool (`offchain/src/setup.ts`, run via `npm run setup`) performs, in o
    fee recipient, the viewing public key (published for senders) and the
    checkpoint interval;
 2. deploy `L1Bridge(hub, chainId)` (admin becomes owner);
-3. precompute the domain `DomainSpoke` = `CREATE(seed, 0)` and `DomainBridge` = `CREATE(seed, 1)`;
+3. precompute the default token policy `DomainAccessRules` = `CREATE(seed, 0)` and the
+   `DomainBridge` = `CREATE(seed, 1)`;
 4. sign the two domain creation transactions (gasless) and `sequenceToDomain` them through the hub;
-   the spoke constructor binds `(domainChainId, l1ChainId, hub)`;
+   the genesis spoke is bound to `(domainChainId, l1ChainId, hub)` by the client;
 5. `L1Bridge.registerDomainBridge(domainBridge)` (one-shot) against the precomputed address;
 6. optionally `setTokenAllowed(token)` — e.g. the wrapped-MON ERC20 used for deposits.
 
 Domain transactions are HPKE-encrypted to the domain's viewing key before they are
 sequenced: the execution client is started with the viewing secret key
-(`--private-domain <chain id> <spoke address> <key.pem>`) and decrypts every payload, so the L1 only carries
+(`monad-domain --domain <chain id> <key.pem>`) and decrypts every payload, so the L1 only carries
 ciphertext. Create the key and print the matching `VIEWING_KEY` with
 `npm run viewing-key -- generate <key.pem>` (or `-- public <key.pem>` for an existing PEM), and set
 `VIEWING_KEY` in `.env`; the setup tool then encrypts the two seeded creation transactions
