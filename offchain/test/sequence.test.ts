@@ -3,9 +3,8 @@ import { test } from "node:test";
 import { encodeAbiParameters, parseAbiParameters } from "viem";
 import { domainFeeCaps, sequenceTransaction } from "../src/sequence.js";
 
-test("domain fee caps remain valid above the observed base fee", () => {
-  assert.deepEqual(domainFeeCaps(50n), { maxFeePerGas: 100n, maxPriorityFeePerGas: 0n });
-  assert.deepEqual(domainFeeCaps(0n), { maxFeePerGas: 1n, maxPriorityFeePerGas: 0n });
+test("domain fee caps offer the domain's base fee, the hub's gas price", () => {
+  assert.deepEqual(domainFeeCaps(50_000_000_000n), { maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 0n });
 });
 
 for (const viewingKey of [undefined, "0x"] as const) {

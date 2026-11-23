@@ -1,5 +1,5 @@
 import { parseAbiItem, type Address, type Hex, type PublicClient } from "viem";
-import { batchRoot, domainMessageCountAt, fetchDomainMessageIds } from "./checkpoint.js";
+import { batchRoot, domainBlockAt, domainMessageCountAt, fetchDomainMessageIds } from "./checkpoint.js";
 import {
   decodeDomainMessage,
   domainDeliveryEnvelope,
@@ -138,20 +138,28 @@ export async function fetchDomainMessages(
 }
 
 /**
- * The set of messages one attestation anchored: nonces in `[fromNonce, toNonce)`, recorded in
- * domain blocks `(fromBlock, toBlock]` where `toBlock` is the attested height and `fromBlock`
- * the previously attested one. Obtain it from `findBatchForNonce` or from two consecutive
- * `DomainStateUpdated` events.
+ * The set of messages one attestation anchored: nonces in `[fromNonce, toNonce)`, recorded
+ * after the previously attested L1 height `fromBlock` and up to the attested height `toBlock`.
+ * On the domain's own chain, which is numbered by domain block, those are the blocks
+ * `[firstDomainBlock, lastDomainBlock]`. Obtain it from `findBatchForNonce`.
  */
 export interface DomainBatch {
+  /** The hub's state nonce of the checkpoint that anchored the batch: its position in the domain's history. */
+  stateNonce: bigint;
   fromNonce: bigint;
   toNonce: bigint;
-  /** Previously attested height; the batch's messages were recorded after it. */
+  /** Previously attested L1 height; zero for the first batch. */
   fromBlock: bigint;
-  /** Attested height. */
+  /** Attested L1 height. */
   toBlock: bigint;
+  /** First domain block after the previous checkpoint; zero for the first batch. */
+  firstDomainBlock: bigint;
+  /** The domain's latest block as of the attested height. */
+  lastDomainBlock: bigint;
   /** The anchor the hub recorded, when known. */
   anchor?: Hex;
+  /** L1 block the checkpoint's quorum was reached in, when known. */
+  attestedInBlock?: bigint;
 }
 
 /** Largest block range one `eth_getLogs` call is sent for; wider scans are split. */
@@ -160,7 +168,7 @@ export const DEFAULT_MAX_LOG_RANGE = 1000n;
 export interface BatchScanOptions {
   /** Block range per `eth_getLogs` call. Default `DEFAULT_MAX_LOG_RANGE`. */
   maxLogRange?: bigint;
-  /** Lowest block worth scanning, e.g. the spoke's deployment block. Default 0. */
+  /** Lowest domain block worth scanning, e.g. the spoke's deployment block. Default 0. */
   scanFromBlock?: bigint;
   /** Ids read per spoke call when cross-checking against state. */
   idPageSize?: bigint;
@@ -179,10 +187,10 @@ function logRanges(fromBlock: bigint, toBlock: bigint, maxLogRange: bigint): { f
 
 /**
  * Fetches the complete, nonce-ordered batch an attestation anchored. The envelopes come
- * from the spoke's events in `(batch.fromBlock, batch.toBlock]`, scanned in chunks the RPC
- * accepts; their nonces must cover `[fromNonce, toNonce)` exactly and each id must equal the
- * id the spoke stored for that nonce as of the attested height, so a proof built from the
- * result is a proof against the recorded anchor.
+ * from the spoke's events in domain blocks `[batch.firstDomainBlock, batch.lastDomainBlock]`,
+ * scanned in chunks the RPC accepts; their nonces must cover `[fromNonce, toNonce)` exactly
+ * and each id must equal the id the spoke stored for that nonce as of the attested height, so
+ * a proof built from the result is a proof against the recorded anchor.
  */
 export async function fetchDomainBatch(
   domain: PublicClient,
@@ -194,9 +202,9 @@ export async function fetchDomainBatch(
   const expected = batch.toNonce - batch.fromNonce;
   if (expected <= 0n) return [];
   const { maxLogRange = DEFAULT_MAX_LOG_RANGE, scanFromBlock = 0n, idPageSize } = options;
-  const firstBlock = batch.fromBlock + 1n > scanFromBlock ? batch.fromBlock + 1n : scanFromBlock;
+  const firstBlock = batch.firstDomainBlock > scanFromBlock ? batch.firstDomainBlock : scanFromBlock;
   const recorded: RecordedMessage<DomainMessage>[] = [];
-  for (const range of logRanges(firstBlock, batch.toBlock, maxLogRange)) {
+  for (const range of logRanges(firstBlock, batch.lastDomainBlock, maxLogRange)) {
     recorded.push(...(await fetchDomainMessages(domain, range, spoke, context)));
   }
   const inRange = recorded
@@ -205,7 +213,7 @@ export async function fetchDomainBatch(
   if (BigInt(inRange.length) !== expected) {
     throw new Error(`prover: batch [${batch.fromNonce}, ${batch.toNonce}) has ${inRange.length} events, expected ${expected}`);
   }
-  const stateIds = await fetchDomainMessageIds(domain, spoke, batch.fromNonce, batch.toNonce, batch.toBlock, idPageSize);
+  const stateIds = await fetchDomainMessageIds(domain, spoke, batch.fromNonce, batch.toNonce, batch.lastDomainBlock, idPageSize);
   for (let i = 0; i < inRange.length; i++) {
     const nonce = batch.fromNonce + BigInt(i);
     if (inRange[i]!.message.sourceNonce !== nonce) {
@@ -222,12 +230,102 @@ export async function fetchDomainBatch(
   return inRange;
 }
 
+/** One checkpoint the hub recorded: a `DomainStateUpdated` event. */
+export interface Attestation {
+  stateNonce: bigint;
+  /** Attested L1 height. */
+  height: bigint;
+  anchor: Hex;
+  /** L1 block the quorum was reached in. */
+  blockNumber: bigint;
+}
+
 /**
- * Locates the attested batch containing source nonce `nonce` by walking the hub's
- * `DomainStateUpdated` events for `domainChainId` in `range` (L1 blocks, scanned in chunks)
- * and reading the spoke's message count at each attested height. `range` must start at or
- * before the domain's first attestation, because batches are defined by consecutive ones.
- * Null if no attestation covers the nonce yet.
+ * Every checkpoint the hub recorded for `domainChainId` in `range` (L1 blocks, scanned in
+ * chunks), in state nonce order.
+ */
+export async function fetchAttestations(
+  l1: PublicClient,
+  hub: Address,
+  domainChainId: bigint,
+  range: { fromBlock: bigint; toBlock: bigint },
+  options: Pick<BatchScanOptions, "maxLogRange"> = {},
+): Promise<Attestation[]> {
+  const { maxLogRange = DEFAULT_MAX_LOG_RANGE } = options;
+  const updates: Attestation[] = [];
+  for (const chunk of logRanges(range.fromBlock, range.toBlock, maxLogRange)) {
+    const logs = await l1.getLogs({ address: hub, event: DOMAIN_STATE_UPDATED_EVENT, args: { domainChainId }, ...chunk });
+    for (const log of logs) {
+      const { domainBlockNumber, domainAnchor, stateNonce } = log.args;
+      if (domainBlockNumber === undefined || domainAnchor === undefined || stateNonce === undefined) {
+        throw new Error("prover: incomplete event log");
+      }
+      updates.push({ stateNonce, height: BigInt(domainBlockNumber), anchor: domainAnchor, blockNumber: log.blockNumber });
+    }
+  }
+  return updates.sort((a, b) => (a.stateNonce < b.stateNonce ? -1 : a.stateNonce > b.stateNonce ? 1 : 0));
+}
+
+/**
+ * The batch each checkpoint in `range` anchored, in order: the hub's `DomainStateUpdated`
+ * events give the attested heights, the hub's state at each height names the domain's latest
+ * block there, and the spoke's message count at that block bounds the batch. A checkpoint
+ * that recorded no message yields an empty batch.
+ *
+ * Batches are defined by consecutive checkpoints, so the scan either starts at or before the
+ * domain's first attestation, or continues `after` the last batch of an earlier scan, with
+ * `range` starting no later than the L1 block that batch's quorum was reached in.
+ */
+export async function fetchBatches(
+  l1: PublicClient,
+  domain: PublicClient,
+  hub: Address,
+  spoke: Address,
+  domainChainId: bigint,
+  range: { fromBlock: bigint; toBlock: bigint },
+  options: Pick<BatchScanOptions, "maxLogRange"> & { after?: DomainBatch } = {},
+): Promise<DomainBatch[]> {
+  const { after } = options;
+  const nextStateNonce = after ? after.stateNonce + 1n : 0n;
+  const updates = (await fetchAttestations(l1, hub, domainChainId, range, options)).filter(
+    (update) => update.stateNonce >= nextStateNonce,
+  );
+  if (updates.length > 0 && updates[0]!.stateNonce !== nextStateNonce) {
+    throw new Error(
+      `prover: scan range starts after the checkpoint with state nonce ${nextStateNonce} ` +
+        `(first state nonce seen: ${updates[0]!.stateNonce})`,
+    );
+  }
+  const batches: DomainBatch[] = [];
+  let previousHeight = after ? after.toBlock : 0n;
+  let previousCount = after ? after.toNonce : 0n;
+  let firstDomainBlock = after ? after.lastDomainBlock + 1n : 0n;
+  for (const update of updates) {
+    const block = await domainBlockAt(l1, hub, domainChainId, update.height);
+    if (!block) throw new Error(`prover: domain ${domainChainId} is not registered as of attested height ${update.height}`);
+    const count = await domainMessageCountAt(domain, spoke, block.number);
+    batches.push({
+      stateNonce: update.stateNonce,
+      fromNonce: previousCount,
+      toNonce: count,
+      fromBlock: previousHeight,
+      toBlock: update.height,
+      firstDomainBlock,
+      lastDomainBlock: block.number,
+      anchor: update.anchor,
+      attestedInBlock: update.blockNumber,
+    });
+    previousHeight = update.height;
+    previousCount = count;
+    firstDomainBlock = block.number + 1n;
+  }
+  return batches;
+}
+
+/**
+ * Locates the attested batch containing source nonce `nonce` among the checkpoints the hub
+ * recorded for `domainChainId` in `range` (see `fetchBatches`). Null if no attestation covers
+ * the nonce yet.
  */
 export async function findBatchForNonce(
   l1: PublicClient,
@@ -239,36 +337,8 @@ export async function findBatchForNonce(
   range: { fromBlock: bigint; toBlock: bigint },
   options: Pick<BatchScanOptions, "maxLogRange"> = {},
 ): Promise<DomainBatch | null> {
-  const { maxLogRange = DEFAULT_MAX_LOG_RANGE } = options;
-  const updates: { height: bigint; anchor: Hex; stateNonce: bigint }[] = [];
-  for (const chunk of logRanges(range.fromBlock, range.toBlock, maxLogRange)) {
-    const logs = await l1.getLogs({ address: hub, event: DOMAIN_STATE_UPDATED_EVENT, args: { domainChainId }, ...chunk });
-    for (const log of logs) {
-      const { domainBlockNumber, domainAnchor, stateNonce } = log.args;
-      if (domainBlockNumber === undefined || domainAnchor === undefined || stateNonce === undefined) {
-        throw new Error("prover: incomplete event log");
-      }
-      updates.push({ height: BigInt(domainBlockNumber), anchor: domainAnchor, stateNonce });
-    }
-  }
-  updates.sort((a, b) => (a.stateNonce < b.stateNonce ? -1 : a.stateNonce > b.stateNonce ? 1 : 0));
-  if (updates.length > 0 && updates[0]!.stateNonce !== 0n) {
-    throw new Error(
-      `prover: scan range starts after the domain's first attestation (first state nonce seen: ${updates[0]!.stateNonce})`,
-    );
-  }
-
-  let previousHeight = 0n;
-  let previousCount = 0n;
-  for (const update of updates) {
-    const count = await domainMessageCountAt(domain, spoke, update.height);
-    if (nonce >= previousCount && nonce < count) {
-      return { fromNonce: previousCount, toNonce: count, fromBlock: previousHeight, toBlock: update.height, anchor: update.anchor };
-    }
-    previousHeight = update.height;
-    previousCount = count;
-  }
-  return null;
+  const batches = await fetchBatches(l1, domain, hub, spoke, domainChainId, range, options);
+  return batches.find((batch) => nonce >= batch.fromNonce && nonce < batch.toNonce) ?? null;
 }
 
 /**
@@ -326,22 +396,29 @@ export async function domainMessageDeliveryStatus(
 
 /**
  * Returns the latest delivery outcome the destination spoke recorded for a message. An absent
- * event means pending, even if the queue has advanced past the nonce.
+ * event means pending, even if the queue has advanced past the nonce. The spoke's events are
+ * scanned from `scanFromBlock` (a domain block, default 0) in chunks the RPC accepts.
  */
 export async function l1MessageDeliveryStatus(
   client: PublicClient,
   recorded: Pick<RecordedMessage, "messageHash">,
   spoke: Address,
+  options: Pick<BatchScanOptions, "maxLogRange" | "scanFromBlock"> = {},
 ): Promise<L1DeliveryStatus> {
+  const { maxLogRange = DEFAULT_MAX_LOG_RANGE, scanFromBlock = 0n } = options;
   const toBlock = await client.getBlockNumber({ cacheTime: 0 });
-  const logs = await client.getLogs({
-    address: spoke,
-    event: L1_MESSAGE_RELAYED_EVENT,
-    args: { messageHash: recorded.messageHash },
-    fromBlock: 0n,
-    toBlock,
-    strict: true,
-  });
+  const logs = [];
+  for (const range of logRanges(scanFromBlock, toBlock, maxLogRange)) {
+    logs.push(
+      ...(await client.getLogs({
+        address: spoke,
+        event: L1_MESSAGE_RELAYED_EVENT,
+        args: { messageHash: recorded.messageHash },
+        ...range,
+        strict: true,
+      })),
+    );
+  }
   const latest = sortByPosition(logs).at(-1);
   return latest === undefined ? "pending" : latest.args.success ? "delivered" : "failed";
 }

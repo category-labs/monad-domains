@@ -1,9 +1,9 @@
 import { createPublicClient, createWalletClient, encodeDeployData, encodeFunctionData, getContractAddress, http, isAddress, zeroAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadArtifact } from "./artifacts.js";
-import { fetchL1Chain } from "./chain.js";
+import { DOMAIN_SPOKE, fetchL1Chain } from "./chain.js";
 import { encryptTransaction } from "./encryption.js";
-import { domainFeeCaps, readDomainGasPrice } from "./sequence.js";
+import { domainFeeCaps, HUB_INPUT_GAS_HEADROOM, readDomainGasPrice } from "./sequence.js";
 
 export interface SetupConfig {
   /** L1 RPC endpoint. */
@@ -14,7 +14,7 @@ export interface SetupConfig {
   existingHub?: Address;
   /** Account that may upgrade the hub deployed here. Defaults to the admin. Unused with `existingHub`. */
   hubOwner?: Address;
-  /** The domain chain id. */
+  /** The domain chain id: 64 bits whose low 16 bits are the L1 chain id. */
   domainChainId: bigint;
   /** Validator addresses whose signatures attest domain state transitions. */
   validators: Address[];
@@ -34,7 +34,7 @@ export interface SetupConfig {
    */
   maxUnattestedPeriods?: number;
   /**
-   * Key of the domain account whose first sequenced transactions create the spoke, optional policy and bridge.
+   * Key of the domain account whose first sequenced transactions create the optional policy and the bridge.
    * Defaults to `adminKey` — the same account works because L1 and domain nonces are independent, so
    * on a fresh domain the admin's domain nonce starts at 0. If overridden, the account MUST have
    * no prior domain activity.
@@ -48,8 +48,8 @@ export interface SetupConfig {
    * Domain viewing public key (32-byte X25519 public key). Published on the hub at
    * registration so senders can read it, and used here to pass the seeded creation
    * transactions to `sequenceToDomain` as HPKE ciphertext, which the domain execution client
-   * decrypts before executing. Required when the client was started with a receiver key for
-   * this domain (`--private-domain <id> <spoke> <key.pem>`).
+   * decrypts before executing. Required by the execution client, which is started with the
+   * domain's receiver key (`monad-domain --domain <id> <key.pem>`) and drops plaintext.
    */
   viewingKey?: Hex;
 }
@@ -57,32 +57,32 @@ export interface SetupConfig {
 export interface SetupResult {
   hub: Address;
   l1Bridge: Address;
-  /** Deterministic domain addresses the seeded transactions deploy to. */
+  /** The domain's spoke: in the domain's genesis state, at the same address on every domain. */
   spoke: Address;
+  /** Deterministic domain address the seeded transaction deploys to. */
   domainBridge: Address;
   tokenPolicyOwner: Address;
   initialTokenPolicy: Address;
   /** The raw, signed domain creation transactions that were sequenced (for records / replay). */
-  seededTransactions: { spoke: Hex; initialTokenPolicy?: Hex; domainBridge: Hex };
+  seededTransactions: { initialTokenPolicy?: Hex; domainBridge: Hex };
 }
 
 /**
  * End-to-end setup for a fully L1-sequenced domain.
  *
- * All domain transactions flow through `DomainHub.sequenceToDomain` on the L1, so the domain's
- * system contracts are brought up by *sequencing* their deployment transactions as the seed
- * deployer's first domain transactions. CREATE addresses are deterministic, so the spoke
- * and bridge addresses are known before they execute, which lets the L1 side
- * (`registerDomainBridge`) be wired immediately.
+ * The execution client puts the DomainSpoke in the domain's genesis state, at `DOMAIN_SPOKE`.
+ * Every other domain transaction flows through `DomainHub.sequenceToDomain` on the L1, so the
+ * bridge is brought up by *sequencing* its deployment transaction as one of the seed deployer's
+ * first domain transactions. CREATE addresses are deterministic, so the bridge address is known
+ * before it executes, which lets the L1 side (`registerDomainBridge`) be wired immediately.
  *
  * Order:
  *   L1:  deploy/reuse DomainHub (its implementation, then the proxy that is the hub) ->
  *        registerDomain (validators, quorum, fee recipient, viewing key, checkpoint interval)
  *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
- *   -    precompute domain spoke = CREATE(seed, 0), default policy = CREATE(seed, 1), bridge = CREATE(seed, 2)
- *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx)   [nonce 0]
- *   L1:  sequenceToDomain(seed's signed DomainAccessRules creation tx) [nonce 1, unless a policy was supplied]
- *   L1:  sequenceToDomain(seed's signed DomainBridge creation tx)  [nonce 2, or 1 with a supplied policy]
+ *   -    precompute default policy = CREATE(seed, 0), bridge = CREATE(seed, 1)
+ *   L1:  sequenceToDomain(seed's signed DomainAccessRules creation tx) [nonce 0, unless a policy was supplied]
+ *   L1:  sequenceToDomain(seed's signed DomainBridge creation tx)  [nonce 1, or 0 with a supplied policy]
  *   L1:  L1Bridge.registerDomainBridge(domainBridge) (one-shot)
  *   L1:  optionally setTokenAllowed(allowedToken) — e.g. wrapped MON for deposits
  */
@@ -126,7 +126,6 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   }
 
   const l1Chain = await fetchL1Chain(l1RpcUrl);
-  const l1ChainId = l1Chain.id;
   const publicClient = createPublicClient({ chain: l1Chain, transport: http(l1RpcUrl) });
   const wallet = createWalletClient({ account: admin, chain: l1Chain, transport: http(l1RpcUrl) });
 
@@ -144,7 +143,6 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const hubArt = loadArtifact("DomainHub.sol", "DomainHub");
   const proxyArt = loadArtifact("ERC1967Proxy.sol", "ERC1967Proxy");
   const l1BridgeArt = loadArtifact("L1Bridge.sol", "L1Bridge");
-  const spokeArt = loadArtifact("DomainSpoke.sol", "DomainSpoke");
   const domainBridgeArt = loadArtifact("DomainBridge.sol", "DomainBridge");
 
   // 1. Deploy/reuse the hub and register the domain: validator set + quorum, the fee
@@ -171,14 +169,20 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     if (registered) throw new Error(`setup: domain ${domainChainId} is already registered on ${hub}`);
   }
   console.log("DomainHub:", hub);
+  const registration = {
+    account: admin,
+    address: hub,
+    abi: hubArt.abi,
+    functionName: "registerDomain",
+    args: [
+      domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval, maxUnattestedPeriods,
+    ],
+  } as const;
+  // The estimate depends on the L1 block the call lands in, as for every call that records an input.
   await confirm(
     await wallet.writeContract({
-      address: hub,
-      abi: hubArt.abi,
-      functionName: "registerDomain",
-      args: [
-        domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval, maxUnattestedPeriods,
-      ],
+      ...registration,
+      gas: (await publicClient.estimateContractGas(registration)) + HUB_INPUT_GAS_HEADROOM,
     }),
   );
   console.log(
@@ -192,37 +196,33 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   );
   console.log("L1Bridge:", l1Bridge);
 
-  // 3. Keep the spoke at nonce 0; deploy the default policy before any bridge that uses it.
-  const spoke = getContractAddress({ from: seed.address, nonce: 0n });
-  const bridgeNonce = config.initialTokenPolicy ? 1 : 2;
-  const initialTokenPolicy = config.initialTokenPolicy ?? getContractAddress({ from: seed.address, nonce: 1n });
+  // 3. The spoke is in the domain's genesis state. Deploy the default policy before any bridge
+  // that uses it.
+  const spoke = DOMAIN_SPOKE;
+  const bridgeNonce = config.initialTokenPolicy ? 0 : 1;
+  const initialTokenPolicy = config.initialTokenPolicy ?? getContractAddress({ from: seed.address, nonce: 0n });
   const domainBridge = getContractAddress({ from: seed.address, nonce: BigInt(bridgeNonce) });
-  console.log("DomainSpoke (seeded):", spoke);
+  console.log("DomainSpoke (genesis):", spoke);
   console.log("Initial token policy:", initialTokenPolicy);
   console.log("Token policy owner:", tokenPolicyOwner);
   console.log("DomainBridge (seeded):", domainBridge);
 
   // 4. Sign the domain creation transactions; their gas is paid for by the fee attached to the
   // L1 call that sequences them.
-  const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
-  const feeCaps = domainFeeCaps(latestBlock.baseFeePerGas ?? (await publicClient.getGasPrice()));
+  const domainGasPrice = await readDomainGasPrice(publicClient, hub);
+  const feeCaps = domainFeeCaps(domainGasPrice);
   const domainTxDefaults = {
     type: "eip1559",
     chainId: Number(domainChainId),
     gas: domainGas,
     ...feeCaps,
   } as const;
-  const rawSpokeTx = await seed.signTransaction({
-    ...domainTxDefaults,
-    nonce: 0,
-    data: encodeDeployData({ abi: spokeArt.abi, bytecode: spokeArt.bytecode, args: [domainChainId, BigInt(l1ChainId), hub] }),
-  });
   let rawPolicyTx: Hex | undefined;
   if (!config.initialTokenPolicy) {
     const policyArt = loadArtifact("DomainAccessRules.sol", "DomainAccessRules");
     rawPolicyTx = await seed.signTransaction({
       ...domainTxDefaults,
-      nonce: 1,
+      nonce: 0,
       data: encodeDeployData({ abi: policyArt.abi, bytecode: policyArt.bytecode, args: [spoke] }),
     });
   }
@@ -235,23 +235,27 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     }),
   });
 
-  // 5. Sequence them through the hub (spoke and policy before bridge). With a viewing key
+  // 5. Sequence them through the hub (policy before bridge). With a viewing key
   // the hub records the HPKE ciphertext of each creation; the execution client decrypts it.
-  const sequencingFee = domainGas * (await readDomainGasPrice(publicClient, hub));
+  const sequencingFee = domainGas * domainGasPrice;
   const sequenceSeedTransaction = async (rawTransaction: Hex): Promise<Hex> => {
     const rlpTx = viewingKey ? await encryptTransaction(viewingKey, domainChainId, rawTransaction) : rawTransaction;
-    return wallet.writeContract({
+    const request = {
+      account: admin,
       address: hub,
       abi: hubArt.abi,
       functionName: "sequenceToDomain",
       args: [domainChainId, rlpTx],
       value: sequencingFee,
+    } as const;
+    return wallet.writeContract({
+      ...request,
+      gas: (await publicClient.estimateContractGas(request)) + HUB_INPUT_GAS_HEADROOM,
     });
   };
-  await confirm(await sequenceSeedTransaction(rawSpokeTx));
   if (rawPolicyTx) await confirm(await sequenceSeedTransaction(rawPolicyTx));
   await confirm(await sequenceSeedTransaction(rawBridgeTx));
-  console.log(`  sequenced spoke + ${rawPolicyTx ? "policy + " : ""}bridge creation transactions`);
+  console.log(`  sequenced ${rawPolicyTx ? "policy + " : ""}bridge creation transactions`);
 
   // 6. Wire the counterpart on the L1 (one-shot) using the precomputed bridge address.
   await confirm(
@@ -279,6 +283,6 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
 
   return {
     hub, l1Bridge, spoke, domainBridge, tokenPolicyOwner, initialTokenPolicy,
-    seededTransactions: { spoke: rawSpokeTx, initialTokenPolicy: rawPolicyTx, domainBridge: rawBridgeTx },
+    seededTransactions: { initialTokenPolicy: rawPolicyTx, domainBridge: rawBridgeTx },
   };
 }

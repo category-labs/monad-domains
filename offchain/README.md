@@ -15,13 +15,21 @@ policy ownership and installs the policy; it does not configure per-token read r
 Every sequencing or message call on the hub carries a fee in L1 native tokens for the domain's fee
 recipient. `hub.DOMAIN_GAS_PRICE()` (50 gwei, read with `readDomainGasPrice`) prices one unit of
 domain gas: `npm run sequence` and `npm run setup` attach `gas * DOMAIN_GAS_PRICE` so the client
-executes the transaction. A `sendL1Message` / `bridgeToDomain` / domain-bound `relayDomainMessage`
+executes the transaction. The same price is every domain block's base fee: nothing is charged
+on the domain, but a domain transaction must offer it as `maxFeePerGas` (`domainFeeCaps`), or
+the client includes it as failed without executing it. A `sendL1Message` / `bridgeToDomain` / domain-bound `relayDomainMessage`
 call must attach the fee of the gas its delivery needs, since the delivery runs with exactly that
 much. The hub rejects anything below `hub.minDeliveryFee(payload length)`, the gas that lets the
 spoke deliver or record a retryable failure, so a recorded message can be delayed by a stingy
 relayer but never lost, as long as its receiver reverts instead of skipping work (see Receivers
 in `PROTOCOL.md`). The hub also sells at most `DOMAIN_BLOCK_GAS_LIMIT` gas per domain per L1
 block; a call that does not fit reverts and can be sent again in a later block.
+
+A call that records a domain input costs more L1 gas when it is the domain's first of its L1
+block (it opens the domain's next block in the hub's input queue) and the first of a
+checkpoint period. An estimate runs against the latest block, where both may already be open,
+so the tools add `HUB_INPUT_GAS_HEADROOM` to it; do the same for your own `sendL1Message`,
+`bridgeToDomain` and `sequenceToDomain` calls.
 
 ## Transaction encryption
 
@@ -39,8 +47,8 @@ The execution client and senders must use the exact same associated data.
 
 `npm run setup` publishes `VIEWING_KEY` and uses it to encrypt the deployment transactions.
 `npm run sequence` uses `VIEWING_KEY` or reads the key from the hub. It rejects a missing key
-instead of sending plaintext. A node started with a receiver key for the domain
-(`--private-domain <id> <spoke> <key.pem>`) decrypts every payload and drops plaintext.
+instead of sending plaintext. The domain's execution client holds the receiver key
+(`monad-domain --domain <id> <key.pem>`), decrypts every payload and drops plaintext.
 
 The two sides use different key encodings — the client loads an unencrypted PKCS#8 PEM, senders
 use the raw 32-byte public key — and `npm run viewing-key` bridges them:
@@ -60,9 +68,33 @@ Validators attest the domain on a schedule: at every L1 height that is a multipl
 domain's checkpoint interval, each validator reads the hash of the domain's last block there and the root
 of the domain-origin messages recorded since the previous checkpoint, signs the hub's EIP-712
 `StateTransition` digest and submits it. `npm run checkpoint` (`src/checkpoint-cli.ts`) is one
-such pass; `src/checkpoint.ts` exports the pieces (`nextCheckpointHeight`, `buildCheckpoint`,
+such pass, or with `POLL_INTERVAL_MS` a process that attests every checkpoint as it comes due;
+`src/checkpoint.ts` exports the pieces (`nextCheckpointHeight`, `buildCheckpoint`,
 `stateTransitionDigest`, `attestCheckpoint`). Every validator runs it independently with its
 own key; the hub advances once a quorum signed the same proposal.
+
+The domain's own chain is numbered by domain block: block 0 is derived from the L1 block that
+registered the domain, and every later L1 block that recorded an input for it yields the next.
+A checkpoint names an L1 height, so the tools locate it on the domain through the hub:
+`hub.latestDomainBlock(domainChainId)` read at that height names the domain's latest block
+there (`domainBlockAt`), and the domain's RPC (`DOMAIN_RPC_URL`, an RPC serving the domain
+client's db) serves that block's hash and state (`getDomainHeader`). A pass fails, and
+is simply repeated, while the domain client has not executed that block yet.
+
+The domain's RPC answers no request without an access token, and serves blocks and the spoke's
+logs to the domain's operators only. `DOMAIN_RPC_KEY` is the key of one: the tools sign
+the token with it (`signDomainAccessToken`; `npm run access-token` prints one).
+
+## Relaying
+
+A message a domain records for the L1 is executed there once its checkpoint is attested and
+someone proves it to the hub. `npm run relay` (`src/relay-cli.ts`) does that for every attested
+message of one domain the hub has not seen, in one pass or with `POLL_INTERVAL_MS` as a
+process; `relayPending` in `src/relay.ts` is the library form. The hub verifies each proof,
+and marks a failed L1 callback for `retryDomainMessage`, so the L1 side needs no privileged
+key; reading the messages from the domain's RPC takes an operator's token (`DOMAIN_RPC_KEY`).
+`DomainRelayer` in `src/relayer.ts` runs the validator's and the relayer's passes for several
+domains in one service.
 
 ## Domain messages
 
@@ -70,7 +102,7 @@ All domain-origin operations use `spoke.sendDomainMessage(destinationChainId, to
 The destination chain ID selects L1 application execution or native forwarding to
 another domain. The spoke stores every message id by nonce; a checkpoint anchors the nonce
 range recorded since the previous checkpoint, so a batch is identified by the two attested
-heights.
+heights (`fetchBatches` lists them, with the domain blocks each one spans).
 
 Every domain-bound message is sealed on chain: the spoke hands
 `encodePlaintext(msg.sender, to, data)` to the execution client's encryption precompile, which
@@ -140,9 +172,17 @@ await l1MessageDeliveryStatus(domain, deposit, SPOKE_ADDRESS);
 npm install
 npm test          # unit tests, including conformance vectors from script/GenVectors.s.sol
 npm run typecheck
-npm run e2e       # deposit, withdrawal, access control and log access against a live devnet node
-npm run e2e:routing  # sealed domain -> domain route against a two-domain devnet whose client has the precompile
+npm run e2e:bridge   # token bridge domain A -> L1 -> domain B against a two-domain devnet
+npm run e2e          # deposit, withdrawal, access control and log access; expects a /domain/<id> route on the L1 RPC
+npm run e2e:routing  # sealed domain -> domain route; needs a client that has the encryption precompile
 ```
+
+`npm run e2e:bridge` (`e2e/e2e-bridge-cli.ts`) expects a fresh single-node devnet with one
+`monad-domain` client and one domain RPC per domain: the clients started for the hub address the
+admin's deployment yields, and the admin an operator of both RPCs. The header of that file lists
+the environment it reads. After setup it starts validator and relayer processes and then only
+acts as the user. The other two expect a `/domain/<id>` route on the L1 RPC and a spoke created
+by a sequenced transaction, which `monad-domain` does not provide.
 
 `npm run e2e` (`e2e/e2e-cli.ts`) expects a fresh single-node devnet started with the domain flags
 for `DOMAIN_CHAIN_ID`; the header of that file lists the environment it reads.

@@ -10,7 +10,7 @@ import {
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { fetchL1Chain } from "./chain.js";
+import { domainTransportFor, fetchL1Chain } from "./chain.js";
 import { encryptTransaction } from "./encryption.js";
 
 const HUB_SEQUENCING_ABI = parseAbi([
@@ -23,11 +23,21 @@ const HUB_SEQUENCING_ABI = parseAbi([
 
 /**
  * Fee fields of a domain transaction. Nothing is charged for it on the domain, but the signed
- * transaction must still pass ordinary EIP-1559 validity checks.
+ * transaction must still pass ordinary EIP-1559 validity checks there, and every domain block
+ * has the hub's `DOMAIN_GAS_PRICE` (`readDomainGasPrice`) as its base fee: a transaction that
+ * offers less is included as failed, without executing.
  */
-export function domainFeeCaps(baseFeePerGas: bigint): { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } {
-  return { maxFeePerGas: baseFeePerGas > 0n ? baseFeePerGas * 2n : 1n, maxPriorityFeePerGas: 0n };
+export function domainFeeCaps(domainGasPrice: bigint): { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } {
+  return { maxFeePerGas: domainGasPrice, maxPriorityFeePerGas: 0n };
 }
+
+/**
+ * Gas to add to the estimate of an L1 call that records a domain input (a sequenced
+ * transaction, a message, a deposit). The first input of an L1 block opens the domain's next
+ * block in the hub's input queue, and the first of a checkpoint period opens the period; an
+ * estimate against the latest block may cover neither.
+ */
+export const HUB_INPUT_GAS_HEADROOM = 100_000n;
 
 /**
  * The hub's price of one unit of domain gas, in wei of the L1 native token. A sequencing or
@@ -57,7 +67,7 @@ export interface SequenceConfig {
   gas?: bigint;
   /** Domain nonce for the sender. Required unless `domainRpcUrl` is given (then it is fetched). */
   nonce?: number;
-  /** If set, the sender's current domain nonce is read from this domain RPC. */
+  /** If set, the sender's current domain nonce is read from this domain RPC, as the sender. */
   domainRpcUrl?: string;
   /**
    * Domain viewing public key (32-byte X25519 public key). The signed transaction is
@@ -110,13 +120,15 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
   let nonce = config.nonce;
   if (nonce === undefined) {
     if (!domainRpcUrl) throw new Error("sequence: provide `nonce` or `domainRpcUrl` to look it up");
-    const domain = createPublicClient({ transport: http(domainRpcUrl) });
+    // The domain RPC serves an account its own nonce, to a token the account signed.
+    const domain = createPublicClient({ transport: await domainTransportFor(domainRpcUrl, domainChainId, senderKey) });
     nonce = await domain.getTransactionCount({ address: sender.address });
   }
 
   const latestBlock = await l1.getBlock({ blockTag: "latest" });
   // The fee never buys more than one L1 block of gas, so a larger limit could never execute.
   if (gas > latestBlock.gasLimit) throw new Error(`sequence: gas ${gas} exceeds the L1 block gas limit ${latestBlock.gasLimit}`);
+  const domainGasPrice = await readDomainGasPrice(l1, hub);
   const rawTransaction = await sender.signTransaction({
     type: "eip1559",
     chainId: Number(domainChainId),
@@ -125,7 +137,7 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
     data,
     value,
     gas,
-    ...domainFeeCaps(latestBlock.baseFeePerGas ?? (await l1.getGasPrice())),
+    ...domainFeeCaps(domainGasPrice),
   });
   const domainTxHash = keccak256(rawTransaction);
 
@@ -152,7 +164,7 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
   }
   const rlpTx = await encryptTransaction(encryptionKey, domainChainId, rawTransaction);
 
-  const fee = gas * (await readDomainGasPrice(l1, hub));
+  const fee = gas * domainGasPrice;
   // The hub refuses a fee below its minimum for the payload's size.
   const payloadLength = BigInt((rlpTx.length - 2) / 2);
   const minimumFee = await l1.readContract({
@@ -166,12 +178,17 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
       `sequence: gas ${gas} pays ${fee} wei, below the hub's minimum of ${minimumFee} wei for a ${payloadLength}-byte payload`,
     );
   }
-  const l1TxHash = await wallet.writeContract({
+  const request = {
+    account: sender,
     address: hub,
     abi: HUB_SEQUENCING_ABI,
     functionName: "sequenceToDomain",
     args: [domainChainId, rlpTx],
     value: fee,
+  } as const;
+  const l1TxHash = await wallet.writeContract({
+    ...request,
+    gas: (await l1.estimateContractGas(request)) + HUB_INPUT_GAS_HEADROOM,
   });
   const receipt = await l1.waitForTransactionReceipt({ hash: l1TxHash });
   const [log] = parseEventLogs({ abi: HUB_SEQUENCING_ABI, eventName: "DomainTransactionSequenced", logs: receipt.logs });

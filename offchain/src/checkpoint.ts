@@ -1,8 +1,8 @@
 import {
+  BlockNotFoundError,
   hashTypedData,
   parseAbi,
   serializeSignature,
-  toHex,
   zeroHash,
   type Address,
   type Chain,
@@ -23,11 +23,15 @@ import type { MessageContext } from "./message.js";
  *
  *   - `H`: the smallest scheduled height above the hub's last attested one, attested once the
  *     validator's own node has finalized it (`nextCheckpointHeight`);
- *   - `blockHash`: the hash of the domain's last block as of `H` (`monad_getDomainHeader`);
+ *   - `blockHash`: the hash of the domain's last block as of `H` (`getDomainHeader`);
  *   - `anchor`: the Merkle root of the domain-origin messages recorded since the previous
  *     checkpoint `P`, i.e. over the spoke's message ids with nonce in `[count(P), count(H))`,
  *     where `count(x)` is the spoke's `domainMessageCount` in the domain state at height `x`;
  *     zero if that range is empty.
+ *
+ * The domain numbers its own blocks: block 0 for the L1 block that registered it, then one per
+ * L1 block that recorded an input. The domain's state at an L1 height is its state at the
+ * block `hub.latestDomainBlock` names as of that height (`domainBlockAt`).
  *
  * The hub tallies signatures per EIP-712 digest and advances once a quorum signed the same
  * `(H, blockHash, anchor)` for the current state nonce. The nonce pins the previous
@@ -39,7 +43,10 @@ export const HUB_CHECKPOINT_ABI = parseAbi([
   "function domainBlockNumbers(uint64 domainChainId) view returns (uint64)",
   "function checkpointIntervals(uint64 domainChainId) view returns (uint64)",
   "function stateNonces(uint64 domainChainId) view returns (uint256)",
+  "function latestDomainBlock(uint64 domainChainId) view returns (uint64 l1BlockNumber, uint64 domainBlockNumber)",
   "function hasVotedFor(bytes32 digest, address validator) view returns (bool)",
+  "function stateVotes(bytes32 digest) view returns (uint256)",
+  "function quorums(uint64 domainChainId) view returns (uint256)",
   "function stateTransitionDigest(uint64 domainChainId, uint64 domainBlockNumber, bytes32 newBlockHash, bytes32 domainAnchor) view returns (bytes32)",
   "function submitStateSignature(uint64 domainChainId, uint64 domainBlockNumber, bytes32 newBlockHash, bytes32 domainAnchor, bytes signature)",
 ]);
@@ -48,6 +55,12 @@ export const SPOKE_BATCH_ABI = parseAbi([
   "function domainMessageCount() view returns (uint256)",
   "function domainMessageIds(uint256 sourceNonce) view returns (bytes32)",
 ]);
+
+/**
+ * Gas added to the estimate of a vote that does not complete the quorum: if another
+ * validator's vote lands first, this one completes it and also advances the hub.
+ */
+export const QUORUM_VOTE_GAS_HEADROOM = 150_000n;
 
 /**
  * `domainMessageIds` reads issued concurrently per page. A client whose HTTP transport batches
@@ -102,51 +115,101 @@ export async function signStateTransition(validatorKey: Hex, digest: Hex): Promi
 // Reading the domain
 // ---------------------------------------------------------------------------
 
-/** Header the domain route returns from `monad_getDomainHeader`. */
-export interface DomainHeader {
-  /** L1 height the header was committed at (the last block with domain activity). */
+/** A domain block and the L1 block it is derived from. */
+export interface DomainBlockRef {
+  /** Domain block number: 0 for the registering L1 block, then one per L1 block with inputs. */
   number: bigint;
+  /** The L1 block whose inputs the domain block executes. */
+  l1BlockNumber: bigint;
+}
+
+/** Where the domain is read from: the hub on the L1 names its blocks, its own RPC serves them. */
+export interface DomainSource {
+  l1: PublicClient;
+  domain: PublicClient;
+  hub: Address;
+  domainChainId: bigint;
+}
+
+/**
+ * The domain's latest block as of L1 block `l1Height`, read from the hub's state there. Null
+ * before the domain was registered.
+ */
+export async function domainBlockAt(
+  l1: PublicClient,
+  hub: Address,
+  domainChainId: bigint,
+  l1Height: bigint,
+): Promise<DomainBlockRef | null> {
+  const [l1BlockNumber, number] = await l1.readContract({
+    address: hub,
+    abi: HUB_CHECKPOINT_ABI,
+    functionName: "latestDomainBlock",
+    args: [domainChainId],
+    blockNumber: l1Height,
+  });
+  // A registered domain's latest block is derived from the registering L1 block or a later one.
+  if (l1BlockNumber === 0n) return null;
+  return { number: BigInt(number), l1BlockNumber: BigInt(l1BlockNumber) };
+}
+
+/** Header of a domain block, as the domain RPC serves it. */
+export interface DomainHeader extends DomainBlockRef {
   hash: Hex;
-  stateRoot: Hex;
   parentHash: Hex;
+  stateRoot: Hex;
+  /** Copied from the L1 block the domain block is derived from. */
   timestamp: bigint;
 }
 
 /**
- * The domain's latest committed header as of `block`. Null while the domain has never
- * executed a transaction. It is the domain's last block as of `block`, so its hash and state
- * root are the domain's there even when the header's own number is lower (no domain activity
- * since).
+ * The header of the domain's latest block as of L1 block `l1Height`: its hash is what a
+ * checkpoint at that height attests. Null before the domain was registered. Throws while the
+ * domain client has not executed the block yet, and if the block it serves does not carry the
+ * timestamp of the L1 block the hub derived it from.
  */
-export async function getDomainHeader(
-  domain: PublicClient,
-  block: "latest" | "finalized" | bigint = "latest",
-): Promise<DomainHeader | null> {
-  const raw = (await domain.request({
-    method: "monad_getDomainHeader" as never,
-    params: [typeof block === "bigint" ? toHex(block) : block] as never,
-  })) as { number: Hex; hash: Hex; stateRoot: Hex; parentHash: Hex; timestamp: Hex } | null;
-  if (!raw) return null;
+export async function getDomainHeader(source: DomainSource, l1Height: bigint): Promise<DomainHeader | null> {
+  const { l1, domain, hub, domainChainId } = source;
+  const ref = await domainBlockAt(l1, hub, domainChainId, l1Height);
+  if (!ref) return null;
+  const [block, l1Block] = await Promise.all([
+    domain.getBlock({ blockNumber: ref.number }).catch((error: unknown) => {
+      if (error instanceof BlockNotFoundError) {
+        throw new Error(
+          `checkpoint: the domain client has not executed block ${ref.number} (derived from L1 block ${ref.l1BlockNumber}) yet`,
+        );
+      }
+      throw error;
+    }),
+    l1.getBlock({ blockNumber: ref.l1BlockNumber }),
+  ]);
+  if (block.timestamp !== l1Block.timestamp) {
+    throw new Error(
+      `checkpoint: domain block ${ref.number} has timestamp ${block.timestamp}, but L1 block ${ref.l1BlockNumber} ` +
+        `it is derived from has ${l1Block.timestamp}; the domain RPC serves another chain`,
+    );
+  }
+  if (block.hash === null) throw new Error(`checkpoint: domain block ${ref.number} has no hash`);
   return {
-    number: BigInt(raw.number),
-    hash: raw.hash,
-    stateRoot: raw.stateRoot,
-    parentHash: raw.parentHash,
-    timestamp: BigInt(raw.timestamp),
+    ...ref,
+    hash: block.hash,
+    parentHash: block.parentHash,
+    stateRoot: block.stateRoot,
+    timestamp: block.timestamp,
   };
 }
 
 /**
- * `spoke.domainMessageCount` in the domain state at `height`. Zero before the spoke had
- * code, which is the only way the call can return no data.
+ * `spoke.domainMessageCount` in the domain state at domain block `blockNumber`. Zero before
+ * the spoke had code, which is the only way the call can return no data.
  */
-export async function domainMessageCountAt(domain: PublicClient, spoke: Address, height: bigint): Promise<bigint> {
+export async function domainMessageCountAt(domain: PublicClient, spoke: Address, blockNumber: bigint): Promise<bigint> {
   try {
     return (await domain.readContract({
       address: spoke,
       abi: SPOKE_BATCH_ABI,
       functionName: "domainMessageCount",
-      blockNumber: height,
+      blockNumber,
     })) as bigint;
   } catch (error) {
     if (error instanceof Error && error.name === "ContractFunctionExecutionError" && /returned no data/.test(error.message)) {
@@ -157,16 +220,16 @@ export async function domainMessageCountAt(domain: PublicClient, spoke: Address,
 }
 
 /**
- * The spoke's message ids with nonce in `[fromNonce, toNonce)` as of `height`, read one nonce
- * at a time from the public mapping, a page of concurrent requests per round, so that a batch
- * of any size can be rebuilt and hashed off-chain.
+ * The spoke's message ids with nonce in `[fromNonce, toNonce)` as of domain block
+ * `blockNumber`, read one nonce at a time from the public mapping, a page of concurrent
+ * requests per round, so that a batch of any size can be rebuilt and hashed off-chain.
  */
 export async function fetchDomainMessageIds(
   domain: PublicClient,
   spoke: Address,
   fromNonce: bigint,
   toNonce: bigint,
-  height: bigint,
+  blockNumber: bigint,
   pageSize: bigint = DEFAULT_ID_PAGE_SIZE,
 ): Promise<Hex[]> {
   if (pageSize <= 0n) throw new Error("checkpoint: page size must be positive");
@@ -181,13 +244,13 @@ export async function fetchDomainMessageIds(
           abi: SPOKE_BATCH_ABI,
           functionName: "domainMessageIds",
           args: [nonce],
-          blockNumber: height,
+          blockNumber,
         }) as Promise<Hex>,
       ),
     );
     page.forEach((id, i) => {
       // The mapping reads zero for a nonce never recorded; a real id is a keccak hash.
-      if (id === zeroHash) throw new Error(`checkpoint: spoke has no message id at nonce ${nonces[i]} as of height ${height}`);
+      if (id === zeroHash) throw new Error(`checkpoint: spoke has no message id at nonce ${nonces[i]} as of domain block ${blockNumber}`);
     });
     ids.push(...page);
   }
@@ -222,7 +285,10 @@ export function nextCheckpointHeight(lastAttested: bigint, interval: bigint, fin
 /** One checkpoint proposal with the batch it anchors. */
 export interface Checkpoint {
   domainChainId: bigint;
+  /** The checkpoint's L1 height: what the hub calls `domainBlockNumber`. */
   domainBlockNumber: bigint;
+  /** The domain's latest block as of that height, whose hash this is. */
+  domainBlock: DomainBlockRef;
   blockHash: Hex;
   /** Root of the ids with nonce in `[fromNonce, toNonce)`; zero when the range is empty. */
   anchor: Hex;
@@ -260,20 +326,21 @@ export async function buildCheckpoint(args: {
   if (height <= previousBlockNumber) {
     throw new Error(`checkpoint: height ${height} is not above the hub's attested height ${previousBlockNumber}`);
   }
-  const header = await getDomainHeader(domain, height);
-  if (!header) throw new Error(`checkpoint: the domain has no committed header at height ${height}`);
+  const header = await getDomainHeader({ l1, domain, hub, domainChainId }, height);
+  if (!header) throw new Error(`checkpoint: domain ${domainChainId} is not registered as of L1 height ${height}`);
 
-  // Before the first attestation nothing can have been recorded, and the domain state at
-  // L1 height 0 is not necessarily readable on a long-lived chain.
-  const fromNonce = stateNonce === 0n ? 0n : await domainMessageCountAt(domain, spoke, previousBlockNumber);
-  const toNonce = await domainMessageCountAt(domain, spoke, height);
+  // Before the first attestation the hub's attested height lies below the registering L1 block.
+  const previous = stateNonce === 0n ? null : await domainBlockAt(l1, hub, domainChainId, previousBlockNumber);
+  const fromNonce = previous === null ? 0n : await domainMessageCountAt(domain, spoke, previous.number);
+  const toNonce = await domainMessageCountAt(domain, spoke, header.number);
   if (toNonce < fromNonce) {
     throw new Error(`checkpoint: message count went backwards (${fromNonce} at ${previousBlockNumber}, ${toNonce} at ${height})`);
   }
-  const ids = await fetchDomainMessageIds(domain, spoke, fromNonce, toNonce, height, idPageSize);
+  const ids = await fetchDomainMessageIds(domain, spoke, fromNonce, toNonce, header.number, idPageSize);
   return {
     domainChainId,
     domainBlockNumber: height,
+    domainBlock: { number: header.number, l1BlockNumber: header.l1BlockNumber },
     blockHash: header.hash,
     anchor: batchRoot(ids),
     fromNonce,
@@ -343,13 +410,24 @@ export async function attestCheckpoint(args: {
     const signature = await signStateTransition(key, digest);
     const account = submitter.account;
     if (!account) throw new Error("checkpoint: submitter wallet has no account");
-    const hash = await submitter.writeContract({
+    const request = {
       account,
       chain,
       address: hub,
       abi: HUB_CHECKPOINT_ABI,
       functionName: "submitStateSignature",
       args: [checkpoint.domainChainId, checkpoint.domainBlockNumber, checkpoint.blockHash, checkpoint.anchor, signature],
+    } as const;
+    const [votes, quorum, estimate] = await Promise.all([
+      l1.readContract({ address: hub, abi: HUB_CHECKPOINT_ABI, functionName: "stateVotes", args: [digest] }),
+      l1.readContract({ address: hub, abi: HUB_CHECKPOINT_ABI, functionName: "quorums", args: [checkpoint.domainChainId] }),
+      l1.estimateContractGas(request),
+    ]);
+    // The estimate covers advancing the hub only if this vote is the one that completes the quorum.
+    const completesQuorum = votes + 1n >= quorum;
+    const hash = await submitter.writeContract({
+      ...request,
+      gas: estimate + (completesQuorum ? 0n : QUORUM_VOTE_GAS_HEADROOM),
     });
     const receipt = await l1.waitForTransactionReceipt({ hash });
     if (receipt.status !== "success") {
