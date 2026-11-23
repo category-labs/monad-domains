@@ -8,6 +8,10 @@ import {MessageLib} from "./libraries/MessageLib.sol";
 contract DomainSpoke is IDomainSpoke {
     error NotPolicyOwner();
     error NotSystemRelayer();
+    error NotAdmin();
+    error NotPendingAdmin();
+    error ZeroAdmin();
+    error DeployNotAllowed();
     error ZeroHub();
     error DomainIsL1();
     error L1ChainIdTooLarge();
@@ -39,7 +43,8 @@ contract DomainSpoke is IDomainSpoke {
     /// @notice Hub address bound into every outbound message ID.
     address public immutable HUB;
 
-    // Storage layout: the domain RPC reads `policyOwners` (slot 2) and `logReaders` (slot 6)
+    // Storage layout: the domain RPC and execution client read `policyOwners` (slot 2),
+    // `logReaders` (slot 6), `accessListModes` (slot 7) and `accessListMembers` (slot 8)
     // directly from state, so these declarations must not be reordered.
 
     /// @notice Number of domain-origin messages recorded so far; the nonce the next one gets.
@@ -59,6 +64,15 @@ contract DomainSpoke is IDomainSpoke {
     /// @notice Accounts besides the policy owner that the domain RPC lets read every log of a
     /// contract.
     mapping(address target => mapping(address reader => bool allowed)) public logReaders;
+    /// @notice Mode of each of the domain's access lists. `admin` changes the lists with ordinary
+    /// domain transactions, as a policy owner changes its contract's policy.
+    mapping(AccessList list => AccessListMode mode) public accessListModes;
+    /// @notice Members of each of the domain's access lists; they count only in `Allowlist` mode.
+    mapping(AccessList list => mapping(address account => bool allowed)) public accessListMembers;
+    /// @notice Account that changes the domain's access lists.
+    address public admin;
+    /// @notice Account proposed to become `admin`, or zero if no transfer is pending.
+    address public pendingAdmin;
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
@@ -71,13 +85,78 @@ contract DomainSpoke is IDomainSpoke {
         _;
     }
 
-    constructor(uint64 domainChainId, uint256 l1ChainId, address hub) {
+    modifier onlyAdmin() {
+        if (msg.sender != admin) revert NotAdmin();
+        _;
+    }
+
+    constructor(
+        uint64 domainChainId,
+        uint256 l1ChainId,
+        address hub,
+        address initialAdmin,
+        DomainAccessConfig memory initialAccess
+    ) {
         if (hub == address(0)) revert ZeroHub();
         if (domainChainId == l1ChainId) revert DomainIsL1();
         if (l1ChainId > type(uint64).max) revert L1ChainIdTooLarge();
+        if (initialAdmin == address(0)) revert ZeroAdmin();
         DOMAIN_CHAIN_ID = domainChainId;
         L1_CHAIN_ID = uint64(l1ChainId);
         HUB = hub;
+        admin = initialAdmin;
+        emit AdminTransferred(address(0), initialAdmin);
+        _setAccessList(AccessList.Deploy, initialAccess.deploy);
+        _setAccessList(AccessList.SendTx, initialAccess.sendTx);
+        _setAccessList(AccessList.ReadData, initialAccess.readData);
+    }
+
+    // ---------------------------------------------------------------------
+    // Domain access lists (changed by the admin)
+    // ---------------------------------------------------------------------
+
+    function isAllowed(AccessList list, address account) public view returns (bool) {
+        if (account == address(0)) return false;
+        AccessListMode mode = accessListModes[list];
+        return mode == AccessListMode.Open || (mode == AccessListMode.Allowlist && accessListMembers[list][account]);
+    }
+
+    function setAccessListMode(AccessList list, AccessListMode mode) external onlyAdmin {
+        _setAccessListMode(list, mode);
+    }
+
+    function setAccessListMembers(AccessList list, address[] calldata accounts, bool allowed) external onlyAdmin {
+        _setAccessListMembers(list, accounts, allowed);
+    }
+
+    function _setAccessList(AccessList list, AccessListConfig memory config) private {
+        _setAccessListMode(list, config.mode);
+        _setAccessListMembers(list, config.members, true);
+    }
+
+    function _setAccessListMode(AccessList list, AccessListMode mode) private {
+        accessListModes[list] = mode;
+        emit AccessListModeSet(list, mode);
+    }
+
+    function _setAccessListMembers(AccessList list, address[] memory accounts, bool allowed) private {
+        mapping(address account => bool allowed) storage members = accessListMembers[list];
+        for (uint256 i = 0; i < accounts.length; i++) {
+            members[accounts[i]] = allowed;
+            emit AccessListMemberSet(list, accounts[i], allowed);
+        }
+    }
+
+    function transferAdmin(address newAdmin) external onlyAdmin {
+        pendingAdmin = newAdmin;
+        emit AdminTransferStarted(msg.sender, newAdmin);
+    }
+
+    function acceptAdmin() external {
+        if (msg.sender != pendingAdmin) revert NotPendingAdmin();
+        emit AdminTransferred(admin, msg.sender);
+        admin = msg.sender;
+        delete pendingAdmin;
     }
 
     // ---------------------------------------------------------------------
@@ -85,6 +164,7 @@ contract DomainSpoke is IDomainSpoke {
     // ---------------------------------------------------------------------
 
     function deployContract(bytes calldata initCode, address policyOwner) external returns (address deployed) {
+        if (!isAllowed(AccessList.Deploy, msg.sender)) revert DeployNotAllowed();
         if (policyOwner == address(0)) revert ZeroPolicyOwner();
         bytes memory code = initCode;
         assembly ("memory-safe") {

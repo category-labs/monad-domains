@@ -1,4 +1,12 @@
-export { setupDomain, type SetupConfig, type SetupResult } from "./setup.js";
+export {
+  DomainAccessList,
+  DomainAccessListMode,
+  setupDomain,
+  type AccessListConfig,
+  type DomainAccessConfig,
+  type SetupConfig,
+  type SetupResult,
+} from "./setup.js";
 export {
   domainFeeCaps,
   readDomainGasPrice,

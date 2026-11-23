@@ -37,8 +37,8 @@ contract NativeRoutingTest is DomainTestBase {
         _register(hub, A);
         _register(hub, B);
         _register(hub, C);
-        spokeA = new DomainSpoke(A, L1, address(hub));
-        spokeB = new DomainSpoke(B, L1, address(hub));
+        spokeA = new DomainSpoke(A, L1, address(hub), address(this), _closedAccess());
+        spokeB = new DomainSpoke(B, L1, address(hub), address(this), _closedAccess());
         receiver = new CrossDomainReceiver(address(spokeB), A, alice);
         vm.deal(makeAddr("relayer"), 100 ether);
         vm.deal(alice, 100 ether);
@@ -349,7 +349,7 @@ contract NativeRoutingTest is DomainTestBase {
     function test_sameSenderAndNonceOnDifferentSourcesRemainDistinct() public {
         MessageLib.DomainMessage memory first = _send(address(receiver), hex"");
         _deliver(_route(first));
-        DomainSpoke spokeC = new DomainSpoke(C, L1, address(hub));
+        DomainSpoke spokeC = new DomainSpoke(C, L1, address(hub), address(this), _closedAccess());
         vm.prank(alice);
         spokeC.sendDomainMessage(B, address(receiver), hex"", TEST_SALT);
         MessageLib.DomainMessage memory second =

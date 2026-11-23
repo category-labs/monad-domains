@@ -10,6 +10,17 @@ selectors are open. After a token is created, the policy owner can restrict `bal
 `SubjectMatch` and mask `1`, and `allowance` with `SubjectMatch` and mask `3`. Setup registers
 policy ownership and installs the policy; it does not configure per-token read rules.
 
+The spoke's constructor names the domain admin, `DOMAIN_ADMIN` (by default the admin), and the
+domain's starting access lists: `Deploy`, `SendTx` and `ReadData`, each `Closed`, `Allowlist` or
+`Open`. `npm run setup` opens `Deploy` and `SendTx` and closes `ReadData`. To start from other
+lists, call `setupDomain` with `access`, for example
+`{ sendTx: { mode: DomainAccessListMode.Allowlist, members: [alice] } }`. A list keeps its
+members whatever its mode, and they count while it is an allowlist. Keep the seed account and the
+domain admin on any `SendTx` allowlist: the seed's policy and bridge creation transactions are
+domain transactions, and so are the admin's changes. The domain admin changes the lists with
+transactions to the spoke, `setAccessListMode` and `setAccessListMembers`, and hands the role on
+with `transferAdmin` and `acceptAdmin`.
+
 ## Fees
 
 Every sequencing or message call on the hub carries a fee in L1 native tokens for the domain's fee

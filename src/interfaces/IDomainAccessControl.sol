@@ -25,6 +25,7 @@ interface IDomainAccessControl is IDomainAccessPolicy {
     event LogReaderSet(address indexed target, address indexed reader, bool allowed);
 
     /// @notice Deploy using CREATE and assign a nonzero owner of the new contract's access policy.
+    /// Reverts unless the domain's `Deploy` access list admits the caller.
     /// @param initCode Creation bytecode including ABI-encoded constructor arguments.
     /// @param policyOwner Account authorized to name the contract's access policy.
     function deployContract(bytes calldata initCode, address policyOwner) external returns (address deployed);

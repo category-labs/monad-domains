@@ -5,6 +5,63 @@ import { fetchL1Chain } from "./chain.js";
 import { encryptTransaction } from "./encryption.js";
 import { domainFeeCaps, readDomainGasPrice } from "./sequence.js";
 
+/** Mirrors `IDomainSpoke.AccessList`. */
+export enum DomainAccessList {
+  Deploy = 0,
+  SendTx = 1,
+  ReadData = 2,
+}
+
+/** Mirrors `IDomainSpoke.AccessListMode`. */
+export enum DomainAccessListMode {
+  Closed = 0,
+  Allowlist = 1,
+  Open = 2,
+}
+
+export interface AccessListConfig {
+  mode: DomainAccessListMode;
+  /** Kept whatever the mode; they count while the list is in `Allowlist` mode. */
+  members?: Address[];
+}
+
+export interface DomainAccessConfig {
+  deploy?: AccessListConfig;
+  sendTx?: AccessListConfig;
+  readData?: AccessListConfig;
+}
+
+/**
+ * The spoke's starting lists as its constructor takes them. `deploy` and `sendTx` default to
+ * `Open`, `readData` to `Closed`. Checked here because a spoke constructor that reverts uses up
+ * the seed's nonce 0, the spoke's address.
+ */
+export function resolveDomainAccess(
+  access: DomainAccessConfig = {},
+): Record<keyof DomainAccessConfig, Required<AccessListConfig>> {
+  return {
+    deploy: resolveAccessList("deploy", access.deploy, DomainAccessListMode.Open),
+    sendTx: resolveAccessList("sendTx", access.sendTx, DomainAccessListMode.Open),
+    readData: resolveAccessList("readData", access.readData, DomainAccessListMode.Closed),
+  };
+}
+
+function resolveAccessList(
+  name: string,
+  list: AccessListConfig | undefined,
+  defaultMode: DomainAccessListMode,
+): Required<AccessListConfig> {
+  const mode = list?.mode ?? defaultMode;
+  const members = list?.members ?? [];
+  if (mode !== DomainAccessListMode.Closed && mode !== DomainAccessListMode.Allowlist && mode !== DomainAccessListMode.Open) {
+    throw new Error(`setup: access.${name}.mode is invalid`);
+  }
+  for (const member of members) {
+    if (!isAddress(member)) throw new Error(`setup: access.${name}.members entries must be addresses`);
+  }
+  return { mode, members };
+}
+
 export interface SetupConfig {
   /** L1 RPC endpoint. */
   l1RpcUrl: string;
@@ -14,6 +71,10 @@ export interface SetupConfig {
   existingHub?: Address;
   /** Account that may upgrade the hub deployed here. Defaults to the admin. Unused with `existingHub`. */
   hubOwner?: Address;
+  /** Domain account that changes the domain's access lists on its spoke. Defaults to the admin. */
+  domainAdmin?: Address;
+  /** The spoke's starting access lists. Defaults to `deploy: Open`, `sendTx: Open`, `readData: Closed`. */
+  access?: DomainAccessConfig;
   /** The domain chain id. */
   domainChainId: bigint;
   /** Validator addresses whose signatures attest domain state transitions. */
@@ -80,7 +141,7 @@ export interface SetupResult {
  *        registerDomain (validators, quorum, fee recipient, viewing key, checkpoint interval)
  *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
  *   -    precompute domain spoke = CREATE(seed, 0), default policy = CREATE(seed, 1), bridge = CREATE(seed, 2)
- *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx)   [nonce 0]
+ *   L1:  sequenceToDomain(seed's signed DomainSpoke creation tx, naming the domain admin and starting access lists)   [nonce 0]
  *   L1:  sequenceToDomain(seed's signed DomainAccessRules creation tx) [nonce 1, unless a policy was supplied]
  *   L1:  sequenceToDomain(seed's signed DomainBridge creation tx)  [nonce 2, or 1 with a supplied policy]
  *   L1:  L1Bridge.registerDomainBridge(domainBridge) (one-shot)
@@ -116,6 +177,11 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   if (!isAddress(hubOwner) || hubOwner === zeroAddress) {
     throw new Error("setup: hubOwner must be a nonzero L1 address");
   }
+  const domainAdmin = config.domainAdmin ?? admin.address;
+  if (!isAddress(domainAdmin) || domainAdmin === zeroAddress) {
+    throw new Error("setup: domainAdmin must be a nonzero domain address");
+  }
+  const access = resolveDomainAccess(config.access);
   const tokenPolicyOwner = config.tokenPolicyOwner ?? admin.address;
   if (!isAddress(tokenPolicyOwner) || tokenPolicyOwner === zeroAddress) {
     throw new Error("setup: tokenPolicyOwner must be a nonzero domain address");
@@ -197,7 +263,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const bridgeNonce = config.initialTokenPolicy ? 1 : 2;
   const initialTokenPolicy = config.initialTokenPolicy ?? getContractAddress({ from: seed.address, nonce: 1n });
   const domainBridge = getContractAddress({ from: seed.address, nonce: BigInt(bridgeNonce) });
-  console.log("DomainSpoke (seeded):", spoke);
+  console.log("DomainSpoke (seeded):", spoke, `(access-list admin ${domainAdmin})`);
   console.log("Initial token policy:", initialTokenPolicy);
   console.log("Token policy owner:", tokenPolicyOwner);
   console.log("DomainBridge (seeded):", domainBridge);
@@ -215,7 +281,11 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const rawSpokeTx = await seed.signTransaction({
     ...domainTxDefaults,
     nonce: 0,
-    data: encodeDeployData({ abi: spokeArt.abi, bytecode: spokeArt.bytecode, args: [domainChainId, BigInt(l1ChainId), hub] }),
+    data: encodeDeployData({
+      abi: spokeArt.abi,
+      bytecode: spokeArt.bytecode,
+      args: [domainChainId, BigInt(l1ChainId), hub, domainAdmin, access],
+    }),
   });
   let rawPolicyTx: Hex | undefined;
   if (!config.initialTokenPolicy) {

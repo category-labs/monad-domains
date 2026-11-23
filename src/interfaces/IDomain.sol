@@ -264,6 +264,39 @@ interface IDomainHub {
 /// client delivers as system transactions. It also holds the access-control configuration the
 /// domain client and RPC enforce.
 interface IDomainSpoke is IDomainAccessControl {
+    /// @notice The domain's access lists: who may deploy contracts, send transactions and read
+    /// private data.
+    enum AccessList {
+        Deploy,
+        SendTx,
+        ReadData
+    }
+
+    /// @notice How a list admits accounts. Zero is `Closed`, so a list never set admits nobody.
+    enum AccessListMode {
+        Closed,
+        Allowlist,
+        Open
+    }
+
+    /// @notice A list's starting mode and members.
+    struct AccessListConfig {
+        AccessListMode mode;
+        address[] members;
+    }
+
+    /// @notice The lists the spoke starts from.
+    struct DomainAccessConfig {
+        AccessListConfig deploy;
+        AccessListConfig sendTx;
+        AccessListConfig readData;
+    }
+
+    event AdminTransferStarted(address indexed previousAdmin, address indexed newAdmin);
+    event AdminTransferred(address indexed previousAdmin, address indexed newAdmin);
+    event AccessListModeSet(AccessList indexed list, AccessListMode mode);
+    event AccessListMemberSet(AccessList indexed list, address indexed account, bool allowed);
+
     /// @notice Full encoded domain-origin envelope, whether addressed to L1 or another domain.
     event DomainMessageRecorded(bytes32 indexed messageId, bytes message);
 
@@ -286,6 +319,40 @@ interface IDomainSpoke is IDomainAccessControl {
     /// @notice L1 chain id and hub address, bound into every outbound message ID.
     function L1_CHAIN_ID() external view returns (uint64);
     function HUB() external view returns (address);
+
+    // --- Domain access lists ---
+    //
+    // The admin named at construction changes the lists with ordinary domain transactions, as a
+    // policy owner changes its contract's policy. The hub plays no part.
+
+    /// @notice Account that changes this domain's access lists.
+    function admin() external view returns (address);
+
+    /// @notice Account proposed to become `admin`, or zero if no transfer is pending.
+    function pendingAdmin() external view returns (address);
+
+    /// @notice Admin-only. Proposes `newAdmin` (or zero to cancel a pending transfer).
+    function transferAdmin(address newAdmin) external;
+
+    /// @notice Pending-admin-only. Completes the two-step transfer of the admin role.
+    function acceptAdmin() external;
+
+    /// @notice Mode of this domain's `list`.
+    function accessListModes(AccessList list) external view returns (AccessListMode);
+
+    /// @notice Whether `account` is a member of `list`. Members count only while the list is in
+    /// `Allowlist` mode; `isAllowed` gives the verdict.
+    function accessListMembers(AccessList list, address account) external view returns (bool);
+
+    /// @notice Whether `list` admits `account`: every account when `Open`, the members when
+    /// `Allowlist`, nobody when `Closed`. Never the zero address.
+    function isAllowed(AccessList list, address account) external view returns (bool);
+
+    /// @notice Admin-only. Sets the mode of `list`. Its members are kept whatever the mode.
+    function setAccessListMode(AccessList list, AccessListMode mode) external;
+
+    /// @notice Admin-only. Adds `accounts` to `list` if `allowed`, removes them otherwise.
+    function setAccessListMembers(AccessList list, address[] calldata accounts, bool allowed) external;
 
     // --- Delivery of L1 messages (protocol system transactions) ---
 

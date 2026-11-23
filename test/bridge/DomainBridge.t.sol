@@ -24,7 +24,7 @@ contract DomainBridgeTest is DomainTestBase {
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(0x1234));
+        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(0x1234), address(this), _closedAccess());
         initialPolicy = address(new DomainAccessRules(spoke));
         bridge = new DomainBridge(spoke, L1_BRIDGE, policyOwner, initialPolicy);
     }

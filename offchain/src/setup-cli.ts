@@ -11,6 +11,7 @@ import { setupDomain, type SetupConfig } from "./setup.js";
  *   QUORUM=2                \
  *   [EXISTING_HUB_ADDRESS=0x..] \ # reuse the hub when adding another domain
  *   [HUB_OWNER=0x..]        \  # may upgrade the hub deployed here; defaults to admin
+ *   [DOMAIN_ADMIN=0x..]     \  # changes the domain's access lists on its spoke; defaults to admin
  *   [SEED_DEPLOYER_KEY=0x.] \  # domain seed account; defaults to ADMIN_KEY
  *   [FEE_RECIPIENT=0x..]    \  # receives sequencing and delivery fees; defaults to admin
  *   [CHECKPOINT_INTERVAL=5] \  # attested heights are multiples of this
@@ -41,6 +42,7 @@ function main() {
   };
   if (process.env.EXISTING_HUB_ADDRESS) config.existingHub = process.env.EXISTING_HUB_ADDRESS as Address;
   if (process.env.HUB_OWNER) config.hubOwner = process.env.HUB_OWNER as Address;
+  if (process.env.DOMAIN_ADMIN) config.domainAdmin = process.env.DOMAIN_ADMIN as Address;
   if (process.env.SEED_DEPLOYER_KEY) config.seedDeployerKey = process.env.SEED_DEPLOYER_KEY as Hex;
   if (process.env.FEE_RECIPIENT) config.feeRecipient = process.env.FEE_RECIPIENT as Address;
   if (process.env.CHECKPOINT_INTERVAL) config.checkpointInterval = BigInt(process.env.CHECKPOINT_INTERVAL);

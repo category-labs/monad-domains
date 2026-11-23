@@ -32,7 +32,7 @@ contract DomainAccessControlTest is DomainTestBase {
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        spoke = new DomainSpoke(7777, block.chainid, address(0x1234));
+        spoke = new DomainSpoke(7777, block.chainid, address(0x1234), address(this), _openDeployAccess());
         vm.prank(deployer);
         token = spoke.deployContract(type(TestERC20).creationCode, policyOwner);
         allowAll = address(new ConstantPolicy(true));

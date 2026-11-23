@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
+import {IDomainSpoke} from "../../src/interfaces/IDomain.sol";
 import {MerkleTreeLib} from "./MerkleTreeLib.sol";
 
 /// @notice Shared protocol steps for tests: registering a domain on the hub and attesting
@@ -150,6 +151,14 @@ abstract contract DomainTestBase is Test {
     /// @dev Single validator, quorum 1.
     function _registerDomain(DomainHub hub, uint64 chainId, uint256 key) internal {
         _registerDomain(hub, chainId, _keys(key), 1);
+    }
+
+    /// @dev Starting access lists for a spoke: all closed.
+    function _closedAccess() internal pure returns (IDomainSpoke.DomainAccessConfig memory access) {}
+
+    /// @dev Starting access lists for a spoke: open deployment, the other lists closed.
+    function _openDeployAccess() internal pure returns (IDomainSpoke.DomainAccessConfig memory access) {
+        access.deploy.mode = IDomainSpoke.AccessListMode.Open;
     }
 
     // ---------------------------------------------------------------------

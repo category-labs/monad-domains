@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {IDomainAccessControl} from "../src/interfaces/IDomainAccessControl.sol";
+import {IDomainSpoke} from "../src/interfaces/IDomain.sol";
 import {ConstantPolicy} from "./mocks/AccessPolicies.sol";
 import {TestERC20} from "./mocks/TestERC20.sol";
 
@@ -23,7 +24,9 @@ contract DomainSelfRegistrationTest is Test {
     address internal stranger = makeAddr("stranger");
 
     function setUp() public {
-        spoke = new DomainSpoke(7777, block.chainid, address(0x1234));
+        IDomainSpoke.DomainAccessConfig memory openDeploy;
+        openDeploy.deploy.mode = IDomainSpoke.AccessListMode.Open;
+        spoke = new DomainSpoke(7777, block.chainid, address(0x1234), address(this), openDeploy);
         policy = address(new ConstantPolicy(false));
     }
 

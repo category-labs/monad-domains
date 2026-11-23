@@ -25,7 +25,7 @@ A domain is identified by its chain ID. A domain is created by calling `register
 
 1. **Generate the viewing keypair.** An X25519 key. The secret key goes to every execution client that will serve the domain. The public key is registered on the hub and used by users to encrypt domain transactions.
 2. **Configure the execution clients.** Each replica is started with the domain's chain ID, the address its spoke will have, and the key file, plus the hub address as the sequencer contract. Every replica must hold the same secret key to decrypt the ciphertext.
-3. **Deploy the spoke inside the domain.** The spoke is a contract in the domain's own state, not on the L1. Its creation transaction is sequenced through the hub like any other domain transaction.
+3. **Deploy the spoke inside the domain.** The spoke is a contract in the domain's own state, not on the L1. Its creation transaction is sequenced through the hub like any other domain transaction. Its constructor names the admin of the domain's access lists and sets the lists they start from.
 
 ## Transactions and Message passing
 
@@ -100,3 +100,5 @@ For each L1 block the client, per served domain:
 7. Commits the domain state deltas, transactions and receipts alongside the L1 block. If L1 execution fails, the staged domain changes are discarded with it.
 
 **Access control at execution time.** Before every call frame in a domain, the client makes a synthetic static call to the spoke's `canCall(caller, context, data)` with a 50,000 gas stipend and proceeds only on a canonical ABI true. The spoke forwards the question to the policy contract that the context contract's policy owner named with `setAccessPolicy`, and admits every caller of a contract without one. A policy implements `IDomainAccessPolicy.canCall` and decides from its own storage and the arguments. This is primarily used for RPC read access control.
+
+**Domain access lists.** The spoke also holds three lists for the whole domain, `Deploy`, `SendTx` and `ReadData`. Each is `Closed`, `Allowlist` or `Open`, and a list never set is `Closed`. An `Open` list admits every account, an `Allowlist` list admits its members, and a `Closed` list admits nobody; a list keeps its members whatever its mode, and no list ever admits the zero address. The admin named in the spoke's constructor changes the lists with ordinary domain transactions to the spoke, `setAccessListMode` and `setAccessListMembers`, as a policy owner names its contract's policy, and hands the role on in two steps with `transferAdmin` and `acceptAdmin`. The hub plays no part. `deployContract` admits only callers the `Deploy` list allows.
