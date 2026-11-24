@@ -227,7 +227,7 @@ contract DomainSpoke is IDomainSpoke {
         // A ciphertext is longer than what it seals: an empty or echoed result is not one.
         if (ciphertext.length <= plaintext.length) revert InvalidCiphertext();
         // The only call above is to the encryption precompile, which cannot reenter.
-        // slither-disable-next-line reentrancy-no-eth,reentrancy-benign
+        // slither-disable-next-line reentrancy-no-eth,reentrancy-benign,reentrancy-events
         messageId = _recordDomainMessage(destinationChainId, address(0), address(0), ciphertext, bytes32(0));
     }
 

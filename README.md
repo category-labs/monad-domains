@@ -59,21 +59,27 @@ npm run sequence
 
 ## Static analysis
 
-CI runs [Slither](https://github.com/crytic/slither) over `src/` on every push and pull request,
-and fails on any finding. To run it locally, install the version pinned in
-`.github/workflows/ci.yml` and run it from the repository root:
+CI runs [Slither](https://github.com/crytic/slither) on every push and pull request and fails on
+any finding. To run the same checks locally, install the version pinned in
+`.github/workflows/ci.yml` and run the script from anywhere in the repository:
 
 ```sh
 pip install slither-analyzer==0.11.6   # or: uv tool install slither-analyzer==0.11.6
-slither .
+./script/slither.sh
 ```
 
-`slither.config.json` holds the setup: dependencies, tests and scripts are not analyzed, and every
-detector runs except a few that only restate deliberate choices in this codebase
-(`naming-convention`, `assembly`, `low-level-calls`, `cyclomatic-complexity`, `reentrancy-events`).
+The script runs three checks:
 
-A finding is either fixed or, when it is a false positive, suppressed where it is reported, with
-the reason on the line above:
+- `slither .`, the detectors over `src/`. `slither.config.json` holds the setup: dependencies,
+  tests and scripts are not analyzed, and every detector runs except four that only restate
+  deliberate choices in this codebase (`naming-convention`, `assembly`, `low-level-calls`,
+  `cyclomatic-complexity`).
+- `slither-check-upgradeability`, the initializer and storage layout checks on `DomainHub` and the
+  `ERC1967Proxy` it is deployed behind.
+- `slither-check-erc`, ERC-20 conformance of `BridgedERC20`.
+
+A detector finding is either fixed or, when it is a false positive, suppressed where it is
+reported, with the reason on the line above:
 
 ```solidity
 // Rounding down to a multiple of the interval is the point.

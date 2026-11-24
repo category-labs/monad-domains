@@ -91,6 +91,8 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
         HUB.sendL1Message{value: msg.value}(
             DOMAIN_CHAIN_ID, counterpart, MessageLib.encodeTransfer(recipient, token, amount)
         );
+        // Emitted only once the hub has accepted the message.
+        // slither-disable-next-line reentrancy-events
         emit BridgeInitiated(msg.sender, recipient, token, amount);
     }
 

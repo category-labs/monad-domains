@@ -54,9 +54,10 @@ jobs:
       - name: Install Slither
         run: pip install "slither-analyzer==${SLITHER_VERSION}"
 
-      # Configured by slither.config.json; any unsuppressed finding fails the job.
+      # Detectors (slither.config.json), upgradeability checks on the hub and ERC-20 conformance
+      # of the bridged token; any unsuppressed finding fails the job.
       - name: Run Slither
-        run: slither .
+        run: ./script/slither.sh
 
   offchain:
     runs-on: ubuntu-latest

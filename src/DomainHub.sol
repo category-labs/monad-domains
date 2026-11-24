@@ -349,6 +349,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         // The message is already marked relayed, so a reentrant relay or retry of it reverts.
         // slither-disable-next-line reentrancy-benign
         if (!success) failedDomainMessages[message.sourceChainId][messageHash] = true;
+        // The event reports the delivery's outcome.
+        // slither-disable-next-line reentrancy-events
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, success
         );
@@ -366,6 +368,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
                 )
             );
         if (!success) revert RetryFailed();
+        // The event reports that the delivery succeeded.
+        // slither-disable-next-line reentrancy-events
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, true
         );

@@ -1,6 +1,6 @@
 {
   "filter_paths": "lib/|test/|script/",
   "exclude_dependencies": true,
-  "detectors_to_exclude": "naming-convention,assembly,low-level-calls,cyclomatic-complexity,reentrancy-events",
+  "detectors_to_exclude": "naming-convention,assembly,low-level-calls,cyclomatic-complexity",
   "fail_on": "pedantic"
 }

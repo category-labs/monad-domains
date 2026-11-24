@@ -72,6 +72,8 @@ contract DomainBridge is IDomainMessageReceiver {
             token = _deployBridgedToken(l1Token);
         }
         token.mint(recipient, amount);
+        // Emitted only once the mint has succeeded.
+        // slither-disable-next-line reentrancy-events
         emit DepositFinalized(recipient, l1Token, amount);
     }
 
@@ -91,6 +93,8 @@ contract DomainBridge is IDomainMessageReceiver {
         bytes32 messageId = SPOKE.sendDomainMessage(
             _L1_CHAIN_ID, L1_BRIDGE, MessageLib.encodeTransfer(recipient, l1Token, amount), salt
         );
+        // The event carries the message ID the spoke returns.
+        // slither-disable-next-line reentrancy-events
         emit WithdrawalInitiated(msg.sender, recipient, l1Token, amount, messageId);
     }
 
@@ -109,6 +113,8 @@ contract DomainBridge is IDomainMessageReceiver {
         // The address is only known after the deployment, whose one call is to the spoke.
         // slither-disable-next-line reentrancy-benign
         bridgedTokens[l1Token] = token;
+        // The event carries the address of the deployed token.
+        // slither-disable-next-line reentrancy-events
         emit BridgedTokenDeployed(l1Token, address(token));
     }
 }
