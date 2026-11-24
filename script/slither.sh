@@ -1,60 +1,30 @@
 #!/usr/bin/env bash
-# Runs every Slither check that CI enforces and exits non-zero if any of them reports a finding.
-# Needs slither-analyzer (the version pinned in .github/workflows/ci.yml) and forge on the PATH.
+# Runs the Slither checks CI enforces: uv run --locked script/slither.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-results=$(mktemp -d)
-trap 'rm -rf "$results"' EXIT
-status=0
-
-# Detectors, as configured by slither.config.json.
-echo "== Slither detectors"
-slither . || status=1
-
-# Initializer and storage layout checks on the hub and the proxy it is deployed behind. The proxy
-# is only imported by tests and scripts, so those are compiled as well. initialize-target is left
-# out: it only restates that initialize() must be called.
-echo "== Upgradeability: DomainHub behind ERC1967Proxy"
-slither-check-upgradeability . DomainHub \
-    --proxy-name ERC1967Proxy \
-    --foundry-compile-all \
-    --exclude initialize-target \
-    --json "$results/upgradeability.json"
-python3 - "$results/upgradeability.json" <<'PY' || status=1
-import json, sys
-
-report = json.load(open(sys.argv[1]))
-results = report.get("results", {})
-if not report.get("success"):
-    sys.exit(f"upgradeability check failed: {report.get('error')}")
-if not results.get("proxy-present"):
-    sys.exit("upgradeability check did not find the proxy, so the proxy checks did not run")
-findings = results.get("detectors", [])
-if findings:
-    sys.exit(f"upgradeability check: {len(findings)} finding(s)")
-PY
-
-# ERC-20 conformance of the bridged token. OpenZeppelin's ERC20 has no increaseAllowance /
-# decreaseAllowance, so the approval race note is expected.
-echo "== ERC-20 conformance: BridgedERC20"
-slither-check-erc . BridgedERC20 --erc ERC20 --json "$results/erc.json"
-python3 - "$results/erc.json" <<'PY' || status=1
-import json, sys
-
-EXPECTED = {"lack_of_erc20_race_condition_protection"}
-
-report = json.load(open(sys.argv[1]))
-if not report.get("success"):
-    sys.exit(f"ERC-20 check failed: {report.get('error')}")
-conformance = report.get("results", {}).get("erc-conformance", {})
-failed = sorted(kind for kind, entries in conformance.items() if entries and kind not in EXPECTED)
-if failed:
-    sys.exit(f"ERC-20 check: {', '.join(failed)}")
-PY
-
-if [ "$status" -ne 0 ]; then
-    echo "Slither checks failed"
+# slither-check-* always exit 0, so their JSON report on stdin is tested against a jq filter.
+expect() {
+    local report
+    report=$(cat)
+    jq -e "$2" <<<"$report" >/dev/null && return
+    jq -r '.error // empty, (.. | .description? // empty)' <<<"$report"
+    echo "$1 check failed"
     exit 1
-fi
+}
+
+# Detectors, configured by slither.config.json.
+slither .
+
+# Initializers and storage layout of the hub and its proxy, which only tests and scripts import.
+# initialize-target only restates that initialize() must be called.
+slither-check-upgradeability . DomainHub --proxy-name ERC1967Proxy --foundry-compile-all \
+    --exclude initialize-target --json - |
+    expect upgradeability '.success and .results["proxy-present"] and .results.detectors == []'
+
+# ERC-20 conformance of the bridged token. OpenZeppelin's ERC20 has no increaseAllowance, so the
+# approval race note is expected.
+slither-check-erc . BridgedERC20 --json - |
+    expect ERC-20 '.success and (.results["erc-conformance"] // {} | del(.lack_of_erc20_race_condition_protection)) == {}'
+
 echo "Slither checks passed"

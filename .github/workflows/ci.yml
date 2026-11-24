@@ -33,31 +33,26 @@ jobs:
 
   slither:
     runs-on: ubuntu-latest
-    env:
-      SLITHER_VERSION: "0.11.6"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
         with:
           version: stable
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          python-version: "3.12"
+          version: "0.11.15"
 
-      - name: Install Slither
-        run: pip install "slither-analyzer==${SLITHER_VERSION}"
-
-      # Detectors (slither.config.json), upgradeability checks on the hub and ERC-20 conformance
-      # of the bridged token; any unsuppressed finding fails the job.
+      # Slither and its dependencies come from uv.lock, verified by hash.
       - name: Run Slither
-        run: ./script/slither.sh
+        run: uv run --locked script/slither.sh
 
   offchain:
     runs-on: ubuntu-latest

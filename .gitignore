@@ -13,3 +13,6 @@ docs/
 
 # Node
 node_modules/
+
+# Python tooling
+.venv/
