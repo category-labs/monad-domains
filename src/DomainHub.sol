@@ -155,6 +155,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         address feeRecipient,
         bytes calldata viewingKey,
         uint64 checkpointInterval,
+        // Named after the getter it configures; the getter is not used in this function.
+        // slither-disable-next-line shadowing-local
         uint8 maxUnattestedPeriods
     ) external {
         if (domainChainId == block.chainid) revert L1ChainIdNotAllowed();
@@ -174,10 +176,14 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         InputQueue.store(queue, InputQueue.CONFIG, queueConfig);
         // The registering L1 block is the domain's block 0.
         InputQueue.store(queue, InputQueue.LATEST, uint256(uint64(block.number)) << 64);
+        // A fresh queue starts from the all-zero state.
+        // slither-disable-next-line uninitialized-local
         InputQueue.State memory state;
         _openBlock(queue, state, queueConfig, 0, 0);
         InputQueue.storeState(queue, state);
         // The first checkpoint is the first scheduled height that covers the registering block.
+        // Rounding down to a multiple of the interval is the point.
+        // slither-disable-next-line divide-before-multiply
         domainBlockNumbers[domainChainId] = uint64((block.number - 1) / checkpointInterval * checkpointInterval);
 
         DomainConfig storage config = _configs[domainChainId];
@@ -340,6 +346,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
                     IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
                 )
             );
+        // The message is already marked relayed, so a reentrant relay or retry of it reverts.
+        // slither-disable-next-line reentrancy-benign
         if (!success) failedDomainMessages[message.sourceChainId][messageHash] = true;
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, success
@@ -526,6 +534,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             InputQueue.openPeriod(queue, state, period, uint8(config >> 224));
         }
         // The probe fails on an L1 revision without slot numbers, taking the gas it was given.
+        // Zero is the intended value when the probe fails.
+        // slither-disable-next-line uninitialized-local
         uint56 slotNumber;
         (bool success, bytes memory result) = SLOT_NUMBER_PROBE.staticcall{gas: 200}("");
         if (success && result.length == 32) slotNumber = uint56(uint256(bytes32(result)));

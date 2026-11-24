@@ -29,6 +29,8 @@ contract BridgedERC20 is ERC20 {
         address initialPolicy
     ) ERC20(name_, symbol_) {
         BRIDGE = msg.sender;
+        // Informational only; the bridge deploys this for whatever L1 token was deposited.
+        // slither-disable-next-line missing-zero-check
         L1_TOKEN = l1Token;
         _TOKEN_DECIMALS = decimals_;
         spoke.selfRegisterPolicy(policyOwner, initialPolicy);

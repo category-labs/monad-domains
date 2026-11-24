@@ -121,6 +121,8 @@ interface IDomainHub {
         address feeRecipient,
         bytes calldata viewingKey,
         uint64 checkpointInterval,
+        // Named after the getter it configures.
+        // slither-disable-next-line shadowing-local
         uint8 maxUnattestedPeriods
     ) external;
 

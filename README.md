@@ -56,3 +56,26 @@ cd offchain
 set -a && source .env && set +a
 npm run sequence
 ```
+
+## Static analysis
+
+CI runs [Slither](https://github.com/crytic/slither) over `src/` on every push and pull request,
+and fails on any finding. To run it locally, install the version pinned in
+`.github/workflows/ci.yml` and run it from the repository root:
+
+```sh
+pip install slither-analyzer==0.11.6   # or: uv tool install slither-analyzer==0.11.6
+slither .
+```
+
+`slither.config.json` holds the setup: dependencies, tests and scripts are not analyzed, and every
+detector runs except a few that only restate deliberate choices in this codebase
+(`naming-convention`, `assembly`, `low-level-calls`, `cyclomatic-complexity`, `reentrancy-events`).
+
+A finding is either fixed or, when it is a false positive, suppressed where it is reported, with
+the reason on the line above:
+
+```solidity
+// Rounding down to a multiple of the interval is the point.
+// slither-disable-next-line divide-before-multiply
+```

@@ -106,6 +106,8 @@ contract DomainBridge is IDomainMessageReceiver {
             TOKEN_POLICY_OWNER,
             INITIAL_TOKEN_POLICY
         );
+        // The address is only known after the deployment, whose one call is to the spoke.
+        // slither-disable-next-line reentrancy-benign
         bridgedTokens[l1Token] = token;
         emit BridgedTokenDeployed(l1Token, address(token));
     }

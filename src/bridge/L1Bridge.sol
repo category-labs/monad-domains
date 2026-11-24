@@ -43,6 +43,8 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
     /// @notice Tokens accepted for new deposits. Never checked on withdrawals.
     mapping(address token => bool allowed) public allowedTokens;
 
+    // Emitted once per bridge; indexing it would change the event's ABI.
+    // slither-disable-next-line unindexed-event-address
     event DomainBridgeRegistered(address bridge);
     event TokenAllowlistUpdated(address indexed token, bool allowed);
     event BridgeInitiated(address indexed sender, address recipient, address indexed token, uint256 amount);

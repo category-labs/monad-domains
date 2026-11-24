@@ -31,6 +31,33 @@ jobs:
       - name: Test
         run: forge test -vvv
 
+  slither:
+    runs-on: ubuntu-latest
+    env:
+      SLITHER_VERSION: "0.11.6"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Slither
+        run: pip install "slither-analyzer==${SLITHER_VERSION}"
+
+      # Configured by slither.config.json; any unsuppressed finding fails the job.
+      - name: Run Slither
+        run: slither .
+
   offchain:
     runs-on: ubuntu-latest
     defaults:
