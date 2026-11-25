@@ -40,7 +40,7 @@ contract InputGasTest is DomainTestBase {
         hub = _deployHub(address(this));
         hub.registerDomain(
             CHAIN_ID,
-            _addresses(_keys(KEY, KEY_2)),
+            _addresses(_keys(KEY)),
             1,
             feeRecipient,
             _encryptionPubKey(CHAIN_ID),
