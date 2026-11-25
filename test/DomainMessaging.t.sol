@@ -72,6 +72,21 @@ contract DomainMessagingTest is DomainTestBase {
         hub.registerDomain(4444, _validators(), 4, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
     }
 
+    function test_register_rejectsQuorumNotMajority() public {
+        // 1 of 3.
+        vm.expectRevert(DomainHub.QuorumNotMajority.selector);
+        hub.registerDomain(4444, _validators(), 1, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        // Exactly half is not a majority: two halves could each attest.
+        address[] memory four = new address[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            four[i] = vm.addr(i + 1);
+        }
+        vm.expectRevert(DomainHub.QuorumNotMajority.selector);
+        hub.registerDomain(4444, four, 2, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, four, 3, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        assertEq(hub.quorums(4444), 3);
+    }
+
     function test_register_rejectsZeroValidator() public {
         address[] memory validators = new address[](1);
         validators[0] = address(0);
@@ -84,7 +99,7 @@ contract DomainMessagingTest is DomainTestBase {
         validators[0] = vm.addr(K1);
         validators[1] = vm.addr(K1);
         vm.expectRevert(DomainHub.DuplicateValidator.selector);
-        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, validators, 2, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsZeroFeeRecipient() public {

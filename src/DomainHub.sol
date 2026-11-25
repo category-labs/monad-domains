@@ -22,6 +22,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     error DomainAlreadyRegistered();
     error ZeroQuorum();
     error QuorumExceedsValidators();
+    error QuorumNotMajority();
     error ZeroFeeRecipient();
     error ZeroCheckpointInterval();
     error InvalidMaxUnattestedPeriods();
@@ -90,7 +91,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         /// @dev Attested block numbers must be multiples of this interval. Also kept in the
         /// queue's config word; this copy spares a vote from loading the queue's page.
         uint64 checkpointInterval;
-        /// @dev Distinct validator signatures required to advance the state.
+        /// @dev Distinct validator signatures required to advance the state: more than half
+        /// of the validators.
         uint256 quorum;
         address[] validators;
         /// @dev X25519 public key domain transactions and messages from other domains are
@@ -162,6 +164,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         if (InputQueue.load(queue, InputQueue.CONFIG) != 0) revert DomainAlreadyRegistered();
         if (quorum == 0) revert ZeroQuorum();
         if (quorum > validators.length) revert QuorumExceedsValidators();
+        // Two disjoint groups of validators can then never both reach the quorum.
+        if (2 * quorum <= validators.length) revert QuorumNotMajority();
         if (feeRecipient == address(0)) revert ZeroFeeRecipient();
         if (checkpointInterval == 0) revert ZeroCheckpointInterval();
         if (maxUnattestedPeriods == 0 || maxUnattestedPeriods > InputQueue.MAX_PERIODS) {

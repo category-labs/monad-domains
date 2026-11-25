@@ -111,7 +111,8 @@ interface IDomainHub {
     /// checkpoint periods may be unattested before the domain stops accepting inputs. A domain
     /// without an encryption public key cannot receive messages from other domains. MUST
     /// reject the L1 chain id, an already registered chain id, a zero quorum, a quorum
-    /// exceeding the validator count, zero or duplicate validators, a zero fee recipient, a
+    /// exceeding the validator count or not above half of it (any two quorums MUST share a
+    /// validator), zero or duplicate validators, a zero fee recipient, a
     /// zero interval, a period limit outside 1 to 50 and an encryption public key that is
     /// neither empty nor 32 bytes.
     function registerDomain(

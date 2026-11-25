@@ -104,6 +104,9 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   if (quorum === 0n || quorum > BigInt(validators.length)) {
     throw new Error("setup: quorum must be in [1, validators.length]");
   }
+  if (2n * quorum <= BigInt(validators.length)) {
+    throw new Error("setup: quorum must be a majority of the validators (2 * quorum > validators.length)");
+  }
   if (checkpointInterval <= 0n) throw new Error("setup: checkpointInterval must be positive");
   if (!Number.isInteger(maxUnattestedPeriods) || maxUnattestedPeriods < 1 || maxUnattestedPeriods > 50) {
     throw new Error("setup: maxUnattestedPeriods must be in [1, 50]");
