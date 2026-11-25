@@ -1,8 +1,11 @@
 import {
   BlockNotFoundError,
+  encodeAbiParameters,
   hashTypedData,
+  keccak256,
   parseAbi,
   serializeSignature,
+  toHex,
   zeroHash,
   type Address,
   type Chain,
@@ -276,6 +279,41 @@ export function nextCheckpointHeight(lastAttested: bigint, interval: bigint, fin
   if (interval <= 0n) throw new Error("checkpoint: interval must be positive");
   const next = (lastAttested / interval + 1n) * interval;
   return next <= finalizedHeight ? next : null;
+}
+
+/** Slot of the state word of a domain's input queue in the hub: `InputQueue.base + 1`. */
+export function inputQueueStateSlot(domainChainId: bigint): Hex {
+  const base = BigInt(keccak256(encodeAbiParameters(
+    [{ type: "uint64" }, { type: "string" }], [domainChainId, "monad.domains.input-queue"],
+  ))) & ~0x7fn;
+  return toHex(base + 1n, { size: 32 });
+}
+
+/**
+ * The checkpoint period of the oldest input the hub holds for the domain, i.e. that its
+ * latest checkpoint does not cover; null if it holds none.
+ */
+export async function oldestUnattestedPeriod(l1: PublicClient, hub: Address, domainChainId: bigint): Promise<bigint | null> {
+  const word = BigInt((await l1.getStorageAt({ address: hub, slot: inputQueueStateSlot(domainChainId) })) ?? "0x0");
+  const mask = (1n << 64n) - 1n;
+  const head = word & mask;
+  const tail = (word >> 64n) & mask;
+  return head === tail ? null : (word >> 128n) & mask;
+}
+
+/**
+ * The height a validator that skips idle checkpoints attests next: the first scheduled
+ * height that covers the oldest unattested input, once finalized; null while the hub holds
+ * no unattested input. A function of hub state that only an attestation changes, as
+ * `nextCheckpointHeight` is.
+ */
+export function nextActiveCheckpointHeight(
+  lastAttested: bigint, interval: bigint, finalizedHeight: bigint, oldestPeriod: bigint | null,
+): bigint | null {
+  if (oldestPeriod === null) return null;
+  const height = oldestPeriod * interval;
+  if (height <= lastAttested) return nextCheckpointHeight(lastAttested, interval, finalizedHeight);
+  return height <= finalizedHeight ? height : null;
 }
 
 // ---------------------------------------------------------------------------

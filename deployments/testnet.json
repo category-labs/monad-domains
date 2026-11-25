@@ -1,0 +1,39 @@
+{
+  "name": "testnet",
+  "l1ChainId": 10143,
+  "hub": "0xbd9690c9218cc05b82f0dfd44268dd594cc98fd4",
+  "rate": {
+    "num": "12",
+    "den": "10"
+  },
+  "tokens": {
+    "eur": "0x1b4d490c801d9ce3a0e4a2bbf9f979f93e9b98f5",
+    "usd": "0x40ee71073cc37ff53508d73069f7cf301664f7f2"
+  },
+  "pool": "0x2b7d32ffffccd69fb481b4e9025f1738585b1f4a",
+  "bankOperator": "0xF918BF9eCd48a40e7b088a4b718966092B3b4253",
+  "domains": {
+    "A": {
+      "chainId": 403359,
+      "spoke": "0x000000000000000000446f6d61696E53706f6B65",
+      "viewingKey": "0xb974b77877dacb1c5d56fe20137203f324c12c9d3c8024adcbdb0644b75a1554",
+      "startBlock": 0,
+      "l1StartBlock": 82735747,
+      "l1Bridge": "0x9f75b52f608819a6cdb3b571121bb23b15ab8232",
+      "domainBridge": "0x14F6f020c56C8E033852C0F1CC1E6F159a21BbFd",
+      "bank": "0x625B4622c51c39e1F54D4f55A77BCc87326F7586",
+      "token": "0x1b4d490c801d9ce3a0e4a2bbf9f979f93e9b98f5"
+    },
+    "B": {
+      "chainId": 468895,
+      "spoke": "0x000000000000000000446f6d61696E53706f6B65",
+      "viewingKey": "0xd1934b206833f563a5c7501923474b8daf5aedd3416ae0fd3198d140e51cf217",
+      "startBlock": 0,
+      "l1StartBlock": 82735799,
+      "l1Bridge": "0x1e9c7e8d2b0ad278385c977c00bf8e05ae82f556",
+      "domainBridge": "0x14F6f020c56C8E033852C0F1CC1E6F159a21BbFd",
+      "bank": "0x625B4622c51c39e1F54D4f55A77BCc87326F7586",
+      "token": "0x40ee71073cc37ff53508d73069f7cf301664f7f2"
+    }
+  }
+}

@@ -5,7 +5,7 @@ import {
 } from "viem";
 import {
   attestCheckpoint, batchRoot, buildCheckpoint, domainBlockAt, fetchDomainMessageIds, getDomainHeader,
-  nextCheckpointHeight, type Checkpoint,
+  nextActiveCheckpointHeight, nextCheckpointHeight, type Checkpoint,
 } from "../src/checkpoint.js";
 import { root } from "../src/merkle.js";
 
@@ -24,6 +24,12 @@ test("nextCheckpointHeight is the smallest scheduled slot above the hub's last a
   // The rule only depends on the hub's attested height, even after an off-rule attestation.
   assert.equal(nextCheckpointHeight(25n, 10n, 100n), 30n);
   assert.throws(() => nextCheckpointHeight(0n, 0n, 1n), /positive/);
+});
+
+test("nextActiveCheckpointHeight is the first scheduled slot that covers the oldest unattested input", () => {
+  assert.equal(nextActiveCheckpointHeight(10n, 10n, 100n, null), null);
+  assert.equal(nextActiveCheckpointHeight(10n, 10n, 100n, 7n), 70n);
+  assert.equal(nextActiveCheckpointHeight(10n, 10n, 69n, 7n), null);
 });
 
 test("batchRoot is zero for an empty batch and the merkle root otherwise", () => {

@@ -1,0 +1,31 @@
+{
+  "name": "monad-domains-demo",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Public demo of a bank-mediated payment between two private settlement domains through L1 liquidity: visitors bring their own account, the operators run the relaying",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "start": "node server.mjs",
+    "e2e": "tsx scripts/e2e.ts",
+    "e2e:browser": "tsx scripts/browser-e2e.ts"
+  },
+  "dependencies": {
+    "@hpke/core": "^1.9.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "playwright": "^1.62.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0"
+  }
+}

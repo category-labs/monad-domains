@@ -1,7 +1,9 @@
 import { createPublicClient, createWalletClient, http, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { DOMAIN_SPOKE, domainTransportFor, fetchL1Chain } from "./chain.js";
-import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI, nextCheckpointHeight } from "./checkpoint.js";
+import {
+  attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI, nextActiveCheckpointHeight, nextCheckpointHeight, oldestUnattestedPeriod,
+} from "./checkpoint.js";
 
 /**
  * One validator pass: derive the next scheduled checkpoint from the finalized domain state
@@ -19,6 +21,7 @@ import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI, nextCheckpointHe
  *   [CHECKPOINT_HEIGHT=...]   \  # attest this exact height instead of the next scheduled one
  *   [POLL_INTERVAL_MS=...]    \  # keep running: attest every checkpoint that is due, then
  *                             \  # look again after this long; default is a single pass
+ *   [SKIP_IDLE_CHECKPOINTS=1] \  # attest only the scheduled heights that cover a new input
  *     npm run checkpoint
  */
 function required(name: string): string {
@@ -58,7 +61,9 @@ async function main() {
 
     const height = process.env.CHECKPOINT_HEIGHT
       ? BigInt(process.env.CHECKPOINT_HEIGHT)
-      : nextCheckpointHeight(BigInt(lastAttested), BigInt(interval), finalized.number);
+      : process.env.SKIP_IDLE_CHECKPOINTS === "1"
+        ? nextActiveCheckpointHeight(BigInt(lastAttested), BigInt(interval), finalized.number, await oldestUnattestedPeriod(l1, hub, domainChainId))
+        : nextCheckpointHeight(BigInt(lastAttested), BigInt(interval), finalized.number);
     if (height === null) {
       if (pollIntervalMs === undefined) {
         console.log(`nothing to attest: last attested ${lastAttested}, interval ${interval}, finalized ${finalized.number}`);

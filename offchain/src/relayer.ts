@@ -1,7 +1,9 @@
 import { createPublicClient, createWalletClient, http, type Address, type Chain, type Hex, type PublicClient, type WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { DOMAIN_SPOKE, domainTransportFor, fetchL1Chain } from "./chain.js";
-import { attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI, nextCheckpointHeight } from "./checkpoint.js";
+import {
+  attestCheckpoint, buildCheckpoint, HUB_CHECKPOINT_ABI, nextActiveCheckpointHeight, nextCheckpointHeight, oldestUnattestedPeriod,
+} from "./checkpoint.js";
 import { relayPending, type RelayConfig, type RelayState } from "./relay.js";
 
 /**
@@ -35,6 +37,11 @@ export interface DomainRelayerConfig {
   domains: DomainRelayerDomain[];
   /** Gas bought for the delivery of each message forwarded to another domain. */
   deliveryGas?: bigint;
+  /**
+   * Attest only the scheduled heights that cover an unattested input, instead of every one.
+   * An idle domain then costs nothing. Default false.
+   */
+  skipIdleCheckpoints?: boolean;
   log?: (line: string) => void;
 }
 
@@ -105,7 +112,9 @@ export class DomainRelayer {
           if (interval === 0n) throw new Error(`domain ${chainId} is not registered on ${hub}`);
           domain.status.attestedHeight = lastAttested.toString();
           const finalized = await l1.getBlock({ blockTag: "finalized" });
-          const height = nextCheckpointHeight(BigInt(lastAttested), BigInt(interval), finalized.number);
+          const height = this.config.skipIdleCheckpoints
+            ? nextActiveCheckpointHeight(BigInt(lastAttested), BigInt(interval), finalized.number, await oldestUnattestedPeriod(l1, hub, chainId))
+            : nextCheckpointHeight(BigInt(lastAttested), BigInt(interval), finalized.number);
           if (height === null || validatorKeys.length === 0) break;
           const checkpoint = await buildCheckpoint({ l1, domain: client, hub, spoke: domain.spoke, domainChainId: chainId, height });
           const result = await attestCheckpoint({ l1, submitter, chain, hub, checkpoint, validatorKeys });
