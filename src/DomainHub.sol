@@ -25,7 +25,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     error ZeroFeeRecipient();
     error ZeroCheckpointInterval();
     error InvalidMaxUnattestedPeriods();
-    error InvalidViewingKey();
+    error InvalidEncryptionPubKey();
     error ZeroValidator();
     error DuplicateValidator();
     error DomainNotRegistered();
@@ -51,7 +51,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     error DomainBlockGasLimitExceeded();
     error DomainBlockSizeLimitExceeded();
     error FeeTransferFailed();
-    error NoViewingKey();
+    error NoEncryptionPubKey();
     error DeliveryFeeTooLow();
     error SequencingFeeTooLow();
     error SlotNumberProbeNotDeployed();
@@ -60,8 +60,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     bytes32 public constant STATE_TRANSITION_TYPEHASH = keccak256(
         "StateTransition(uint64 domainChainId,uint256 stateNonce,uint64 domainBlockNumber,bytes32 newBlockHash,bytes32 domainAnchor)"
     );
-    /// @notice Length of an X25519 public key: the only accepted viewing key encoding.
-    uint256 public constant VIEWING_KEY_LENGTH = 32;
+    /// @notice Length of an X25519 public key: the only accepted encryption public key encoding.
+    uint256 public constant ENCRYPTION_PUB_KEY_LENGTH = 32;
     /// @notice Price of one unit of domain gas, in wei; mirrored by the execution client.
     uint256 public constant DOMAIN_GAS_PRICE = 50 gwei;
     /// @notice Gas every sequenced transaction must buy: a transaction's intrinsic gas.
@@ -95,7 +95,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         address[] validators;
         /// @dev X25519 public key domain transactions and messages from other domains are
         /// encrypted to, or empty.
-        bytes viewingKey;
+        bytes encryptionPubKey;
         mapping(address account => bool) isValidator;
     }
 
@@ -153,7 +153,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         address[] calldata validators,
         uint256 quorum,
         address feeRecipient,
-        bytes calldata viewingKey,
+        bytes calldata encryptionPubKey,
         uint64 checkpointInterval,
         uint8 maxUnattestedPeriods
     ) external {
@@ -167,7 +167,9 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         if (maxUnattestedPeriods == 0 || maxUnattestedPeriods > InputQueue.MAX_PERIODS) {
             revert InvalidMaxUnattestedPeriods();
         }
-        if (viewingKey.length != 0 && viewingKey.length != VIEWING_KEY_LENGTH) revert InvalidViewingKey();
+        if (encryptionPubKey.length != 0 && encryptionPubKey.length != ENCRYPTION_PUB_KEY_LENGTH) {
+            revert InvalidEncryptionPubKey();
+        }
 
         uint256 queueConfig =
             (uint256(maxUnattestedPeriods) << 224) | (uint256(checkpointInterval) << 160) | uint160(feeRecipient);
@@ -183,7 +185,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         DomainConfig storage config = _configs[domainChainId];
         config.checkpointInterval = checkpointInterval;
         config.quorum = quorum;
-        config.viewingKey = viewingKey;
+        config.encryptionPubKey = encryptionPubKey;
         for (uint256 i = 0; i < validators.length; i++) {
             address validator = validators[i];
             if (validator == address(0)) revert ZeroValidator();
@@ -193,7 +195,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         }
 
         emit DomainRegistered(domainChainId, feeRecipient, checkpointInterval);
-        emit ViewingKeyRegistered(domainChainId, viewingKey);
+        emit EncryptionPubKeyRegistered(domainChainId, encryptionPubKey);
     }
 
     function isDomainRegistered(uint64 domainChainId) external view returns (bool) {
@@ -226,8 +228,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         return InputQueue.load(InputQueue.base(domainChainId), InputQueue.CONFIG);
     }
 
-    function viewingKeys(uint64 domainChainId) external view returns (bytes memory) {
-        return _configs[domainChainId].viewingKey;
+    function encryptionPubKeys(uint64 domainChainId) external view returns (bytes memory) {
+        return _configs[domainChainId].encryptionPubKey;
     }
 
     // ---------------------------------------------------------------------
@@ -323,8 +325,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
         if (!toL1) {
             if (_queueConfig(message.destinationChainId) == 0) revert DestinationNotRegistered();
-            // No spoke can have sealed to a domain without a viewing key.
-            if (_configs[message.destinationChainId].viewingKey.length == 0) revert NoViewingKey();
+            // No spoke can have sealed to a domain without an encryption public key.
+            if (_configs[message.destinationChainId].encryptionPubKey.length == 0) revert NoEncryptionPubKey();
             (uint256 deliveryNonce, uint256 config) = _sendEncryptedMessage(
                 message.destinationChainId, message.sourceChainId, message.sourceNonce, message.data, msg.value
             );
@@ -394,16 +396,16 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         _payFee(config, msg.value);
     }
 
-    function sendViewingKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable {
-        bytes memory viewingKey = _configs[keyChainId].viewingKey;
-        if (viewingKey.length == 0) revert NoViewingKey();
+    function sendEncryptionPubKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable {
+        bytes memory encryptionPubKey = _configs[keyChainId].encryptionPubKey;
+        if (encryptionPubKey.length == 0) revert NoEncryptionPubKey();
         // The hub itself is the sender, which is how the spoke recognizes a key message.
         (, uint256 config) = _sendL1Message(
             domainChainId,
             SafeCast.toUint64(block.chainid),
             address(this),
             spoke,
-            MessageLib.encodeViewingKey(keyChainId, bytes32(viewingKey)),
+            MessageLib.encodeEncryptionPubKey(keyChainId, bytes32(encryptionPubKey)),
             msg.value
         );
         _payFee(config, msg.value);

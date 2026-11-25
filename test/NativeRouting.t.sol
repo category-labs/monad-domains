@@ -49,8 +49,8 @@ contract NativeRoutingTest is DomainTestBase {
         receiver = new CrossDomainReceiver(address(spokeB), A, alice);
         precompile = _installEncryptionPrecompile();
         // Spoke A learns B's and C's keys from the hub before it can seal to them.
-        _deliverViewingKey(hub, spokeA, B);
-        _deliverViewingKey(hub, spokeA, C);
+        _deliverEncryptionPubKey(hub, spokeA, B);
+        _deliverEncryptionPubKey(hub, spokeA, C);
         vm.deal(makeAddr("relayer"), 100 ether);
         vm.deal(alice, 100 ether);
     }
@@ -131,7 +131,7 @@ contract NativeRoutingTest is DomainTestBase {
         returns (MessageLib.Message memory)
     {
         (bool opened, address from, address to, bytes memory data) =
-            _openMessage(ciphertext, source, destination, sourceNonce, bytes32(hub.viewingKeys(destination)));
+            _openMessage(ciphertext, source, destination, sourceNonce, bytes32(hub.encryptionPubKeys(destination)));
         assertTrue(opened, "the destination client must open the forwarded ciphertext");
         return MessageLib.Message(source, from, to, data, nonce);
     }
@@ -178,7 +178,7 @@ contract NativeRoutingTest is DomainTestBase {
         assertEq(source, A);
         assertEq(destination, B);
         assertEq(sequence, 0);
-        assertEq(key, bytes32(hub.viewingKeys(B)), "sealed under B's registered key");
+        assertEq(key, bytes32(hub.encryptionPubKeys(B)), "sealed under B's registered key");
         assertEq(plaintext, MessageLib.encodePlaintext(alice, address(receiver), hex"abcd"));
         assertEq(precompile.seals(), 1);
 
@@ -205,7 +205,7 @@ contract NativeRoutingTest is DomainTestBase {
         vm.expectRevert(DomainSpoke.ZeroTarget.selector);
         spokeA.sendDomainMessage(B, address(0), hex"", TEST_SALT);
         // Spoke A holds no key for domain 1234.
-        vm.expectRevert(DomainSpoke.NoViewingKey.selector);
+        vm.expectRevert(DomainSpoke.NoEncryptionPubKey.selector);
         spokeA.sendDomainMessage(1234, address(receiver), hex"", TEST_SALT);
         vm.stopPrank();
         vm.chainId(L1);
@@ -482,7 +482,7 @@ contract NativeRoutingTest is DomainTestBase {
         MessageLib.DomainMessage memory first = _send(address(receiver), hex"");
         _deliver(_route(first));
         DomainSpoke spokeC = new DomainSpoke(C, L1, address(hub));
-        _deliverViewingKey(hub, spokeC, B);
+        _deliverEncryptionPubKey(hub, spokeC, B);
         MessageLib.DomainMessage memory second = _sendFrom(spokeC, B, address(receiver), hex"");
         assertNotEq(_id(first), _id(second));
         bytes32 anchor = _attestBatch(hub, spokeC, KEY);
@@ -629,7 +629,7 @@ contract NativeRoutingTest is DomainTestBase {
     /// another domain. The hub forwards both; neither destination client can open its copy.
     function test_ciphertextOpensOnlyAsTheMessageItWasSealedAs() public {
         MessageLib.DomainMessage memory message = _send(address(receiver), hex"1234");
-        bytes32 keyB = bytes32(hub.viewingKeys(B));
+        bytes32 keyB = bytes32(hub.encryptionPubKeys(B));
         (bool opened,,,) = _openMessage(message.data, A, B, message.sourceNonce, keyB);
         assertTrue(opened);
 
@@ -644,7 +644,7 @@ contract NativeRoutingTest is DomainTestBase {
         replayed.destinationChainId = C;
         _post(hub, A, _id(replayed));
         assertTrue(hub.relayDomainMessage{value: DELIVERY_FEE}(replayed, _id(replayed), new bytes32[](0)));
-        (opened,,,) = _openMessage(replayed.data, A, C, replayed.sourceNonce, bytes32(hub.viewingKeys(C)));
+        (opened,,,) = _openMessage(replayed.data, A, C, replayed.sourceNonce, bytes32(hub.encryptionPubKeys(C)));
         assertFalse(opened, "another destination");
 
         (opened,,,) = _openMessage(message.data, C, B, message.sourceNonce, keyB);
@@ -677,12 +677,12 @@ contract NativeRoutingTest is DomainTestBase {
         _rejectAttested(forged, DomainHub.EncryptedMessageWithSalt.selector);
         assertEq(hub.l1MessageCounts(B), 0);
 
-        // C sealed nothing for A, which has no viewing key.
+        // C sealed nothing for A, which has no encryption public key.
         forged.salt = bytes32(0);
         forged.sourceChainId = C;
         forged.destinationChainId = A;
         _post(hub, C, _id(forged));
-        vm.expectRevert(DomainHub.NoViewingKey.selector);
+        vm.expectRevert(DomainHub.NoEncryptionPubKey.selector);
         hub.relayDomainMessage{value: DELIVERY_FEE}(forged, _id(forged), new bytes32[](0));
         assertFalse(hub.relayedDomainMessages(C, _id(forged)));
     }

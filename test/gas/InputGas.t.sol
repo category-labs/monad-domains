@@ -43,7 +43,7 @@ contract InputGasTest is DomainTestBase {
             _addresses(_keys(KEY, KEY_2)),
             1,
             feeRecipient,
-            _viewingKey(CHAIN_ID),
+            _encryptionPubKey(CHAIN_ID),
             CHECKPOINT_INTERVAL,
             MAX_UNATTESTED_PERIODS
         );

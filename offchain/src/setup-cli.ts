@@ -19,7 +19,7 @@ import { setupDomain, type SetupConfig } from "./setup.js";
  *   [INITIAL_TOKEN_POLICY=0x..] \  # existing domain policy; default deploys unconfigured DomainAccessRules
  *   [ALLOWED_TOKEN=0x..]    \  # e.g. wrapped MON
  *   [DOMAIN_GAS=5000000]    \  # gas limit of each seeded creation, paid at DOMAIN_GAS_PRICE
- *   [VIEWING_KEY=0x...]     \  # viewing public key: published on the hub, encrypts the seeded txs
+ *   [ENCRYPTION_PUB_KEY=0x...] \  # encryption public key: published on the hub, encrypts the seeded txs
  *     npm run setup
  */
 function required(name: string): string {
@@ -49,7 +49,7 @@ function main() {
   if (process.env.INITIAL_TOKEN_POLICY) config.initialTokenPolicy = process.env.INITIAL_TOKEN_POLICY as Address;
   if (process.env.ALLOWED_TOKEN) config.allowedToken = process.env.ALLOWED_TOKEN as Address;
   if (process.env.DOMAIN_GAS) config.domainGas = BigInt(process.env.DOMAIN_GAS);
-  if (process.env.VIEWING_KEY) config.viewingKey = process.env.VIEWING_KEY as Hex;
+  if (process.env.ENCRYPTION_PUB_KEY) config.encryptionPubKey = process.env.ENCRYPTION_PUB_KEY as Hex;
 
   return setupDomain(config);
 }

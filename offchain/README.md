@@ -34,8 +34,8 @@ so the tools add `HUB_INPUT_GAS_HEADROOM` to it; do the same for your own `sendL
 ## Transaction encryption
 
 Every domain transaction handed to `sequenceToDomain` can be HPKE-encrypted to the
-domain's *viewing key*, so the L1 only ever sees ciphertext and the domain execution
-client — the holder of the viewing secret key — decrypts before executing. `src/encryption.ts`
+domain's *encryption public key*, so the L1 only ever sees ciphertext and the domain execution
+client — the holder of the encryption secret key — decrypts before executing. `src/encryption.ts`
 implements the fixed RFC 9180 Base-mode profile the client expects:
 
 - KEM `DHKEM(X25519, HKDF-SHA256)`, KDF `HKDF-SHA256`, AEAD `AES-128-GCM`
@@ -45,21 +45,21 @@ implements the fixed RFC 9180 Base-mode profile the client expects:
 
 The execution client and senders must use the exact same associated data.
 
-`npm run setup` publishes `VIEWING_KEY` and uses it to encrypt the deployment transactions.
-`npm run sequence` uses `VIEWING_KEY` or reads the key from the hub. It rejects a missing key
+`npm run setup` publishes `ENCRYPTION_PUB_KEY` and uses it to encrypt the deployment transactions.
+`npm run sequence` uses `ENCRYPTION_PUB_KEY` or reads the key from the hub. It rejects a missing key
 instead of sending plaintext. The domain's execution client holds the receiver key
 (`monad-domain --domain <id> <key.pem>`), decrypts every payload and drops plaintext.
 
 The two sides use different key encodings — the client loads an unencrypted PKCS#8 PEM, senders
-use the raw 32-byte public key — and `npm run viewing-key` bridges them:
+use the raw 32-byte public key — and `npm run encryption-key` bridges them:
 
 ```sh
-npm run viewing-key -- generate domain-85679.pem   # new key: writes the PEM (mode 0600), prints VIEWING_KEY
-npm run viewing-key -- public  domain-85679.pem    # VIEWING_KEY for an existing PEM (e.g. from openssl genpkey)
+npm run encryption-key -- generate domain-85679.pem   # new key: writes the PEM (mode 0600), prints ENCRYPTION_PUB_KEY
+npm run encryption-key -- public  domain-85679.pem    # ENCRYPTION_PUB_KEY for an existing PEM (e.g. from openssl genpkey)
 ```
 
-Programmatic equivalents are exported (`generateViewingKeyFiles`, `viewingPublicKeyFromPem`,
-`viewingSecretKeyFromPem`, `viewingSecretKeyToPem`), alongside `encryptTransaction` /
+Programmatic equivalents are exported (`generateEncryptionKeyFiles`, `encryptionPubKeyFromPem`,
+`encryptionSecretKeyFromPem`, `encryptionSecretKeyToPem`), alongside `encryptTransaction` /
 `decryptTransaction` for tests and local tooling.
 
 ## Checkpoints
@@ -106,20 +106,20 @@ heights (`fetchBatches` lists them, with the domain blocks each one spans).
 
 Every domain-bound message is sealed on chain: the spoke hands
 `encodePlaintext(msg.sender, to, data)` to the execution client's encryption precompile, which
-seals it to the destination's viewing key bound to the source domain, the destination and the
+seals it to the destination's encryption public key bound to the source domain, the destination and the
 envelope's nonce. The envelope names neither sender nor target and carries
 no salt: the ciphertext already hides its content, so `salt` is ignored for a domain destination
 and only an L1 destination needs one. The hub forwards the envelope as an
 `EncryptedMessageRecorded` delivery carrying only the ciphertext, which the destination client
 opens into `(from, to, data)` before deriving the system transaction. A
-spoke learns another domain's key through `hub.sendViewingKey(domainChainId, spoke, keyChainId)`,
+spoke learns another domain's key through `hub.sendEncryptionPubKey(domainChainId, spoke, keyChainId)`,
 which anyone may call for the delivery fee: the hub records the key as an L1 message from itself
 and the spoke stores it only from such a delivery. Sending to a domain whose key the spoke does
-not hold reverts, so a domain registered without a viewing key cannot receive domain messages.
+not hold reverts, so a domain registered without an encryption public key cannot receive domain messages.
 Tracking a sealed message on its destination needs its plaintext, the `{ from, to, data }` it was
 sent with (see `routedMessageDeliveryStatus` below). `npm run e2e:routing` (`e2e/e2e-routing-cli.ts`) runs the
 route against a fresh two-domain devnet whose client provides the precompile (needs
-`VIEWING_KEY_A` and `VIEWING_KEY_B`).
+`ENCRYPTION_PUB_KEY_A` and `ENCRYPTION_PUB_KEY_B`).
 
 ```ts
 import {

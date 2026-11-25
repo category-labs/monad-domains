@@ -45,13 +45,13 @@ export interface SetupConfig {
   /** Gas limit for each seeded domain creation transaction, paid for on the L1. Default 5_000_000. */
   domainGas?: bigint;
   /**
-   * Domain viewing public key (32-byte X25519 public key). Published on the hub at
+   * Domain encryption public key (32-byte X25519 public key). Published on the hub at
    * registration so senders can read it, and used here to pass the seeded creation
    * transactions to `sequenceToDomain` as HPKE ciphertext, which the domain execution client
    * decrypts before executing. Required by the execution client, which is started with the
    * domain's receiver key (`monad-domain --domain <id> <key.pem>`) and drops plaintext.
    */
-  viewingKey?: Hex;
+  encryptionPubKey?: Hex;
 }
 
 export interface SetupResult {
@@ -78,7 +78,7 @@ export interface SetupResult {
  *
  * Order:
  *   L1:  deploy/reuse DomainHub (its implementation, then the proxy that is the hub) ->
- *        registerDomain (validators, quorum, fee recipient, viewing key, checkpoint interval)
+ *        registerDomain (validators, quorum, fee recipient, encryption public key, checkpoint interval)
  *   L1:  deploy L1Bridge(hub, chainId) (admin becomes owner)
  *   -    precompute default policy = CREATE(seed, 0), bridge = CREATE(seed, 1)
  *   L1:  sequenceToDomain(seed's signed DomainAccessRules creation tx) [nonce 0, unless a policy was supplied]
@@ -97,7 +97,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     domainGas = 5_000_000n,
     checkpointInterval = 5n,
     maxUnattestedPeriods = 50,
-    viewingKey,
+    encryptionPubKey,
   } = config;
 
   if (validators.length === 0) throw new Error("setup: validators must not be empty");
@@ -146,7 +146,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   const domainBridgeArt = loadArtifact("DomainBridge.sol", "DomainBridge");
 
   // 1. Deploy/reuse the hub and register the domain: validator set + quorum, the fee
-  // recipient, the viewing public key senders read back from the hub, and the checkpoint
+  // recipient, the encryption public key senders read back from the hub, and the checkpoint
   // interval attested heights must follow.
   // The hub is an ERC-1967 proxy in front of the DomainHub implementation. The proxy's
   // constructor initializes it with the owner who may upgrade it.
@@ -175,7 +175,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     abi: hubArt.abi,
     functionName: "registerDomain",
     args: [
-      domainChainId, validators, quorum, feeRecipient, viewingKey ?? "0x", checkpointInterval, maxUnattestedPeriods,
+      domainChainId, validators, quorum, feeRecipient, encryptionPubKey ?? "0x", checkpointInterval, maxUnattestedPeriods,
     ],
   } as const;
   // The estimate depends on the L1 block the call lands in, as for every call that records an input.
@@ -187,7 +187,7 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
   );
   console.log(
     `  registered chain ${domainChainId} (quorum ${quorum} of ${validators.length}, fee recipient ${feeRecipient}, ` +
-      `checkpoint interval ${checkpointInterval}, at most ${maxUnattestedPeriods} unattested periods, viewing key ${viewingKey ? "published" : "none"})`,
+      `checkpoint interval ${checkpointInterval}, at most ${maxUnattestedPeriods} unattested periods, encryption public key ${encryptionPubKey ? "published" : "none"})`,
   );
 
   // 2. Deploy the L1 bridge (admin becomes owner).
@@ -235,11 +235,11 @@ export async function setupDomain(config: SetupConfig): Promise<SetupResult> {
     }),
   });
 
-  // 5. Sequence them through the hub (policy before bridge). With a viewing key
+  // 5. Sequence them through the hub (policy before bridge). With an encryption public key
   // the hub records the HPKE ciphertext of each creation; the execution client decrypts it.
   const sequencingFee = domainGas * domainGasPrice;
   const sequenceSeedTransaction = async (rawTransaction: Hex): Promise<Hex> => {
-    const rlpTx = viewingKey ? await encryptTransaction(viewingKey, domainChainId, rawTransaction) : rawTransaction;
+    const rlpTx = encryptionPubKey ? await encryptTransaction(encryptionPubKey, domainChainId, rawTransaction) : rawTransaction;
     const request = {
       account: admin,
       address: hub,

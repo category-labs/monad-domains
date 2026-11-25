@@ -60,7 +60,7 @@ import { generateMessageSalt, type MessageContext } from "../src/message.js";
  *   CHECKPOINT_INTERVAL  registered on the hub, default 5
  *   EXPECTED_HUB         the hub address in the node's `--private-domain-sequencer` flag; must be
  *                        CREATE(admin, 1), default 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
- *   VIEWING_KEY          the domain viewing public key matching the PEM the node was started with
+ *   ENCRYPTION_PUB_KEY   the domain encryption public key matching the PEM the node was started with
  *                        (`--private-domain <id> <spoke address> <key.pem>`, where the spoke address
  *                        is CREATE(admin, 0) on the domain); every sequenced transaction is
  *                        encrypted to it
@@ -75,7 +75,7 @@ const DOMAIN_CHAIN_ID = BigInt(process.env.DOMAIN_CHAIN_ID ?? String((1n << 16n)
 const DOMAIN_RPC_URL = process.env.DOMAIN_RPC_URL ?? `${L1_RPC_URL}/domain/${DOMAIN_CHAIN_ID}`;
 // Validators attest at L1 heights that are multiples of this (the protocol default).
 const CHECKPOINT_INTERVAL = BigInt(process.env.CHECKPOINT_INTERVAL ?? "5");
-const VIEWING_KEY = process.env.VIEWING_KEY as Hex | undefined;
+const ENCRYPTION_PUB_KEY = process.env.ENCRYPTION_PUB_KEY as Hex | undefined;
 
 // The hub address the running node's --private-domain-sequencer flag points at.
 // Must equal CREATE(admin, 1): the admin's first two L1 transactions ever deploy the hub's
@@ -238,7 +238,7 @@ async function main() {
 
   console.log("L1 chain id:", l1ChainId);
   console.log("domain chain id:", DOMAIN_CHAIN_ID.toString());
-  console.log("viewing key:", VIEWING_KEY ? `${VIEWING_KEY.slice(0, 12)}… (sequenced transactions are encrypted)` : "none (plaintext)");
+  console.log("encryption public key:", ENCRYPTION_PUB_KEY ? `${ENCRYPTION_PUB_KEY.slice(0, 12)}… (sequenced transactions are encrypted)` : "none (plaintext)");
   const domainReportedChainId = await domain.getChainId();
   if (BigInt(domainReportedChainId) !== DOMAIN_CHAIN_ID) {
     throw new Error(`domain RPC reports chain id ${domainReportedChainId}, expected ${DOMAIN_CHAIN_ID}`);
@@ -287,7 +287,7 @@ async function main() {
     validators: [validator.address],
     quorum: 1n,
     checkpointInterval: CHECKPOINT_INTERVAL,
-    viewingKey: VIEWING_KEY,
+    encryptionPubKey: ENCRYPTION_PUB_KEY,
   });
   const { hub, l1Bridge, spoke, domainBridge } = setup;
   const rules = setup.initialTokenPolicy;
@@ -301,7 +301,7 @@ async function main() {
       data,
       gas,
       nonce: await domain.getTransactionCount({ address: privateKeyToAccount(senderKey).address }),
-      viewingKey: VIEWING_KEY,
+      encryptionPubKey: ENCRYPTION_PUB_KEY,
     });
   if (hub.toLowerCase() !== EXPECTED_HUB.toLowerCase()) {
     throw new Error(`hub deployed at ${hub}, but the node's scanner watches ${EXPECTED_HUB} — aborting`);
@@ -451,7 +451,7 @@ async function main() {
     data: encodeFunctionData({ abi: domainBridgeArt.abi, functionName: "bridgeToL1", args: [CAROL, token, WITHDRAWAL, generateMessageSalt()] }),
     gas: 500_000n,
     nonce: await domain.getTransactionCount({ address: bob.address }),
-    viewingKey: VIEWING_KEY,
+    encryptionPubKey: ENCRYPTION_PUB_KEY,
   });
   console.log("  sequenced domainBridge.bridgeToL1:", bridgeToL1.domainTxHash);
   // Bob's receipt leaves out the spoke's log, which names no account, but keeps the bridge's

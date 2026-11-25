@@ -11,7 +11,7 @@ their deployment transactions as the seed deployer's first two domain transactio
 The setup tool (`offchain/src/setup.ts`, run via `npm run setup`) performs, in order:
 
 1. deploy `DomainHub` on the L1 and `registerDomain(...)` with the validator set + quorum, the
-   fee recipient, the viewing public key (published for senders) and the
+   fee recipient, the encryption public key (published for senders) and the
    checkpoint interval;
 2. deploy `L1Bridge(hub, chainId)` (admin becomes owner);
 3. precompute the default token policy `DomainAccessRules` = `CREATE(seed, 0)` and the
@@ -21,12 +21,12 @@ The setup tool (`offchain/src/setup.ts`, run via `npm run setup`) performs, in o
 5. `L1Bridge.registerDomainBridge(domainBridge)` (one-shot) against the precomputed address;
 6. optionally `setTokenAllowed(token)` — e.g. the wrapped-MON ERC20 used for deposits.
 
-Domain transactions are HPKE-encrypted to the domain's viewing key before they are
-sequenced: the execution client is started with the viewing secret key
+Domain transactions are HPKE-encrypted to the domain's encryption public key before they are
+sequenced: the execution client is started with the encryption secret key
 (`monad-domain --domain <chain id> <key.pem>`) and decrypts every payload, so the L1 only carries
-ciphertext. Create the key and print the matching `VIEWING_KEY` with
-`npm run viewing-key -- generate <key.pem>` (or `-- public <key.pem>` for an existing PEM), and set
-`VIEWING_KEY` in `.env`; the setup tool then encrypts the two seeded creation transactions
+ciphertext. Create the key and print the matching `ENCRYPTION_PUB_KEY` with
+`npm run encryption-key -- generate <key.pem>` (or `-- public <key.pem>` for an existing PEM), and set
+`ENCRYPTION_PUB_KEY` in `.env`; the setup tool then encrypts the two seeded creation transactions
 (a node holding a key drops plaintext payloads).
 
 Build the contracts so the artifacts exist, then configure and run the setup from `offchain/`:

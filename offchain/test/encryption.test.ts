@@ -6,9 +6,9 @@ import {
   EncryptionError,
   decryptTransaction,
   encryptTransaction,
-  generateViewingKeyPair,
+  generateEncryptionKeyPair,
 } from "../src/encryption.js";
-import { viewingPublicKeyFromPem, viewingSecretKeyFromPem, viewingSecretKeyToPem } from "../src/viewing-key.js";
+import { encryptionPubKeyFromPem, encryptionSecretKeyFromPem, encryptionSecretKeyToPem } from "../src/encryption-key.js";
 
 /**
  * Behavioural tests for domain-transaction encryption. The ciphertext built here is the
@@ -54,7 +54,7 @@ async function expectDecryptionFailure(operation: Promise<unknown>) {
 }
 
 test("round trip preserves the signed transaction", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
+  const { publicKey, secretKey } = await generateEncryptionKeyPair();
   const rawTransaction = await signDomainTransaction();
 
   const ciphertext = await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, rawTransaction);
@@ -70,23 +70,23 @@ test("round trip preserves the signed transaction", async () => {
 });
 
 test("keys match the fixed profile", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
+  const { publicKey, secretKey } = await generateEncryptionKeyPair();
   assert.equal(hexToBytes(publicKey).length, 32);
   assert.equal(hexToBytes(secretKey).length, 32);
 });
 
-test("viewing key encodings match the execution client's key file", () => {
+test("encryption key encodings match the execution client's key file", () => {
   const secretKey = `0x${"11".repeat(32)}` as const;
-  assert.equal(viewingSecretKeyFromPem(CLIENT_KEY_PEM), secretKey);
-  assert.equal(viewingSecretKeyToPem(secretKey), CLIENT_KEY_PEM);
+  assert.equal(encryptionSecretKeyFromPem(CLIENT_KEY_PEM), secretKey);
+  assert.equal(encryptionSecretKeyToPem(secretKey), CLIENT_KEY_PEM);
   assert.equal(
-    viewingPublicKeyFromPem(CLIENT_KEY_PEM),
+    encryptionPubKeyFromPem(CLIENT_KEY_PEM),
     "0x7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
   );
 });
 
 test("encryption is randomized", async () => {
-  const { publicKey } = await generateViewingKeyPair();
+  const { publicKey } = await generateEncryptionKeyPair();
   const rawTransaction = await signDomainTransaction();
 
   // A fresh ephemeral key per call: the same transaction never yields the same ciphertext, so
@@ -98,7 +98,7 @@ test("encryption is randomized", async () => {
 });
 
 test("a tampered ciphertext fails to authenticate", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
+  const { publicKey, secretKey } = await generateEncryptionKeyPair();
   const ciphertext = hexToBytes(
     await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, await signDomainTransaction()),
   );
@@ -112,9 +112,9 @@ test("a tampered ciphertext fails to authenticate", async () => {
   await expectDecryptionFailure(decryptTransaction(secretKey, DOMAIN_CHAIN_ID, bytesToHex(truncated)));
 });
 
-test("only the domain viewing key opens the ciphertext", async () => {
-  const domain = await generateViewingKeyPair();
-  const stranger = await generateViewingKeyPair();
+test("only the domain encryption secret key opens the ciphertext", async () => {
+  const domain = await generateEncryptionKeyPair();
+  const stranger = await generateEncryptionKeyPair();
   const ciphertext = await encryptTransaction(
     domain.publicKey,
     DOMAIN_CHAIN_ID,
@@ -125,30 +125,30 @@ test("only the domain viewing key opens the ciphertext", async () => {
 });
 
 test("a transaction opens only in the domain it was sealed for", async () => {
-  const { publicKey, secretKey } = await generateViewingKeyPair();
+  const { publicKey, secretKey } = await generateEncryptionKeyPair();
   const ciphertext = await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, await signDomainTransaction());
 
   await expectDecryptionFailure(decryptTransaction(secretKey, DOMAIN_CHAIN_ID + 1n, ciphertext));
 });
 
 test("a plaintext transaction is rejected as a ciphertext", async () => {
-  const { secretKey } = await generateViewingKeyPair();
+  const { secretKey } = await generateEncryptionKeyPair();
   await expectDecryptionFailure(decryptTransaction(secretKey, DOMAIN_CHAIN_ID, await signDomainTransaction()));
 });
 
-test("an invalid viewing key is rejected before encryption", async () => {
+test("an invalid encryption public key is rejected before encryption", async () => {
   const rawTransaction = await signDomainTransaction();
   // Wrong length, then a low-order point.
-  for (const viewingKey of ["0xdeadbeef", `0x${"00".repeat(32)}`] as const) {
+  for (const encryptionPubKey of ["0xdeadbeef", `0x${"00".repeat(32)}`] as const) {
     await assert.rejects(
-      encryptTransaction(viewingKey, DOMAIN_CHAIN_ID, rawTransaction),
+      encryptTransaction(encryptionPubKey, DOMAIN_CHAIN_ID, rawTransaction),
       (error) => error instanceof EncryptionError,
     );
   }
 });
 
 test("the wire format matches the domain encryption profile", async () => {
-  const { publicKey } = await generateViewingKeyPair();
+  const { publicKey } = await generateEncryptionKeyPair();
   const rawTransaction = await signDomainTransaction();
   const ciphertext = hexToBytes(await encryptTransaction(publicKey, DOMAIN_CHAIN_ID, rawTransaction));
 
@@ -158,7 +158,7 @@ test("the wire format matches the domain encryption profile", async () => {
 
   // The same decrypt opens what the execution client opens, which pins the whole profile.
   assert.equal(
-    await decryptTransaction(viewingSecretKeyFromPem(CLIENT_KEY_PEM), CLIENT_DOMAIN, CLIENT_PAYLOAD),
+    await decryptTransaction(encryptionSecretKeyFromPem(CLIENT_KEY_PEM), CLIENT_DOMAIN, CLIENT_PAYLOAD),
     "0x02c0",
   );
 });

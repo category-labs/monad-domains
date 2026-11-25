@@ -21,7 +21,7 @@ contract DomainMessagingTest is DomainTestBase {
     uint256 internal constant K2 = 0xB0B;
     uint256 internal constant K3 = 0xC0DE;
 
-    bytes internal constant VIEWING_KEY = hex"7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
+    bytes internal constant ENCRYPTION_PUB_KEY = hex"7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
 
     DomainHub internal hub;
     DomainSpoke internal spoke;
@@ -44,8 +44,8 @@ contract DomainMessagingTest is DomainTestBase {
         return _addresses(_keys(K1, K2, K3));
     }
 
-    function _register(uint64 chainId, address recipient, bytes memory viewingKey, uint64 interval) internal {
-        hub.registerDomain(chainId, _validators(), 2, recipient, viewingKey, interval, MAX_UNATTESTED_PERIODS);
+    function _register(uint64 chainId, address recipient, bytes memory encryptionPubKey, uint64 interval) internal {
+        hub.registerDomain(chainId, _validators(), 2, recipient, encryptionPubKey, interval, MAX_UNATTESTED_PERIODS);
     }
 
     // ---------------------------------------------------------------------
@@ -104,19 +104,19 @@ contract DomainMessagingTest is DomainTestBase {
         hub.registerDomain(4444, _validators(), 2, feeRecipient, "", 1, 51);
     }
 
-    function test_register_rejectsMalformedViewingKey() public {
-        vm.expectRevert(DomainHub.InvalidViewingKey.selector);
+    function test_register_rejectsMalformedEncryptionPubKey() public {
+        vm.expectRevert(DomainHub.InvalidEncryptionPubKey.selector);
         _register(4444, feeRecipient, hex"c0ffee", 1);
 
-        vm.expectRevert(DomainHub.InvalidViewingKey.selector);
-        _register(4444, feeRecipient, bytes.concat(VIEWING_KEY, hex"00"), 1);
+        vm.expectRevert(DomainHub.InvalidEncryptionPubKey.selector);
+        _register(4444, feeRecipient, bytes.concat(ENCRYPTION_PUB_KEY, hex"00"), 1);
     }
 
     function test_register_storesConfig() public {
         vm.expectEmit(true, true, false, true, address(hub));
         emit IDomainHub.DomainRegistered(4444, feeRecipient, 25);
         vm.expectEmit(true, false, false, true, address(hub));
-        emit IDomainHub.ViewingKeyRegistered(4444, "");
+        emit IDomainHub.EncryptionPubKeyRegistered(4444, "");
         vm.prank(stranger); // registration is permissionless; the caller gets no role
         _register(4444, feeRecipient, "", 25);
 
@@ -126,18 +126,18 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(hub.checkpointIntervals(4444), 25);
         assertEq(hub.maxUnattestedPeriods(4444), MAX_UNATTESTED_PERIODS);
         assertEq(hub.quorums(4444), 2);
-        assertEq(hub.viewingKeys(4444), "");
+        assertEq(hub.encryptionPubKeys(4444), "");
         assertEq(hub.getValidators(4444), _validators());
     }
 
-    function test_register_publishesViewingKey() public {
+    function test_register_publishesEncryptionPubKey() public {
         vm.expectEmit(true, false, false, true, address(hub));
-        emit IDomainHub.ViewingKeyRegistered(4444, VIEWING_KEY);
-        _register(4444, feeRecipient, VIEWING_KEY, 1);
+        emit IDomainHub.EncryptionPubKeyRegistered(4444, ENCRYPTION_PUB_KEY);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 1);
 
         // Senders read the key from the hub to encrypt domain transactions to it.
-        assertEq(hub.viewingKeys(4444), VIEWING_KEY);
-        assertEq(hub.viewingKeys(4444).length, hub.VIEWING_KEY_LENGTH());
+        assertEq(hub.encryptionPubKeys(4444), ENCRYPTION_PUB_KEY);
+        assertEq(hub.encryptionPubKeys(4444).length, hub.ENCRYPTION_PUB_KEY_LENGTH());
     }
 
     // ---------------------------------------------------------------------
@@ -237,9 +237,9 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(address(hub).balance, 0);
     }
 
-    function test_sendViewingKey_recordsAHubMessageToTheSpoke() public {
+    function test_sendEncryptionPubKey_recordsAHubMessageToTheSpoke() public {
         _registerKeyedDomain(hub, 8888, K1);
-        bytes memory data = MessageLib.encodeViewingKey(8888, bytes32(hub.viewingKeys(8888)));
+        bytes memory data = MessageLib.encodeEncryptionPubKey(8888, bytes32(hub.encryptionPubKeys(8888)));
         MessageLib.Message memory message =
             MessageLib.Message(uint64(block.chainid), address(hub), address(spoke), data, 0);
 
@@ -256,24 +256,25 @@ contract DomainMessagingTest is DomainTestBase {
         );
         vm.deal(stranger, 1 ether);
         vm.prank(stranger); // anyone may push a key, paying its delivery
-        hub.sendViewingKey{value: DELIVERY_FEE}(CHAIN_ID, address(spoke), 8888);
+        hub.sendEncryptionPubKey{value: DELIVERY_FEE}(CHAIN_ID, address(spoke), 8888);
         assertEq(hub.l1MessageCounts(CHAIN_ID), 1);
     }
 
-    function test_sendViewingKey_rejectsUnregisteredDomainMissingKeyAndLowFee() public {
+    function test_sendEncryptionPubKey_rejectsUnregisteredDomainMissingKeyAndLowFee() public {
         _register(4444, feeRecipient, "", 1);
         _registerKeyedDomain(hub, 8888, K1);
         vm.expectRevert(DomainHub.DomainNotRegistered.selector);
-        hub.sendViewingKey{value: DELIVERY_FEE}(9999, address(spoke), 8888);
-        vm.expectRevert(DomainHub.NoViewingKey.selector);
-        hub.sendViewingKey{value: DELIVERY_FEE}(CHAIN_ID, address(spoke), 4444); // registered without a key
-        vm.expectRevert(DomainHub.NoViewingKey.selector);
-        hub.sendViewingKey{value: DELIVERY_FEE}(CHAIN_ID, address(spoke), 9999); // not registered
-        uint256 minimum = hub.minDeliveryFee(MessageLib.encodeViewingKey(8888, bytes32(hub.viewingKeys(8888))).length);
+        hub.sendEncryptionPubKey{value: DELIVERY_FEE}(9999, address(spoke), 8888);
+        vm.expectRevert(DomainHub.NoEncryptionPubKey.selector);
+        hub.sendEncryptionPubKey{value: DELIVERY_FEE}(CHAIN_ID, address(spoke), 4444); // registered without a key
+        vm.expectRevert(DomainHub.NoEncryptionPubKey.selector);
+        hub.sendEncryptionPubKey{value: DELIVERY_FEE}(CHAIN_ID, address(spoke), 9999); // not registered
+        uint256 minimum =
+            hub.minDeliveryFee(MessageLib.encodeEncryptionPubKey(8888, bytes32(hub.encryptionPubKeys(8888))).length);
         vm.expectRevert(DomainHub.DeliveryFeeTooLow.selector);
-        hub.sendViewingKey{value: minimum - 1}(CHAIN_ID, address(spoke), 8888);
+        hub.sendEncryptionPubKey{value: minimum - 1}(CHAIN_ID, address(spoke), 8888);
         assertEq(hub.l1MessageCounts(CHAIN_ID), 0);
-        hub.sendViewingKey{value: minimum}(CHAIN_ID, address(spoke), 8888);
+        hub.sendEncryptionPubKey{value: minimum}(CHAIN_ID, address(spoke), 8888);
         assertEq(hub.l1MessageCounts(CHAIN_ID), 1);
     }
 
@@ -451,8 +452,8 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_onDomainMessage_storesKeysOnlyFromHubDeliveries() public {
         _registerKeyedDomain(hub, 8888, K1);
-        bytes32 key = bytes32(hub.viewingKeys(8888));
-        bytes memory data = MessageLib.encodeViewingKey(8888, key);
+        bytes32 key = bytes32(hub.encryptionPubKeys(8888));
+        bytes memory data = MessageLib.encodeEncryptionPubKey(8888, key);
 
         // Not a delivery: a direct call, even from the hub's address.
         vm.prank(address(hub));
@@ -464,7 +465,7 @@ contract DomainMessagingTest is DomainTestBase {
         spoke.relayL1Message(uint64(block.chainid), alice, address(spoke), data, 0);
         spoke.relayL1Message(8888, address(hub), address(spoke), data, 1);
         vm.stopPrank();
-        assertEq(spoke.viewingKeys(8888), bytes32(0));
+        assertEq(spoke.encryptionPubKeys(8888), bytes32(0));
         assertTrue(
             spoke.failedL1Messages(
                 MessageLib.hashMessage(MessageLib.Message(uint64(block.chainid), alice, address(spoke), data, 0))
@@ -478,38 +479,38 @@ contract DomainMessagingTest is DomainTestBase {
 
         // The hub's own message stores the key.
         vm.expectEmit(address(spoke));
-        emit IDomainSpoke.ViewingKeySet(8888, key);
+        emit IDomainSpoke.EncryptionPubKeySet(8888, key);
         vm.prank(spoke.SYSTEM_RELAYER());
         spoke.relayL1Message(uint64(block.chainid), address(hub), address(spoke), data, 2);
-        assertEq(spoke.viewingKeys(8888), key);
+        assertEq(spoke.encryptionPubKeys(8888), key);
         assertEq(spoke.nextL1Nonce(), 3);
     }
 
     /// @dev The encryption precompile reads this word directly from state. The domain and its
     /// slot are the vector the client's precompile test pins.
-    function test_viewingKeyStorageSlot() public {
+    function test_encryptionPubKeyStorageSlot() public {
         uint64 destination = 0x510000004eaf;
         bytes32 slot = 0x7b4e93f8fe9bc472b1fac84156f4243b62a421ce301fbbe4cb12ff9ad4c799aa;
         assertEq(slot, keccak256(abi.encode(uint256(destination), uint256(7))));
         _registerKeyedDomain(hub, destination, K1);
-        _deliverViewingKey(hub, spoke, destination);
-        assertEq(vm.load(address(spoke), slot), bytes32(hub.viewingKeys(destination)));
+        _deliverEncryptionPubKey(hub, spoke, destination);
+        assertEq(vm.load(address(spoke), slot), bytes32(hub.encryptionPubKeys(destination)));
     }
 
-    function test_failedViewingKeyDeliveryIsRetryable() public {
+    function test_failedEncryptionPubKeyDeliveryIsRetryable() public {
         _registerKeyedDomain(hub, 8888, K1);
-        bytes32 key = bytes32(hub.viewingKeys(8888));
+        bytes32 key = bytes32(hub.encryptionPubKeys(8888));
         MessageLib.Message memory message = MessageLib.Message(
-            uint64(block.chainid), address(hub), address(spoke), MessageLib.encodeViewingKey(8888, key), 0
+            uint64(block.chainid), address(hub), address(spoke), MessageLib.encodeEncryptionPubKey(8888, key), 0
         );
         vm.prank(spoke.SYSTEM_RELAYER());
         spoke.relayL1Message{gas: 100_000}(message.sourceChainId, message.from, message.to, message.data, message.nonce);
         assertTrue(spoke.failedL1Messages(MessageLib.hashMessage(message)));
-        assertEq(spoke.viewingKeys(8888), bytes32(0));
+        assertEq(spoke.encryptionPubKeys(8888), bytes32(0));
 
         vm.prank(stranger);
         spoke.retryL1Message(message);
-        assertEq(spoke.viewingKeys(8888), key);
+        assertEq(spoke.encryptionPubKeys(8888), key);
     }
 
     function test_retryL1Message_rejectsUnknownMessage() public {
@@ -556,7 +557,7 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sendDomainMessage_sealsDomainBoundMessagesThroughThePrecompile() public {
         _registerKeyedDomain(hub, 8888, K1);
-        _deliverViewingKey(hub, spoke, 8888);
+        _deliverEncryptionPubKey(hub, spoke, 8888);
         // No sender, target or salt; the data is (alice, bob, 0xcafe) sealed by this spoke for
         // 8888 under nonce 0 with 8888's key, as the mock seals it.
         bytes memory ciphertext = abi.encode(
@@ -564,7 +565,7 @@ contract DomainMessagingTest is DomainTestBase {
             CHAIN_ID,
             uint64(8888),
             uint256(0),
-            bytes32(hub.viewingKeys(8888)),
+            bytes32(hub.encryptionPubKeys(8888)),
             MessageLib.encodePlaintext(alice, bob, hex"cafe")
         );
         MessageLib.DomainMessage memory message =
@@ -583,7 +584,7 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sendDomainMessage_requiresSaltOnlyForTheL1() public {
         _registerKeyedDomain(hub, 8888, K1);
-        _deliverViewingKey(hub, spoke, 8888);
+        _deliverEncryptionPubKey(hub, spoke, 8888);
         vm.startPrank(alice);
         vm.expectRevert(DomainSpoke.ZeroSalt.selector);
         spoke.sendDomainMessage(uint64(block.chainid), bob, hex"cafe", bytes32(0));
@@ -592,9 +593,9 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(spoke.domainMessageCount(), 1);
     }
 
-    function test_sendDomainMessage_rejectsDestinationWithoutViewingKey() public {
+    function test_sendDomainMessage_rejectsDestinationWithoutEncryptionPubKey() public {
         vm.prank(alice);
-        vm.expectRevert(DomainSpoke.NoViewingKey.selector);
+        vm.expectRevert(DomainSpoke.NoEncryptionPubKey.selector);
         spoke.sendDomainMessage(8888, bob, hex"cafe", TEST_SALT);
         assertEq(spoke.domainMessageCount(), 0);
         assertEq(precompile.seals(), 0);
@@ -602,7 +603,7 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sendDomainMessage_rejectsAResultNoLongerThanThePlaintext() public {
         _registerKeyedDomain(hub, 8888, K1);
-        _deliverViewingKey(hub, spoke, 8888);
+        _deliverEncryptionPubKey(hub, spoke, 8888);
         bytes memory plaintext = MessageLib.encodePlaintext(alice, bob, hex"cafe");
         bytes[2] memory results = [bytes(""), plaintext];
         for (uint256 i = 0; i < results.length; i++) {
@@ -620,7 +621,7 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sendDomainMessage_revertsWithoutThePrecompile() public {
         _registerKeyedDomain(hub, 8888, K1);
-        _deliverViewingKey(hub, spoke, 8888);
+        _deliverEncryptionPubKey(hub, spoke, 8888);
         vm.etch(DOMAIN_ENCRYPTION_PRECOMPILE, "");
         vm.prank(alice);
         vm.expectRevert();

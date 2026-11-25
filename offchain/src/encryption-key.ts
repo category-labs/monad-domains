@@ -3,16 +3,16 @@ import { bytesToHex, hexToBytes, type Hex } from "viem";
 import { EncryptionError } from "./encryption.js";
 
 /**
- * Conversions between the two encodings of a domain viewing key.
+ * Conversions between the two encodings of a domain encryption key.
  *
- * The domain execution client loads the viewing SECRET key from an unencrypted PKCS#8 PEM
- * file. Senders pass the viewing PUBLIC key to `encryptTransaction` as its raw 32 bytes, and
+ * The domain execution client loads the encryption SECRET key from an unencrypted PKCS#8 PEM
+ * file. Senders pass the encryption PUBLIC key to `encryptTransaction` as its raw 32 bytes, and
  * the offchain decrypt helpers take the raw 32-byte secret key. These helpers move between the
  * two so a key generated on either side can be used on the other.
  */
 
-/** A viewing keypair in every encoding the system needs. */
-export interface ViewingKeyFiles {
+/** An encryption keypair in every encoding the system needs. */
+export interface EncryptionKeyFiles {
   /** Unencrypted PKCS#8 PEM — what the execution client loads. */
   privateKeyPem: string;
   /** SubjectPublicKeyInfo PEM, for distribution alongside the hex form. */
@@ -37,20 +37,20 @@ interface OkpJwk {
 
 function keyBytes(jwk: OkpJwk, member: "x" | "d"): Hex {
   if (jwk.kty !== "OKP" || jwk.crv !== CURVE) {
-    throw new EncryptionError("viewing key must be an X25519 key");
+    throw new EncryptionError("encryption key must be an X25519 key");
   }
   const bytes = new Uint8Array(Buffer.from(jwk[member] ?? "", "base64url"));
   if (bytes.length !== KEY_SIZE) {
-    throw new EncryptionError(`viewing key must be ${KEY_SIZE} bytes`);
+    throw new EncryptionError(`encryption key must be ${KEY_SIZE} bytes`);
   }
   return bytesToHex(bytes);
 }
 
 /**
- * Derives the 32-byte viewing public key from an X25519 PEM. Accepts either the public-key PEM
+ * Derives the 32-byte encryption public key from an X25519 PEM. Accepts either the public-key PEM
  * or the private-key PEM the client loads.
  */
-export function viewingPublicKeyFromPem(pem: string): Hex {
+export function encryptionPubKeyFromPem(pem: string): Hex {
   let jwk: OkpJwk;
   try {
     jwk = createPublicKey(pem).export({ format: "jwk" }) as OkpJwk;
@@ -61,7 +61,7 @@ export function viewingPublicKeyFromPem(pem: string): Hex {
 }
 
 /** Extracts the raw 32-byte secret key from an X25519 private-key PEM, for the offchain decrypt helpers. */
-export function viewingSecretKeyFromPem(pem: string): Hex {
+export function encryptionSecretKeyFromPem(pem: string): Hex {
   let jwk: OkpJwk;
   try {
     jwk = createPrivateKey(pem).export({ format: "jwk" }) as OkpJwk;
@@ -72,13 +72,13 @@ export function viewingSecretKeyFromPem(pem: string): Hex {
 }
 
 /**
- * Wraps a raw 32-byte secret key (as `generateViewingKeyPair` returns it) into the unencrypted
+ * Wraps a raw 32-byte secret key (as `generateEncryptionKeyPair` returns it) into the unencrypted
  * PKCS#8 PEM the execution client loads.
  */
-export function viewingSecretKeyToPem(secretKey: Hex): string {
+export function encryptionSecretKeyToPem(secretKey: Hex): string {
   const key = hexToBytes(secretKey);
   if (key.length !== KEY_SIZE) {
-    throw new EncryptionError(`viewing secret key must be ${KEY_SIZE} bytes`);
+    throw new EncryptionError(`encryption secret key must be ${KEY_SIZE} bytes`);
   }
   return createPrivateKey({ key: Buffer.concat([PKCS8_PREFIX, key]), format: "der", type: "pkcs8" }).export({
     type: "pkcs8",
@@ -86,15 +86,15 @@ export function viewingSecretKeyToPem(secretKey: Hex): string {
   }) as string;
 }
 
-/** Generates a fresh viewing keypair with the platform CSPRNG, in every encoding. */
-export function generateViewingKeyFiles(): ViewingKeyFiles {
+/** Generates a fresh encryption keypair with the platform CSPRNG, in every encoding. */
+export function generateEncryptionKeyFiles(): EncryptionKeyFiles {
   const { privateKey, publicKey } = generateKeyPairSync("x25519");
   const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
   const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }) as string;
   return {
     privateKeyPem,
     publicKeyPem,
-    publicKey: viewingPublicKeyFromPem(publicKeyPem),
-    secretKey: viewingSecretKeyFromPem(privateKeyPem),
+    publicKey: encryptionPubKeyFromPem(publicKeyPem),
+    secretKey: encryptionSecretKeyFromPem(privateKeyPem),
   };
 }

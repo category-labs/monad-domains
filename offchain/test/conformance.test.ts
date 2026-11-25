@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { keccak256, toHex, type Address, type Hex } from "viem";
 import {
-  decodePlaintext, decodeViewingKey, encodePlaintext, encodeTransfer, encodeViewingKey, hashDomainMessage, hashMessage,
+  decodePlaintext, decodeEncryptionPubKey, encodePlaintext, encodeTransfer, encodeEncryptionPubKey, hashDomainMessage, hashMessage,
   type DomainMessage, type Message,
 } from "../src/message.js";
 import { getProof, root, verify } from "../src/merkle.js";
@@ -171,9 +171,9 @@ test("encodePlaintext matches MessageLib.encodePlaintext", () => {
   assert.deepEqual(decodePlaintext(encoded), plaintext);
 });
 
-test("encodeViewingKey matches MessageLib.encodeViewingKey", () => {
-  const viewingKey = keccak256(toHex("viewing key"));
-  const data = encodeViewingKey(8888n, viewingKey);
-  assert.equal(keccak256(data), "0xc94518b602b208060b5fe015a92d0442be3ae61b05396f639d647da9721e10b8");
-  assert.deepEqual(decodeViewingKey(data), { domainChainId: 8888n, viewingKey });
+test("encodeEncryptionPubKey matches MessageLib.encodeEncryptionPubKey", () => {
+  const encryptionPubKey = keccak256(toHex("encryption public key"));
+  const data = encodeEncryptionPubKey(8888n, encryptionPubKey);
+  assert.equal(keccak256(data), "0xcf2f0b0b81bc8ae68309ecf2788871d9aa7960d10c7be08381788e5b37e5a24a");
+  assert.deepEqual(decodeEncryptionPubKey(data), { domainChainId: 8888n, encryptionPubKey });
 });

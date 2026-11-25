@@ -11,9 +11,9 @@ import {MessageLib} from "../libraries/MessageLib.sol";
 interface IDomainHub {
     event DomainRegistered(uint64 indexed domainChainId, address indexed feeRecipient, uint64 checkpointInterval);
 
-    /// @notice The viewing public key domain transactions and messages from other domains are
+    /// @notice The encryption public key domain transactions and messages from other domains are
     /// encrypted to, as a 32-byte X25519 public key.
-    event ViewingKeyRegistered(uint64 indexed domainChainId, bytes viewingKey);
+    event EncryptionPubKeyRegistered(uint64 indexed domainChainId, bytes encryptionPubKey);
 
     /// @notice One L1-sequenced domain transaction. The domain sender is recovered from the
     /// signed transaction inside `rlpTx`. `fee` is the wei paid: the transaction executes only if
@@ -106,20 +106,20 @@ interface IDomainHub {
 
     /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
     /// validator signatures required to advance the state, the recipient of sequencing fees,
-    /// the viewing public key senders encrypt to (32-byte X25519 public key, or empty),
+    /// the encryption public key senders encrypt to (32-byte X25519 public key, or empty),
     /// the checkpoint interval attested block numbers must be multiples of, and how many
     /// checkpoint periods may be unattested before the domain stops accepting inputs. A domain
-    /// without a viewing key cannot receive messages from other domains. MUST
+    /// without an encryption public key cannot receive messages from other domains. MUST
     /// reject the L1 chain id, an already registered chain id, a zero quorum, a quorum
     /// exceeding the validator count, zero or duplicate validators, a zero fee recipient, a
-    /// zero interval, a period limit outside 1 to 50 and a viewing key that is neither empty
-    /// nor 32 bytes.
+    /// zero interval, a period limit outside 1 to 50 and an encryption public key that is
+    /// neither empty nor 32 bytes.
     function registerDomain(
         uint64 domainChainId,
         address[] calldata validators,
         uint256 quorum,
         address feeRecipient,
-        bytes calldata viewingKey,
+        bytes calldata encryptionPubKey,
         uint64 checkpointInterval,
         uint8 maxUnattestedPeriods
     ) external;
@@ -130,8 +130,8 @@ interface IDomainHub {
     function feeRecipients(uint64 domainChainId) external view returns (address);
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64);
     function maxUnattestedPeriods(uint64 domainChainId) external view returns (uint8);
-    /// @notice The registered viewing public key, or empty bytes.
-    function viewingKeys(uint64 domainChainId) external view returns (bytes memory);
+    /// @notice The registered encryption public key, or empty bytes.
+    function encryptionPubKeys(uint64 domainChainId) external view returns (bytes memory);
 
     // --- State attestation ---
 
@@ -194,7 +194,7 @@ interface IDomainHub {
     /// ciphertext for that domain, with `msg.value` as the delivery fee (at least the minimum
     /// for the ciphertext), and returns true; execution/retry happens on that domain. Any other
     /// shape is rejected before the anchor is consulted. MUST reject a destination without a
-    /// viewing key, which no spoke can have sealed to. Messages can arrive in any order.
+    /// encryption public key, which no spoke can have sealed to. Messages can arrive in any order.
     function relayDomainMessage(MessageLib.DomainMessage calldata message, bytes32 anchor, bytes32[] calldata proof)
         external
         payable
@@ -215,9 +215,9 @@ interface IDomainHub {
 
     /// @notice Sequences a domain transaction through the L1. Forwards `msg.value` to the
     /// domain's fee recipient as a prepaid, non-refundable execution fee and emits `rlpTx` (a
-    /// signed domain transaction, HPKE-encrypted to the domain's viewing key when it has one)
-    /// for the domain clients to execute. The fee bounds the transaction's gas limit; it must
-    /// be at least `minSequencingFee(rlpTx.length)`.
+    /// signed domain transaction, HPKE-encrypted to the domain's encryption public key when it
+    /// has one) for the domain clients to execute. The fee bounds the transaction's gas limit;
+    /// it must be at least `minSequencingFee(rlpTx.length)`.
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable;
 
     /// @notice Smallest fee a sequencing call with `payloadLength` bytes of `rlpTx` is accepted
@@ -235,12 +235,13 @@ interface IDomainHub {
     /// `minDeliveryFee(data.length)`.
     function sendL1Message(uint64 domainChainId, address to, bytes calldata data) external payable;
 
-    /// @notice Sends `keyChainId`'s registered viewing key to `spoke` on `domainChainId` as an
-    /// L1 message from the hub itself, carrying `MessageLib.encodeViewingKey(keyChainId, key)`.
-    /// Anyone may call it; `msg.value` is the delivery fee. The spoke accepts the key only from
-    /// a delivery whose source is the L1 and whose sender is the hub. MUST reject an
-    /// unregistered `domainChainId` and a `keyChainId` without a viewing key.
-    function sendViewingKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable;
+    /// @notice Sends `keyChainId`'s registered encryption public key to `spoke` on
+    /// `domainChainId` as an L1 message from the hub itself, carrying
+    /// `MessageLib.encodeEncryptionPubKey(keyChainId, key)`. Anyone may call it; `msg.value` is
+    /// the delivery fee. The spoke accepts the key only from a delivery whose source is the L1
+    /// and whose sender is the hub. MUST reject an unregistered `domainChainId` and a
+    /// `keyChainId` without an encryption public key.
+    function sendEncryptionPubKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable;
 
     /// @notice Number of deliveries recorded for `domainChainId`, L1 messages and forwarded
     /// encrypted domain messages alike; equals the nonce the next one will be assigned.
@@ -271,14 +272,14 @@ interface IDomainHub {
 /// @notice Domain-side spoke, deployed in each domain's state. Mirror image of the hub: it
 /// records domain-origin messages by nonce and receives the L1 -> domain messages the domain
 /// client delivers as system transactions. It also holds the access-control configuration the
-/// domain client and RPC enforce, and the viewing keys of other domains the encryption
+/// domain client and RPC enforce, and the encryption public keys of other domains the encryption
 /// precompile seals to.
 interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
     /// @notice Full encoded domain-origin envelope, whether addressed to L1 or another domain.
     event DomainMessageRecorded(bytes32 indexed messageId, bytes message);
 
-    /// @notice A viewing key of another domain was stored, from a hub message.
-    event ViewingKeySet(uint64 indexed domainChainId, bytes32 viewingKey);
+    /// @notice An encryption public key of another domain was stored, from a hub message.
+    event EncryptionPubKeySet(uint64 indexed domainChainId, bytes32 encryptionPubKey);
 
     /// @notice Emitted for every protocol-delivered L1 -> domain message. `success` is the
     /// outcome of the target call; a failed delivery is retryable via `retryL1Message`.
@@ -300,14 +301,14 @@ interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
     function L1_CHAIN_ID() external view returns (uint64);
     function HUB() external view returns (address);
 
-    // --- Viewing keys of other domains ---
+    // --- Encryption public keys of other domains ---
 
-    /// @notice Viewing key of `domainChainId` as the hub last sent it, or zero. Set only by
-    /// `onDomainMessage` on a delivery this spoke makes to itself whose source is the L1 and
-    /// whose sender is the hub (`sendViewingKey` on the hub); any other caller or origin is
-    /// rejected. The encryption precompile reads this mapping to seal messages to
+    /// @notice Encryption public key of `domainChainId` as the hub last sent it, or zero. Set
+    /// only by `onDomainMessage` on a delivery this spoke makes to itself whose source is the L1
+    /// and whose sender is the hub (`sendEncryptionPubKey` on the hub); any other caller or
+    /// origin is rejected. The encryption precompile reads this mapping to seal messages to
     /// `domainChainId`.
-    function viewingKeys(uint64 domainChainId) external view returns (bytes32);
+    function encryptionPubKeys(uint64 domainChainId) external view returns (bytes32);
 
     // --- Delivery of L1 messages (protocol system transactions) ---
 
@@ -341,7 +342,7 @@ interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
     /// spoke seals `encodePlaintext(msg.sender, to, data)` through the encryption precompile,
     /// bound to this domain, the destination and the nonce, and the envelope carries only the
     /// ciphertext. MUST reject the local domain, a zero target, a domain destination whose
-    /// viewing key this spoke does not hold, and a precompile result no longer than the
+    /// encryption public key this spoke does not hold, and a precompile result no longer than the
     /// plaintext.
     /// @param salt Fresh cryptographically random bytes, kept private until relay. MUST be
     /// nonzero for an L1 destination. Ignored for a domain destination, whose envelope carries
