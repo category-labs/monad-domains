@@ -27,6 +27,33 @@ contract ReenteringRecipient {
     }
 }
 
+/// @dev A queue in its own storage, fed payloads followed in memory by set bytes, as other
+/// data may follow them.
+contract DirtyMemoryQueue {
+    uint256 internal constant QUEUE = 0;
+
+    /// @dev Appends `payload` and returns whether the memory after it was left as it was.
+    function push(bytes calldata payload) external returns (bool kept) {
+        InputQueue.State memory state;
+        bytes memory copy = payload;
+        uint256 end;
+        assembly ("memory-safe") {
+            end := add(add(copy, 32), mload(copy))
+            mstore(end, not(0))
+            mstore(add(end, 32), not(0))
+        }
+        InputQueue.push(QUEUE, state, 0, copy);
+        assembly ("memory-safe") {
+            kept := and(eq(mload(end), not(0)), eq(mload(add(end, 32)), not(0)))
+        }
+    }
+
+    /// @dev Word `index` of the data ring.
+    function word(uint256 index) external view returns (uint256) {
+        return InputQueue.load(QUEUE, 128 + index);
+    }
+}
+
 contract DomainInputQueueTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
     /// @dev The domain forwarded encrypted messages come from.
@@ -369,6 +396,53 @@ contract DomainInputQueueTest is DomainTestBase {
         assertEq(entries[0].payload, hex"ff");
         assertEq(entries[1].payload, payload);
         assertEq(entries[2].payload, hex"ee");
+    }
+
+    /// @dev A message's payload starts with fields the hub writes, so its first chunks mix
+    /// them with the data.
+    function testFuzz_messagePayloadsRoundTrip(uint16 length, uint256 seed, uint64 start) public {
+        _advanceEmptyQueue(uint64(bound(start, 0, 1 << 40)));
+        vm.roll(2);
+        bytes memory data = _randomBytes(bound(length, 0, 4_000), seed);
+        uint256 fee = hub.minDeliveryFee(data.length);
+        vm.startPrank(alice);
+        hub.sendL1Message{value: fee}(CHAIN_ID, bob, data);
+        hub.sendEncryptedL1Message{value: fee}(CHAIN_ID, data);
+        vm.stopPrank();
+        _sequence(hex"ee");
+
+        QueueEntry[] memory entries = _inputs(CHAIN_ID);
+        assertEq(entries.length, 3);
+        assertEq(entries[0].payload, abi.encodePacked(uint64(block.chainid), alice, bob, uint64(0), data));
+        assertEq(entries[1].payload, abi.encodePacked(uint64(block.chainid), alice, uint64(1), data));
+        assertEq(entries[2].payload, hex"ee");
+    }
+
+    /// @dev Each chunk holds the payload's next 31 bytes, and zeros past its end, whatever
+    /// follows the payload in memory; and that memory is left as it was.
+    function testFuzz_chunksAreZeroPastThePayload(uint16 length, uint256 seed) public {
+        bytes memory payload = _randomBytes(bound(length, 0, 300), seed);
+        DirtyMemoryQueue queue = new DirtyMemoryQueue();
+        assertTrue(queue.push(payload), "memory after the payload changed");
+
+        assertEq(queue.word(0), payload.length << 216);
+        bytes memory padded = bytes.concat(payload, new bytes(31));
+        for (uint256 at = 0; at < payload.length; at += 31) {
+            uint256 bytesAt;
+            assembly {
+                bytesAt := mload(add(add(padded, 32), at))
+            }
+            assertEq(queue.word(1 + at / 31), (uint256(1) << 248) | (bytesAt >> 8));
+        }
+        // Nothing is written past the entry.
+        assertEq(queue.word(1 + (payload.length + 30) / 31), 0);
+    }
+
+    function _randomBytes(uint256 length, uint256 seed) internal pure returns (bytes memory out) {
+        out = new bytes(length);
+        for (uint256 i = 0; i < length; i++) {
+            out[i] = keccak256(abi.encode(seed, i))[0];
+        }
     }
 
     /// @dev The fee is paid out last, so an input recorded from inside the payment comes
