@@ -11,8 +11,8 @@ import {IDomainEncryption} from "../../src/interfaces/IDomainEncryption.sol";
 /// sequence number and the key, so a test can open the ciphertext with `openMessage`.
 contract MockDomainEncryption is IDomainEncryption {
     Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
-    /// @dev Slot of the spoke's `viewingKeys` mapping.
-    uint256 private constant VIEWING_KEYS_SLOT = 7;
+    /// @dev Slot of the spoke's `encryptionPubKeys` mapping.
+    uint256 private constant ENCRYPTION_PUB_KEYS_SLOT = 7;
 
     /// @dev Number of successful seals.
     uint256 public seals;
@@ -21,15 +21,16 @@ contract MockDomainEncryption is IDomainEncryption {
         external
         returns (bytes memory ciphertext)
     {
-        bytes32 viewingKey = VM.load(msg.sender, keccak256(abi.encode(uint256(destinationChainId), VIEWING_KEYS_SLOT)));
-        require(viewingKey != bytes32(0), "MockDomainEncryption: unknown viewing key");
+        bytes32 encryptionPubKey =
+            VM.load(msg.sender, keccak256(abi.encode(uint256(destinationChainId), ENCRYPTION_PUB_KEYS_SLOT)));
+        require(encryptionPubKey != bytes32(0), "MockDomainEncryption: unknown encryption public key");
         seals++;
         return abi.encode(
             msg.sender,
             IDomainSpoke(msg.sender).DOMAIN_CHAIN_ID(),
             destinationChainId,
             sequenceNumber,
-            viewingKey,
+            encryptionPubKey,
             plaintext
         );
     }
@@ -43,7 +44,7 @@ contract MockDomainEncryption is IDomainEncryption {
             uint64 sourceChainId,
             uint64 destinationChainId,
             uint256 sequenceNumber,
-            bytes32 viewingKey,
+            bytes32 encryptionPubKey,
             bytes memory plaintext
         )
     {

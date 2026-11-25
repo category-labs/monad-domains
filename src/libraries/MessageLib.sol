@@ -9,7 +9,7 @@ library MessageLib {
     /// The destination selects L1 execution or domain forwarding, and with it the envelope's shape.
     /// Bound for the L1, `from`, `to` and `data` are the sender, target and payload of the callback.
     /// Bound for another domain, `from`, `to` and `salt` are zero and `data` is
-    /// `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
+    /// `encodePlaintext(from, to, data)` sealed to that domain's encryption public key.
     struct DomainMessage {
         uint64 sourceChainId;
         uint64 destinationChainId;
@@ -73,15 +73,23 @@ library MessageLib {
         return abi.encode(recipient, l1Token, amount);
     }
 
-    /// @notice Encodes the payload of the hub's viewing key message to a spoke: the domain a
-    /// key belongs to and the key.
-    function encodeViewingKey(uint64 domainChainId, bytes32 viewingKey) internal pure returns (bytes memory) {
-        return abi.encode(domainChainId, viewingKey);
+    /// @notice Encodes the payload of the hub's encryption public key message to a spoke: the
+    /// domain a key belongs to and the key.
+    function encodeEncryptionPubKey(uint64 domainChainId, bytes32 encryptionPubKey)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(domainChainId, encryptionPubKey);
     }
 
-    /// @notice Decodes a payload produced by `encodeViewingKey`.
-    function decodeViewingKey(bytes memory data) internal pure returns (uint64 domainChainId, bytes32 viewingKey) {
-        (domainChainId, viewingKey) = abi.decode(data, (uint64, bytes32));
+    /// @notice Decodes a payload produced by `encodeEncryptionPubKey`.
+    function decodeEncryptionPubKey(bytes memory data)
+        internal
+        pure
+        returns (uint64 domainChainId, bytes32 encryptionPubKey)
+    {
+        (domainChainId, encryptionPubKey) = abi.decode(data, (uint64, bytes32));
     }
 
     /// @notice Decodes a token bridge payload produced by `encodeTransfer`.

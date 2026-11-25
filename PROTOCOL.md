@@ -8,22 +8,22 @@ The core protocol and its actors are as follows:
 
 | Component | Where | Role |
 | --- | --- | --- |
-| DomainHub | L1, one instance | Registry of domains (validator set, quorum, fee recipient, viewing public key, checkpoint interval), transaction sequencer inbox, store of attested block hashes and outbound message anchors, L1 inbox and outbox for messages |
-| DomainSpoke | One instance at each domain | Receives L1-origin and forwarded messages as system transactions, records domain-origin messages by nonce and seals the ones bound for another domain, holds the viewing keys of other domains and the access-control rules the client enforces |
-| Domain execution client | Off-chain, per domain | Modified Monad node. Derives the domain's blocks from hub events, decrypts payloads with the viewing secret key, executes, serves the domain header |
+| DomainHub | L1, one instance | Registry of domains (validator set, quorum, fee recipient, encryption public key, checkpoint interval), transaction sequencer inbox, store of attested block hashes and outbound message anchors, L1 inbox and outbox for messages |
+| DomainSpoke | One instance at each domain | Receives L1-origin and forwarded messages as system transactions, records domain-origin messages by nonce and seals the ones bound for another domain, holds the encryption public keys of other domains and the access-control rules the client enforces |
+| Domain execution client | Off-chain, per domain | Modified Monad node. Derives the domain's blocks from hub events, decrypts payloads with the encryption secret key, executes, serves the domain header |
 | Validators | Off-chain keys, one per replica | Sign checkpoints: the hash of the domain's last block at a scheduled L1 height together with the root of the domain-origin messages recorded since the previous checkpoint. The hub advances once a quorum signed the same checkpoint |
 
 ![Protocol components: hub, client, spoke, validators](assets/protocol-components.png)
 
 Senders and validators only ever talk to the hub. The client reads the hub to derive every domain block, and validators carry domain headers and message anchors back up.
 
-End to end: a sender encrypts a signed domain transaction to the domain's viewing key and hands the ciphertext to the hub. The domain client sees the sequencing event, decrypts, and executes the transaction in the next domain block. For message passing from domain -> L1, every validator independently signs the next scheduled checkpoint, whose anchor is the Merkle root of the messages recorded since the previous one. Once the hub holds a quorum of signatures anyone can prove a message against the anchor and have the hub execute or forward it. Messages from L1 to a domain need no proof. The hub records them as events and the client injects one system transaction per event.
+End to end: a sender encrypts a signed domain transaction to the domain's encryption public key and hands the ciphertext to the hub. The domain client sees the sequencing event, decrypts, and executes the transaction in the next domain block. For message passing from domain -> L1, every validator independently signs the next scheduled checkpoint, whose anchor is the Merkle root of the messages recorded since the previous one. Once the hub holds a quorum of signatures anyone can prove a message against the anchor and have the hub execute or forward it. Messages from L1 to a domain need no proof. The hub records them as events and the client injects one system transaction per event.
 
 ## Registering a domain
 
-A domain is identified by its chain ID. A domain is created by calling `registerDomain(domainChainId, validators, quorum, feeRecipient, viewingKey, checkpointInterval, maxUnattestedPeriods)` on the hub. Starting a domain should include the following three steps:
+A domain is identified by its chain ID. A domain is created by calling `registerDomain(domainChainId, validators, quorum, feeRecipient, encryptionPubKey, checkpointInterval, maxUnattestedPeriods)` on the hub. Starting a domain should include the following three steps:
 
-1. **Generate the viewing keypair.** An X25519 key. The secret key goes to every execution client that will serve the domain. The public key is registered on the hub: users encrypt domain transactions to it, and other domains seal their messages to it. A domain registered without one cannot receive messages from other domains.
+1. **Generate the encryption keypair.** An X25519 key. The secret key goes to every execution client that will serve the domain. The public key is registered on the hub: users encrypt domain transactions to it, and other domains seal their messages to it. A domain registered without one cannot receive messages from other domains.
 2. **Configure the execution clients.** Each replica is started with the domain's chain ID, the address its spoke will have, and the key file, plus the hub address as the sequencer contract. Every replica must hold the same secret key to decrypt the ciphertext.
 3. **Deploy the spoke inside the domain.** The spoke is a contract in the domain's own state, not on the L1. Its creation transaction is sequenced through the hub like any other domain transaction.
 
@@ -46,11 +46,11 @@ Everything that enters a domain is pushed by the protocol from L1 events.
 
 **Domain to domain messages.** A message to another domain takes the same four steps, but the L1 only ever sees ciphertext.
 
-1. The spoke seals `abi.encode(sender, target, payload)` to the destination's viewing key through the client's encryption precompile, and records an envelope whose sender, target and salt are zero and whose data is the ciphertext. It reverts if it does not hold the destination's key, or if the precompile returns something no longer than the plaintext.
-2. The hub forwards a proven envelope as an `EncryptedMessageRecorded` event carrying the source chain, the source nonce and the ciphertext, under the destination's next delivery nonce. It rejects an envelope to a domain that names a sender, a target or a salt, and one bound for a domain without a viewing key.
+1. The spoke seals `abi.encode(sender, target, payload)` to the destination's encryption public key through the client's encryption precompile, and records an envelope whose sender, target and salt are zero and whose data is the ciphertext. It reverts if it does not hold the destination's key, or if the precompile returns something no longer than the plaintext.
+2. The hub forwards a proven envelope as an `EncryptedMessageRecorded` event carrying the source chain, the source nonce and the ciphertext, under the destination's next delivery nonce. It rejects an envelope to a domain that names a sender, a target or a salt, and one bound for a domain without an encryption public key.
 3. The destination client opens the ciphertext and delivers the sender, target and payload it holds through `relayL1Message`, as it delivers an L1 message.
 
-**Viewing keys of other domains.** A spoke seals to the keys it stores. Anyone calls `sendViewingKey(domainChainId, spoke, keyChainId)` on the hub with a delivery fee, and the hub records the registered key of `keyChainId` as an L1 message from itself to that spoke. The spoke stores a key only from a delivery whose source is the L1 and whose sender is the hub.
+**Encryption public keys of other domains.** A spoke seals to the keys it stores. Anyone calls `sendEncryptionPubKey(domainChainId, spoke, keyChainId)` on the hub with a delivery fee, and the hub records the registered key of `keyChainId` as an L1 message from itself to that spoke. The spoke stores a key only from a delivery whose source is the L1 and whose sender is the hub.
 
 **Receivers.** A receiver must do all its work or revert. The sender does not set the gas of a delivery: on the L1 it is whatever the relayer supplies, in a domain it is what the attached fee bought, and a retry runs with its caller's gas. A callback that reverts leaves the message retryable, while one that returns normally consumes it for good. So a receiver that carries on after a failed inner call can be given just enough gas to finish without that call, and the message is lost.
 
@@ -76,7 +76,7 @@ StateTransition(
 
 ## Encryption
 
-Every domain transaction reaches the L1 as HPKE ciphertext sealed to the domain's viewing key. The L1 orders ciphertext it cannot read, and the execution client is the only party that can open it.
+Every domain transaction reaches the L1 as HPKE ciphertext sealed to the domain's encryption public key. The L1 orders ciphertext it cannot read, and the execution client is the only party that can open it.
 
 **Profile.** A fixed RFC 9180 Base-mode suite, identical on both sides:
 
@@ -90,7 +90,7 @@ Every domain transaction reaches the L1 as HPKE ciphertext sealed to the domain'
 
 The plaintext of a sequenced transaction is the signed transaction bytes, including any EIP-2718 type prefix, with no extra RLP wrapper.
 
-**Messages between domains.** The source domain's client seals them, in the encryption precompile at `0x…1a7e` that the spoke calls with the destination, its source nonce and the plaintext `abi.encode(address sender, address target, bytes payload)`. The precompile reads the destination's key from the spoke's `viewingKeys` mapping (storage slot 7, one 32-byte word per domain) and binds the source domain, the destination and the source nonce as associated data, so a ciphertext opens only as that message. Every replica must compute the same ciphertext, so the randomness is derived rather than drawn: from the domain's secret seed, the caller, the destination key, the associated data and the whole plaintext. Leaving out the caller would let any contract reproduce a recorded ciphertext and confirm a guess of what it seals.
+**Messages between domains.** The source domain's client seals them, in the encryption precompile at `0x…1a7e` that the spoke calls with the destination, its source nonce and the plaintext `abi.encode(address sender, address target, bytes payload)`. The precompile reads the destination's key from the spoke's `encryptionPubKeys` mapping (storage slot 7, one 32-byte word per domain) and binds the source domain, the destination and the source nonce as associated data, so a ciphertext opens only as that message. Every replica must compute the same ciphertext, so the randomness is derived rather than drawn: from the domain's secret seed, the caller, the destination key, the associated data and the whole plaintext. Leaving out the caller would let any contract reproduce a recorded ciphertext and confirm a guess of what it seals.
 
 ## Decryption and execution
 

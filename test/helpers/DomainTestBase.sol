@@ -145,7 +145,7 @@ abstract contract DomainTestBase is Test {
     // ---------------------------------------------------------------------
 
     /// @dev Registers `chainId` with the validators behind `keys`, the test contract as fee
-    /// recipient, no viewing key and the shared checkpoint interval.
+    /// recipient, no encryption public key and the shared checkpoint interval.
     function _registerDomain(DomainHub hub, uint64 chainId, uint256[] memory keys, uint256 quorum) internal {
         hub.registerDomain(
             chainId, _addresses(keys), quorum, address(this), "", CHECKPOINT_INTERVAL, MAX_UNATTESTED_PERIODS
@@ -157,22 +157,24 @@ abstract contract DomainTestBase is Test {
         _registerDomain(hub, chainId, _keys(key), 1);
     }
 
-    /// @dev Single validator, quorum 1, with `_viewingKey(chainId)` as the viewing key.
+    /// @dev Single validator, quorum 1, with `_encryptionPubKey(chainId)` as the encryption public
+    /// key.
     function _registerKeyedDomain(DomainHub hub, uint64 chainId, uint256 key) internal {
         hub.registerDomain(
             chainId,
             _addresses(_keys(key)),
             1,
             address(this),
-            _viewingKey(chainId),
+            _encryptionPubKey(chainId),
             CHECKPOINT_INTERVAL,
             MAX_UNATTESTED_PERIODS
         );
     }
 
-    /// @dev A well-formed, domain-specific viewing key: 32 bytes, the size of an X25519 public key.
-    function _viewingKey(uint64 chainId) internal pure returns (bytes memory) {
-        return abi.encodePacked(keccak256(abi.encode("viewing key", chainId)));
+    /// @dev A well-formed, domain-specific encryption public key: 32 bytes, the size of an X25519
+    /// public key.
+    function _encryptionPubKey(uint64 chainId) internal pure returns (bytes memory) {
+        return abi.encodePacked(keccak256(abi.encode("encryption public key", chainId)));
     }
 
     // ---------------------------------------------------------------------
@@ -290,7 +292,7 @@ abstract contract DomainTestBase is Test {
     // ---------------------------------------------------------------------
 
     /// @dev Etches the encryption precompile mock at its address; give a spoke destination
-    /// keys with `_deliverViewingKey`.
+    /// keys with `_deliverEncryptionPubKey`.
     function _installEncryptionPrecompile() internal returns (MockDomainEncryption precompile) {
         vm.etch(DOMAIN_ENCRYPTION_PRECOMPILE, address(new MockDomainEncryption()).code);
         vm.label(DOMAIN_ENCRYPTION_PRECOMPILE, "DomainEncryption");
@@ -305,25 +307,25 @@ abstract contract DomainTestBase is Test {
         uint64 sourceChainId,
         uint64 destinationChainId,
         uint256 sourceNonce,
-        bytes32 viewingKey
+        bytes32 encryptionPubKey
     ) internal pure returns (bool opened, address from, address to, bytes memory data) {
         (, uint64 source, uint64 destination, uint256 sequence, bytes32 key, bytes memory plaintext) =
             MockDomainEncryption(DOMAIN_ENCRYPTION_PRECOMPILE).openMessage(ciphertext);
         opened = source == sourceChainId && destination == destinationChainId && sequence == sourceNonce
-            && key == viewingKey;
+            && key == encryptionPubKey;
         if (opened) (from, to, data) = abi.decode(plaintext, (address, address, bytes));
     }
 
-    /// @dev Gives `spoke` the viewing key of `keyChainId` the way the protocol does: the hub
-    /// records the key as an L1 message from itself and the client delivers it.
-    function _deliverViewingKey(DomainHub hub, DomainSpoke spoke, uint64 keyChainId) internal {
+    /// @dev Gives `spoke` the encryption public key of `keyChainId` the way the protocol does: the
+    /// hub records the key as an L1 message from itself and the client delivers it.
+    function _deliverEncryptionPubKey(DomainHub hub, DomainSpoke spoke, uint64 keyChainId) internal {
         uint64 domainChainId = spoke.DOMAIN_CHAIN_ID();
         uint256 nonce = hub.l1MessageCounts(domainChainId);
-        hub.sendViewingKey{value: DELIVERY_FEE}(domainChainId, address(spoke), keyChainId);
-        bytes32 key = bytes32(hub.viewingKeys(keyChainId));
-        bytes memory data = MessageLib.encodeViewingKey(keyChainId, key);
+        hub.sendEncryptionPubKey{value: DELIVERY_FEE}(domainChainId, address(spoke), keyChainId);
+        bytes32 key = bytes32(hub.encryptionPubKeys(keyChainId));
+        bytes memory data = MessageLib.encodeEncryptionPubKey(keyChainId, key);
         vm.prank(spoke.SYSTEM_RELAYER());
         spoke.relayL1Message(uint64(block.chainid), address(hub), address(spoke), data, nonce);
-        assertEq(spoke.viewingKeys(keyChainId), key, "viewing key not delivered");
+        assertEq(spoke.encryptionPubKeys(keyChainId), key, "encryption public key not delivered");
     }
 }

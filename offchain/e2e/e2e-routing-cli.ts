@@ -35,14 +35,14 @@ import {
 
 /**
  * End-to-end domain -> domain messaging against a fresh single-node devnet serving two
- * domains: set up both on one hub, deploy a receiver on B, push B's viewing key to spoke A,
+ * domains: set up both on one hub, deploy a receiver on B, push B's encryption public key to spoke A,
  * record two messages for B on spoke A in one batch, attest, relay both and check that the hub's
  * events carry only ciphertext and that B delivers both to the receiver with alice as the sender.
  *
  * Needs a client that provides the encryption precompile and opens forwarded ciphertexts.
  *
  * Env: L1_RPC_URL (default http://localhost:8080), DOMAIN_A_CHAIN_ID (85679),
- * DOMAIN_B_CHAIN_ID (151215), VIEWING_KEY_A / VIEWING_KEY_B (required: the node's keys),
+ * DOMAIN_B_CHAIN_ID (151215), ENCRYPTION_PUB_KEY_A / ENCRYPTION_PUB_KEY_B (required: the node's keys),
  * CHECKPOINT_INTERVAL (5), EXPECTED_HUB (the node's `--private-domain-sequencer`; the chain
  * must be fresh so the admin's first two L1 transactions deploy the hub's implementation and then
  * the hub itself, its proxy, there), DOMAIN_ACCESS_KEY
@@ -53,8 +53,8 @@ const L1_RPC_URL = process.env.L1_RPC_URL ?? "http://localhost:8080";
 const DOMAIN_A = BigInt(process.env.DOMAIN_A_CHAIN_ID ?? String((1n << 16n) | 20143n));
 const DOMAIN_B = BigInt(process.env.DOMAIN_B_CHAIN_ID ?? String((2n << 16n) | 20143n));
 const CHECKPOINT_INTERVAL = BigInt(process.env.CHECKPOINT_INTERVAL ?? "5");
-const VIEWING_KEY_A = process.env.VIEWING_KEY_A as Hex | undefined;
-const VIEWING_KEY_B = process.env.VIEWING_KEY_B as Hex | undefined;
+const ENCRYPTION_PUB_KEY_A = process.env.ENCRYPTION_PUB_KEY_A as Hex | undefined;
+const ENCRYPTION_PUB_KEY_B = process.env.ENCRYPTION_PUB_KEY_B as Hex | undefined;
 const EXPECTED_HUB = (process.env.EXPECTED_HUB ?? "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512") as Address;
 
 // Hardhat/Anvil dev keys, funded in the monad devnet genesis alloc.
@@ -138,7 +138,7 @@ function domainClient(chainId: bigint) {
 }
 
 async function main() {
-  if (!VIEWING_KEY_A || !VIEWING_KEY_B) throw new Error("set VIEWING_KEY_A and VIEWING_KEY_B (the node drops plaintext for a keyed domain)");
+  if (!ENCRYPTION_PUB_KEY_A || !ENCRYPTION_PUB_KEY_B) throw new Error("set ENCRYPTION_PUB_KEY_A and ENCRYPTION_PUB_KEY_B (the node drops plaintext for a keyed domain)");
 
   const l1Chain = await fetchL1Chain(L1_RPC_URL);
   const l1ChainId = l1Chain.id;
@@ -174,10 +174,10 @@ async function main() {
   }
   const hubDeployBlock = await l1.getBlockNumber();
   const common = { l1RpcUrl: L1_RPC_URL, adminKey: ADMIN_KEY, validators: [validator.address], quorum: 1n, checkpointInterval: CHECKPOINT_INTERVAL };
-  const setupA = await setupDomain({ ...common, domainChainId: DOMAIN_A, viewingKey: VIEWING_KEY_A });
+  const setupA = await setupDomain({ ...common, domainChainId: DOMAIN_A, encryptionPubKey: ENCRYPTION_PUB_KEY_A });
   const hub = setupA.hub;
   if (hub.toLowerCase() !== EXPECTED_HUB.toLowerCase()) throw new Error(`hub deployed at ${hub}, the node watches ${EXPECTED_HUB}`);
-  const setupB = await setupDomain({ ...common, existingHub: hub, domainChainId: DOMAIN_B, viewingKey: VIEWING_KEY_B });
+  const setupB = await setupDomain({ ...common, existingHub: hub, domainChainId: DOMAIN_B, encryptionPubKey: ENCRYPTION_PUB_KEY_B });
   const spokeA = setupA.spoke;
   const spokeB = setupB.spoke;
   await retry("spoke A code", () => domainA.getCode({ address: spokeA }), (c) => !!c && c !== "0x", 90_000);
@@ -204,21 +204,21 @@ async function main() {
   console.log(`  receiver ${receiver} on domain B`);
 
   // -------------------------------------------------------------------------
-  step("3. spoke A learns B's viewing key from the hub");
+  step("3. spoke A learns B's encryption public key from the hub");
   // -------------------------------------------------------------------------
-  const publishedKeyB = (await l1.readContract({ address: hub, abi: hubArt.abi, functionName: "viewingKeys", args: [DOMAIN_B] })) as Hex;
-  if (publishedKeyB.toLowerCase() !== VIEWING_KEY_B.toLowerCase()) throw new Error(`hub publishes ${publishedKeyB} for B, expected VIEWING_KEY_B`);
+  const publishedKeyB = (await l1.readContract({ address: hub, abi: hubArt.abi, functionName: "encryptionPubKeys", args: [DOMAIN_B] })) as Hex;
+  if (publishedKeyB.toLowerCase() !== ENCRYPTION_PUB_KEY_B.toLowerCase()) throw new Error(`hub publishes ${publishedKeyB} for B, expected ENCRYPTION_PUB_KEY_B`);
   // Anyone may push a key; the hub sends it as an L1 message from itself and A's client delivers it.
   const deliveryFee = DELIVERY_GAS * (await readDomainGasPrice(l1, hub));
   await confirm(
     await aliceWallet.writeContract({
-      address: hub, abi: hubArt.abi, functionName: "sendViewingKey", args: [DOMAIN_A, spokeA, DOMAIN_B], gas: 300_000n, value: deliveryFee,
+      address: hub, abi: hubArt.abi, functionName: "sendEncryptionPubKey", args: [DOMAIN_A, spokeA, DOMAIN_B], gas: 300_000n, value: deliveryFee,
     }),
-    "hub.sendViewingKey(A, spokeA, B)",
+    "hub.sendEncryptionPubKey(A, spokeA, B)",
   );
   await retry(
     "spoke A's copy of B's key",
-    async () => (await domainA.readContract({ address: spokeA, abi: spokeArt.abi, functionName: "viewingKeys", args: [DOMAIN_B] })) as Hex,
+    async () => (await domainA.readContract({ address: spokeA, abi: spokeArt.abi, functionName: "encryptionPubKeys", args: [DOMAIN_B] })) as Hex,
     (key) => key.toLowerCase() === publishedKeyB.toLowerCase(),
     90_000,
   );

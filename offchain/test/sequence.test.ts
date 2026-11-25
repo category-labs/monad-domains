@@ -7,8 +7,8 @@ test("domain fee caps offer the domain's base fee, the hub's gas price", () => {
   assert.deepEqual(domainFeeCaps(50_000_000_000n), { maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 0n });
 });
 
-for (const viewingKey of [undefined, "0x"] as const) {
-  test(`missing viewing key never submits a plaintext transaction (${viewingKey ?? "hub lookup"})`, async (t) => {
+for (const encryptionPubKey of [undefined, "0x"] as const) {
+  test(`missing encryption public key never submits a plaintext transaction (${encryptionPubKey ?? "hub lookup"})`, async (t) => {
     t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
       assert.ok(typeof init.body === "string");
       const request: unknown = JSON.parse(init.body);
@@ -30,7 +30,7 @@ for (const viewingKey of [undefined, "0x"] as const) {
       domainChainId: 7777n,
       senderKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
       nonce: 0,
-      viewingKey,
-    }), /domain has no viewing key/);
+      encryptionPubKey,
+    }), /domain has no encryption public key/);
   });
 }

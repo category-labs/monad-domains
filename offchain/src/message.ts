@@ -22,7 +22,7 @@ export interface MessageContext {
 /**
  * A domain-origin envelope. Bound for the L1, `from`, `to` and `data` are the sender, target and
  * payload. Bound for another domain, `from`, `to` and `salt` are zero and `data` is
- * `encodePlaintext(from, to, data)` sealed to that domain's viewing key.
+ * `encodePlaintext(from, to, data)` sealed to that domain's encryption public key.
  */
 export interface DomainMessage {
   sourceChainId: bigint;
@@ -79,17 +79,17 @@ export function decodePlaintext(plaintext: Hex): MessagePlaintext {
   return { from, to, data };
 }
 
-const VIEWING_KEY_PARAMS = parseAbiParameters("uint64 domainChainId, bytes32 viewingKey");
+const ENCRYPTION_PUB_KEY_PARAMS = parseAbiParameters("uint64 domainChainId, bytes32 encryptionPubKey");
 
-/** Mirrors `MessageLib.encodeViewingKey`: the payload of the hub's viewing key message to a spoke. */
-export function encodeViewingKey(domainChainId: bigint, viewingKey: Hex): Hex {
-  return encodeAbiParameters(VIEWING_KEY_PARAMS, [domainChainId, viewingKey]);
+/** Mirrors `MessageLib.encodeEncryptionPubKey`: the payload of the hub's encryption public key message to a spoke. */
+export function encodeEncryptionPubKey(domainChainId: bigint, encryptionPubKey: Hex): Hex {
+  return encodeAbiParameters(ENCRYPTION_PUB_KEY_PARAMS, [domainChainId, encryptionPubKey]);
 }
 
-/** Mirrors `MessageLib.decodeViewingKey`. */
-export function decodeViewingKey(data: Hex): { domainChainId: bigint; viewingKey: Hex } {
-  const [domainChainId, viewingKey] = decodeAbiParameters(VIEWING_KEY_PARAMS, data);
-  return { domainChainId, viewingKey };
+/** Mirrors `MessageLib.decodeEncryptionPubKey`. */
+export function decodeEncryptionPubKey(data: Hex): { domainChainId: bigint; encryptionPubKey: Hex } {
+  const [domainChainId, encryptionPubKey] = decodeAbiParameters(ENCRYPTION_PUB_KEY_PARAMS, data);
+  return { domainChainId, encryptionPubKey };
 }
 
 /**

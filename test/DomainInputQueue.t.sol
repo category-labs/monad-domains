@@ -60,7 +60,7 @@ contract DomainInputQueueTest is DomainTestBase {
             _addresses(_keys(VALIDATOR_KEY)),
             1,
             address(this),
-            _viewingKey(chainId),
+            _encryptionPubKey(chainId),
             CHECKPOINT_INTERVAL,
             maxUnattestedPeriods
         );
@@ -756,7 +756,7 @@ contract DomainInputQueueTest is DomainTestBase {
             _addresses(_keys(VALIDATOR_KEY)),
             1,
             address(this),
-            _viewingKey(MODEL_CHAIN_ID),
+            _encryptionPubKey(MODEL_CHAIN_ID),
             modelInterval,
             maxUnattestedPeriods
         );

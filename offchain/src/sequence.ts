@@ -17,7 +17,7 @@ const HUB_SEQUENCING_ABI = parseAbi([
   "function DOMAIN_GAS_PRICE() view returns (uint256)",
   "function minSequencingFee(uint256 payloadLength) pure returns (uint256)",
   "function sequenceToDomain(uint64 domainChainId, bytes rlpTx) payable",
-  "function viewingKeys(uint64 domainChainId) view returns (bytes)",
+  "function encryptionPubKeys(uint64 domainChainId) view returns (bytes)",
   "event DomainTransactionSequenced(uint64 indexed domainChainId, bytes rlpTx, uint256 fee)",
 ]);
 
@@ -70,11 +70,11 @@ export interface SequenceConfig {
   /** If set, the sender's current domain nonce is read from this domain RPC, as the sender. */
   domainRpcUrl?: string;
   /**
-   * Domain viewing public key (32-byte X25519 public key). The signed transaction is
+   * Domain encryption public key (32-byte X25519 public key). The signed transaction is
    * HPKE-encrypted to it before sequencing. When omitted, the key the domain published on the
    * hub is used. A missing key is an error.
    */
-  viewingKey?: Hex;
+  encryptionPubKey?: Hex;
 }
 
 export interface SequenceResult {
@@ -109,7 +109,7 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
     value = 0n,
     gas = 1_000_000n,
     domainRpcUrl,
-    viewingKey,
+    encryptionPubKey,
   } = config;
 
   const sender = privateKeyToAccount(senderKey);
@@ -141,26 +141,26 @@ export async function sequenceTransaction(config: SequenceConfig): Promise<Seque
   });
   const domainTxHash = keccak256(rawTransaction);
 
-  let encryptionKey = viewingKey;
+  let encryptionKey = encryptionPubKey;
   if (!encryptionKey) {
     let published: Hex;
     try {
       published = await l1.readContract({
         address: hub,
         abi: HUB_SEQUENCING_ABI,
-        functionName: "viewingKeys",
+        functionName: "encryptionPubKeys",
         args: [domainChainId],
       });
     } catch (error) {
       throw new Error(
-        `sequence: could not read the domain's viewing key from hub ${hub}; pass viewingKey explicitly ` +
+        `sequence: could not read the domain's encryption public key from hub ${hub}; pass encryptionPubKey explicitly ` +
           `(${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
       );
     }
     if (published !== "0x") encryptionKey = published;
   }
   if (!encryptionKey || encryptionKey === "0x") {
-    throw new Error("sequence: domain has no viewing key; register one before submitting private transactions");
+    throw new Error("sequence: domain has no encryption public key; register one before submitting private transactions");
   }
   const rlpTx = await encryptTransaction(encryptionKey, domainChainId, rawTransaction);
 

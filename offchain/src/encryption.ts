@@ -2,7 +2,7 @@ import { Aes128Gcm, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke
 import { bytesToHex, encodeAbiParameters, hexToBytes, type Hex } from "viem";
 
 /**
- * HPKE (RFC 9180, Base mode) encryption of domain transactions to a domain's viewing key, with
+ * HPKE (RFC 9180, Base mode) encryption of domain transactions to a domain's encryption public key, with
  * empty `info`. Ciphertext format: `enc[32] || AEAD(0x01 || plaintext)`. Domain -> domain
  * messages are sealed on chain by the encryption precompile.
  */
@@ -50,18 +50,18 @@ export class EncryptionError extends Error {
 }
 
 /**
- * The domain viewing keypair. Distinct from any signing key: it grants the ability to read
+ * The domain encryption keypair. Distinct from any signing key: it grants the ability to read
  * sequenced transactions and encrypted messages.
  */
-export interface ViewingKeyPair {
+export interface EncryptionKeyPair {
   /** 32-byte X25519 public key. Public — every sender needs it. */
   publicKey: Hex;
   /** 32-byte X25519 secret key. Held by the domain execution client. */
   secretKey: Hex;
 }
 
-/** Generates a domain viewing keypair with the platform CSPRNG. */
-export async function generateViewingKeyPair(): Promise<ViewingKeyPair> {
+/** Generates a domain encryption keypair with the platform CSPRNG. */
+export async function generateEncryptionKeyPair(): Promise<EncryptionKeyPair> {
   const keypair = await suite.kem.generateKeyPair();
   return {
     publicKey: bytesToHex(new Uint8Array(await suite.kem.serializePublicKey(keypair.publicKey))),
@@ -69,11 +69,11 @@ export async function generateViewingKeyPair(): Promise<ViewingKeyPair> {
   };
 }
 
-/** Encrypts `0x01 || plaintext` to the viewing key and returns `enc[32] || aead_output`. */
-async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array, aad: Uint8Array): Promise<Hex> {
-  const publicKeyBytes = hexToBytes(viewingPublicKey);
+/** Encrypts `0x01 || plaintext` to the encryption public key and returns `enc[32] || aead_output`. */
+async function encrypt(encryptionPubKey: Hex, plaintext: Uint8Array, aad: Uint8Array): Promise<Hex> {
+  const publicKeyBytes = hexToBytes(encryptionPubKey);
   if (publicKeyBytes.length !== PUBLIC_KEY_SIZE) {
-    throw new EncryptionError("viewing public key must be a 32-byte X25519 public key");
+    throw new EncryptionError("encryption public key must be a 32-byte X25519 public key");
   }
   const recipientPublicKey = await suite.kem.deserializePublicKey(publicKeyBytes);
 
@@ -84,7 +84,7 @@ async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array, aad: Uint8A
   try {
     // A low-order point yields an all-zero shared secret, which X25519 rejects.
     const { enc, ct } = await suite.seal({ recipientPublicKey }, framed, aad).catch(() => {
-      throw new EncryptionError("viewing public key is not a valid X25519 public key");
+      throw new EncryptionError("encryption public key is not a valid X25519 public key");
     });
 
     const ciphertext = new Uint8Array(enc.byteLength + ct.byteLength);
@@ -101,8 +101,8 @@ async function encrypt(viewingPublicKey: Hex, plaintext: Uint8Array, aad: Uint8A
  * The caller must wipe the returned buffer once done with it. Throws on any failure; the
  * public wrapper collapses every cause into one opaque error.
  */
-async function decrypt(viewingSecretKey: Hex, ciphertext: Hex, aad: Uint8Array): Promise<Uint8Array> {
-  const secretKeyBytes = hexToBytes(viewingSecretKey);
+async function decrypt(encryptionSecretKey: Hex, ciphertext: Hex, aad: Uint8Array): Promise<Uint8Array> {
+  const secretKeyBytes = hexToBytes(encryptionSecretKey);
   const ciphertextBytes = hexToBytes(ciphertext);
 
   if (secretKeyBytes.length !== SECRET_KEY_SIZE || ciphertextBytes.length < PUBLIC_KEY_SIZE + 1 + TAG_SIZE) {
@@ -130,36 +130,36 @@ async function decrypt(viewingSecretKey: Hex, ciphertext: Hex, aad: Uint8Array):
 }
 
 /**
- * Encrypts one signed domain transaction to the domain viewing key.
+ * Encrypts one signed domain transaction to the domain encryption public key.
  *
- * @param viewingPublicKey The domain's 32-byte X25519 public key.
+ * @param encryptionPubKey The domain's 32-byte X25519 public key.
  * @param domainChainId    The domain the transaction will be sequenced to.
  * @param rawTransaction   A signed transaction, as `signTransaction` returns it.
  * @returns The `rlpTx` argument to pass to `sequenceToDomain`: `enc[32] || AEAD(0x01 || rawTransaction)`.
  */
 export async function encryptTransaction(
-  viewingPublicKey: Hex,
+  encryptionPubKey: Hex,
   domainChainId: bigint,
   rawTransaction: Hex,
 ): Promise<Hex> {
-  return encrypt(viewingPublicKey, hexToBytes(rawTransaction), transactionAssociatedData(domainChainId));
+  return encrypt(encryptionPubKey, hexToBytes(rawTransaction), transactionAssociatedData(domainChainId));
 }
 
 /**
  * Authenticates and decrypts one ciphertext produced by {@link encryptTransaction}.
  *
  * Provided for tests and local tooling; in production this runs inside the domain
- * execution client, which is the only holder of the viewing secret key.
+ * execution client, which is the only holder of the encryption secret key.
  *
  * @throws {EncryptionError} Always `decryption failed`, whatever went wrong.
  */
 export async function decryptTransaction(
-  viewingSecretKey: Hex,
+  encryptionSecretKey: Hex,
   domainChainId: bigint,
   ciphertext: Hex,
 ): Promise<Hex> {
   try {
-    const plaintext = await decrypt(viewingSecretKey, ciphertext, transactionAssociatedData(domainChainId));
+    const plaintext = await decrypt(encryptionSecretKey, ciphertext, transactionAssociatedData(domainChainId));
     const rawTransaction = bytesToHex(plaintext);
     plaintext.fill(0);
     return rawTransaction;
