@@ -161,7 +161,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         address feeRecipient,
         bytes calldata encryptionPubKey,
         uint64 checkpointInterval,
-        uint8 maxUnattestedPeriods
+        uint8 maxUnattestedPeriods_
     ) external {
         if (domainChainId == block.chainid) revert L1ChainIdNotAllowed();
         uint256 queue = InputQueue.base(domainChainId);
@@ -172,7 +172,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         if (2 * quorum <= validators.length) revert QuorumNotMajority();
         if (feeRecipient == address(0)) revert ZeroFeeRecipient();
         if (checkpointInterval == 0) revert ZeroCheckpointInterval();
-        if (maxUnattestedPeriods == 0 || maxUnattestedPeriods > InputQueue.MAX_PERIODS) {
+        if (maxUnattestedPeriods_ == 0 || maxUnattestedPeriods_ > InputQueue.MAX_PERIODS) {
             revert InvalidMaxUnattestedPeriods();
         }
         if (encryptionPubKey.length != 0 && encryptionPubKey.length != ENCRYPTION_PUB_KEY_LENGTH) {
@@ -180,7 +180,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         }
 
         uint256 queueConfig =
-            (uint256(maxUnattestedPeriods) << 224) | (uint256(checkpointInterval) << 160) | uint160(feeRecipient);
+            (uint256(maxUnattestedPeriods_) << 224) | (uint256(checkpointInterval) << 160) | uint160(feeRecipient);
         InputQueue.store(queue, InputQueue.CONFIG, queueConfig);
         // The registering L1 block is the domain's block 0.
         InputQueue.store(queue, InputQueue.LATEST, uint256(uint64(block.number)) << 64);
