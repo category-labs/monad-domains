@@ -7,6 +7,8 @@ import {DomainHub} from "../src/DomainHub.sol";
 import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
+import {IDomainHub} from "../src/interfaces/IDomain.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /// @notice Checkpoint attestation on the hub: vote accumulation, the checkpoint schedule, the
 /// anchors a quorum records, the typed digest, and the state-update event layout the domain
@@ -30,7 +32,7 @@ contract DomainCheckpointTest is DomainTestBase {
     function setUp() public {
         hub = _deployHub(address(this));
         _registerDomain(hub, CHAIN_ID, _keys(K1, K2), 2);
-        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
+        spoke = new DomainSpoke(CHAIN_ID, uint64(block.chainid), address(hub));
         // Scheduled heights 10, 20, ... 90 are in the past from here on.
         vm.roll(100);
     }
@@ -49,20 +51,20 @@ contract DomainCheckpointTest is DomainTestBase {
 
     function test_rejectsUnregisteredDomain() public {
         bytes memory sig = _signTransition(hub, 9999, 10, bytes32(0), bytes32(0), K1);
-        vm.expectRevert(DomainHub.DomainNotRegistered.selector);
+        vm.expectRevert(abi.encodeWithSelector(IDomainHub.DomainNotRegistered.selector, uint64(9999)));
         hub.submitStateSignature(9999, 10, bytes32(0), bytes32(0), sig);
     }
 
     function test_rejectsNonValidator() public {
         bytes memory sig = _sig(10, bytes32(0), bytes32(0), STRANGER_KEY);
-        vm.expectRevert(DomainHub.NotValidator.selector);
+        vm.expectRevert(abi.encodeWithSelector(IDomainHub.NotValidator.selector, vm.addr(STRANGER_KEY)));
         hub.submitStateSignature(CHAIN_ID, 10, bytes32(0), bytes32(0), sig);
     }
 
     function test_rejectsDoubleVote() public {
         _submit(10, bytes32(0), bytes32(0), K1);
         bytes memory sig = _sig(10, bytes32(0), bytes32(0), K1);
-        vm.expectRevert(DomainHub.AlreadyVoted.selector);
+        vm.expectRevert(IDomainHub.AlreadyVoted.selector);
         hub.submitStateSignature(CHAIN_ID, 10, bytes32(0), bytes32(0), sig);
     }
 
@@ -106,8 +108,9 @@ contract DomainCheckpointTest is DomainTestBase {
         _submit(10, bytes32(0), bytes32(0), K2);
         assertEq(hub.stateNonces(CHAIN_ID), 1);
 
-        // Under the new nonce the old signature recovers to a non-validator.
-        vm.expectRevert(DomainHub.NotValidator.selector);
+        // Under the new nonce the old signature recovers to a non-validator, which the error names.
+        address recovered = ECDSA.recover(hub.stateTransitionDigest(CHAIN_ID, 20, bytes32(0), bytes32(0)), staleSig);
+        vm.expectRevert(abi.encodeWithSelector(IDomainHub.NotValidator.selector, recovered));
         hub.submitStateSignature(CHAIN_ID, 20, bytes32(0), bytes32(0), staleSig);
     }
 
@@ -117,14 +120,14 @@ contract DomainCheckpointTest is DomainTestBase {
 
     function test_rejectsOffScheduleBlockNumber() public {
         bytes memory sig = _sig(15, bytes32(0), bytes32(0), K1);
-        vm.expectRevert(DomainHub.BlockNumberOffSchedule.selector);
+        vm.expectRevert(IDomainHub.BlockNumberOffSchedule.selector);
         hub.submitStateSignature(CHAIN_ID, 15, bytes32(0), bytes32(0), sig);
     }
 
     function test_rejectsBlockNumberNotInThePast() public {
         vm.roll(20);
         bytes memory sig = _sig(20, bytes32(0), bytes32(0), K1);
-        vm.expectRevert(DomainHub.BlockNumberNotInPast.selector);
+        vm.expectRevert(IDomainHub.BlockNumberNotInPast.selector);
         hub.submitStateSignature(CHAIN_ID, 20, bytes32(0), bytes32(0), sig);
 
         // One L1 block later the height is in the past; finality is the validators' concern.
@@ -146,10 +149,10 @@ contract DomainCheckpointTest is DomainTestBase {
 
         // At or below the committed height is stale.
         bytes memory sig = _sig(50, bytes32(0), bytes32(0), K1);
-        vm.expectRevert(DomainHub.StaleBlockNumber.selector);
+        vm.expectRevert(IDomainHub.StaleBlockNumber.selector);
         hub.submitStateSignature(CHAIN_ID, 50, bytes32(0), bytes32(0), sig);
         sig = _sig(40, bytes32(0), bytes32(0), K1);
-        vm.expectRevert(DomainHub.StaleBlockNumber.selector);
+        vm.expectRevert(IDomainHub.StaleBlockNumber.selector);
         hub.submitStateSignature(CHAIN_ID, 40, bytes32(0), bytes32(0), sig);
     }
 

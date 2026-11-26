@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {BridgedERC20} from "../../src/bridge/BridgedERC20.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {DomainAccessRules} from "../../src/access/DomainAccessRules.sol";
+import {ICommonErrors} from "../../src/interfaces/ICommonErrors.sol";
 
 contract BridgedERC20Test is Test {
     address internal constant L1_TOKEN = address(0x70CE2);
@@ -16,7 +17,7 @@ contract BridgedERC20Test is Test {
 
     function setUp() public {
         // The test contract plays the bridge (deployer = bridge).
-        spoke = new DomainSpoke(7777, block.chainid, address(0x1234));
+        spoke = new DomainSpoke(7777, uint64(block.chainid), address(0x1234));
         initialPolicy = address(new DomainAccessRules(spoke));
         token = new BridgedERC20(L1_TOKEN, "Bridged Test", "BRG", 6, spoke, alice, initialPolicy);
     }
@@ -41,14 +42,14 @@ contract BridgedERC20Test is Test {
 
     function test_mint_rejectsNonBridge() public {
         vm.prank(alice);
-        vm.expectRevert(BridgedERC20.NotBridge.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, alice));
         token.mint(alice, 1);
     }
 
     function test_burn_rejectsNonBridge() public {
         token.mint(alice, 1);
         vm.prank(alice);
-        vm.expectRevert(BridgedERC20.NotBridge.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, alice));
         token.burn(alice, 1);
     }
 }

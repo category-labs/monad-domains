@@ -9,6 +9,11 @@ import {DomainTestBase} from "../helpers/DomainTestBase.sol";
 import {DomainAccessRules} from "../../src/access/DomainAccessRules.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+import {IDomainSpoke} from "../../src/interfaces/IDomain.sol";
+import {IDomainAccessControl} from "../../src/interfaces/IDomainAccessControl.sol";
+import {IDomainBridge} from "../../src/interfaces/IDomainBridge.sol";
+import {ICommonErrors} from "../../src/interfaces/ICommonErrors.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
 /// forge-config: default.isolate = false
 contract DomainBridgeTest is DomainTestBase {
@@ -24,7 +29,7 @@ contract DomainBridgeTest is DomainTestBase {
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(0x1234));
+        spoke = new DomainSpoke(CHAIN_ID, uint64(block.chainid), address(0x1234));
         initialPolicy = address(new DomainAccessRules(spoke));
         bridge = new DomainBridge(spoke, L1_BRIDGE, policyOwner, initialPolicy);
     }
@@ -48,12 +53,12 @@ contract DomainBridgeTest is DomainTestBase {
 
     function test_deposit_mintsToRecipient() public {
         vm.expectEmit(address(bridge));
-        emit DomainBridge.DepositFinalized(bob, L1_TOKEN, 100 ether);
+        emit IDomainBridge.DepositFinalized(bob, L1_TOKEN, 100 ether);
         bytes32 messageHash = _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
 
         // Delivery succeeded within the gas stipend, first-use token deployment included.
         assertFalse(spoke.failedL1Messages(messageHash));
-        BridgedERC20 token = bridge.bridgedTokens(L1_TOKEN);
+        BridgedERC20 token = BridgedERC20(bridge.bridgedTokens(L1_TOKEN));
         assertEq(token.balanceOf(bob), 100 ether);
         assertEq(token.L1_TOKEN(), L1_TOKEN);
         assertEq(token.BRIDGE(), address(bridge));
@@ -65,7 +70,7 @@ contract DomainBridgeTest is DomainTestBase {
 
     function test_deposit_reusesDeployedToken() public {
         _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
-        BridgedERC20 token = bridge.bridgedTokens(L1_TOKEN);
+        BridgedERC20 token = BridgedERC20(bridge.bridgedTokens(L1_TOKEN));
 
         address replacementPolicy = address(new DomainAccessRules(spoke));
         vm.prank(policyOwner);
@@ -73,7 +78,7 @@ contract DomainBridgeTest is DomainTestBase {
         bytes32 messageHash = _deliverDeposit(L1_BRIDGE, policyOwner, L1_TOKEN, 50 ether);
 
         assertFalse(spoke.failedL1Messages(messageHash));
-        assertEq(address(bridge.bridgedTokens(L1_TOKEN)), address(token));
+        assertEq(bridge.bridgedTokens(L1_TOKEN), address(token));
         assertEq(token.balanceOf(bob), 100 ether);
         assertEq(token.balanceOf(policyOwner), 50 ether);
         assertEq(spoke.policyOwners(address(token)), policyOwner);
@@ -81,7 +86,7 @@ contract DomainBridgeTest is DomainTestBase {
     }
 
     function test_onDomainMessage_onlySpoke() public {
-        vm.expectRevert(DomainBridge.NotSpoke.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, address(this)));
         bridge.onDomainMessage(uint64(block.chainid), L1_BRIDGE, MessageLib.encodeTransfer(bob, L1_TOKEN, 100 ether));
     }
 
@@ -98,23 +103,38 @@ contract DomainBridgeTest is DomainTestBase {
         bytes32 messageHash = _deliverDeposit(makeAddr("attacker"), bob, L1_TOKEN, 100 ether);
 
         assertTrue(spoke.failedL1Messages(messageHash));
-        assertEq(address(bridge.bridgedTokens(L1_TOKEN)), address(0));
+        assertEq(bridge.bridgedTokens(L1_TOKEN), address(0));
     }
 
+    // One expected constructor revert per test: Foundry can run `new DomainBridge` as
+    // `vm.deployCode`, and then the first expected revert ends the test.
+
     function test_constructor_rejectsZeroL1Bridge() public {
-        vm.expectRevert(DomainBridge.ZeroL1Bridge.selector);
+        vm.expectRevert(ICommonErrors.ZeroAddress.selector);
         new DomainBridge(spoke, address(0), policyOwner, initialPolicy);
     }
 
-    function test_constructor_rejectsInvalidPolicyConfiguration() public {
-        vm.expectRevert(DomainBridge.ZeroPolicyOwner.selector);
+    function test_constructor_rejectsZeroPolicyOwner() public {
+        vm.expectRevert(ICommonErrors.ZeroAddress.selector);
         new DomainBridge(spoke, L1_BRIDGE, address(0), initialPolicy);
-        vm.expectRevert(DomainBridge.PolicyHasNoCode.selector);
+    }
+
+    function test_constructor_rejectsZeroTokenPolicy() public {
+        vm.expectRevert(abi.encodeWithSelector(IDomainAccessControl.InvalidPolicy.selector, address(0)));
         new DomainBridge(spoke, L1_BRIDGE, policyOwner, address(0));
-        vm.expectRevert(DomainBridge.PolicyHasNoCode.selector);
+    }
+
+    function test_constructor_rejectsTokenPolicyWithoutCode() public {
+        vm.expectRevert(abi.encodeWithSelector(IDomainAccessControl.InvalidPolicy.selector, bob));
         new DomainBridge(spoke, L1_BRIDGE, policyOwner, bob);
-        vm.expectRevert(DomainBridge.InvalidTokenPolicy.selector);
+    }
+
+    function test_constructor_rejectsSpokeAsTokenPolicy() public {
+        vm.expectRevert(abi.encodeWithSelector(IDomainAccessControl.InvalidPolicy.selector, address(spoke)));
         new DomainBridge(spoke, L1_BRIDGE, policyOwner, address(spoke));
+    }
+
+    function test_constructor_rejectsSpokeWithoutCode() public {
         vm.expectRevert(DomainBridge.SpokeHasNoCode.selector);
         new DomainBridge(DomainSpoke(address(0)), L1_BRIDGE, policyOwner, initialPolicy);
     }
@@ -123,8 +143,8 @@ contract DomainBridgeTest is DomainTestBase {
         address otherAsset = makeAddr("otherAsset");
         _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
         _deliverDeposit(L1_BRIDGE, bob, otherAsset, 10 ether);
-        address first = address(bridge.bridgedTokens(L1_TOKEN));
-        address second = address(bridge.bridgedTokens(otherAsset));
+        address first = bridge.bridgedTokens(L1_TOKEN);
+        address second = bridge.bridgedTokens(otherAsset);
         assertTrue(first != second);
         assertEq(spoke.policyOwners(first), policyOwner);
         assertEq(spoke.policyOwners(second), policyOwner);
@@ -148,7 +168,7 @@ contract DomainBridgeTest is DomainTestBase {
         address predicted =
             vm.computeCreate2Address(bytes32(uint256(uint160(L1_TOKEN))), keccak256(initCode), address(bridge));
         _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
-        assertEq(address(bridge.bridgedTokens(L1_TOKEN)), predicted);
+        assertEq(bridge.bridgedTokens(L1_TOKEN), predicted);
         assertEq(spoke.policyOwners(predicted), policyOwner);
     }
 
@@ -157,7 +177,7 @@ contract DomainBridgeTest is DomainTestBase {
         vm.etch(initialPolicy, hex"");
         bytes32 messageHash = _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
         assertTrue(spoke.failedL1Messages(messageHash));
-        assertEq(address(bridge.bridgedTokens(L1_TOKEN)), address(0));
+        assertEq(bridge.bridgedTokens(L1_TOKEN), address(0));
 
         vm.etch(initialPolicy, policyCode);
         spoke.retryL1Message(
@@ -170,7 +190,7 @@ contract DomainBridgeTest is DomainTestBase {
             )
         );
         assertFalse(spoke.failedL1Messages(messageHash));
-        BridgedERC20 token = bridge.bridgedTokens(L1_TOKEN);
+        BridgedERC20 token = BridgedERC20(bridge.bridgedTokens(L1_TOKEN));
         assertEq(token.balanceOf(bob), 100 ether);
         assertEq(spoke.policyOwners(address(token)), policyOwner);
         assertEq(spoke.accessPolicies(address(token)), initialPolicy);
@@ -183,11 +203,11 @@ contract DomainBridgeTest is DomainTestBase {
         bytes memory query = abi.encodeCall(IERC20.balanceOf, (bob));
 
         vm.startPrank(bob);
-        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, bob));
         spoke.setAccessPolicy(address(token), address(rules));
-        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, bob));
         spoke.setLogReader(address(token), bob, true);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, bob));
         rules.setAccessControl(address(token), IERC20.balanceOf.selector, DomainAccessRules.AccessMode.Open, 0);
         vm.stopPrank();
 
@@ -232,10 +252,10 @@ contract DomainBridgeTest is DomainTestBase {
         token.transferFrom(bob, spender, 5 ether);
         assertEq(token.balanceOf(spender), 15 ether);
         vm.prank(spender);
-        vm.expectRevert(BridgedERC20.NotBridge.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, spender));
         token.mint(spender, 1);
         vm.prank(spender);
-        vm.expectRevert(BridgedERC20.NotBridge.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, spender));
         token.burn(bob, 1);
     }
 
@@ -246,7 +266,7 @@ contract DomainBridgeTest is DomainTestBase {
     /// @dev Delivers a 100-token deposit to bob and returns the bridged token.
     function _depositedToken() internal returns (BridgedERC20 token) {
         _deliverDeposit(L1_BRIDGE, bob, L1_TOKEN, 100 ether);
-        token = bridge.bridgedTokens(L1_TOKEN);
+        token = BridgedERC20(bridge.bridgedTokens(L1_TOKEN));
     }
 
     function test_bridgeToL1_burnsAndSendsMessage() public {
@@ -268,7 +288,7 @@ contract DomainBridgeTest is DomainTestBase {
         );
 
         vm.expectEmit(address(bridge));
-        emit DomainBridge.WithdrawalInitiated(bob, bob, L1_TOKEN, 40 ether, expectedHash);
+        emit IDomainBridge.WithdrawalInitiated(bob, bob, L1_TOKEN, 40 ether, expectedHash);
         vm.prank(bob);
         bridge.bridgeToL1(bob, L1_TOKEN, 40 ether, TEST_SALT);
 
@@ -280,14 +300,14 @@ contract DomainBridgeTest is DomainTestBase {
 
     function test_bridgeToL1_rejectsUnknownToken() public {
         vm.prank(bob);
-        vm.expectRevert(DomainBridge.UnknownToken.selector);
+        vm.expectRevert(IDomainBridge.UnknownToken.selector);
         bridge.bridgeToL1(bob, makeAddr("neverBridged"), 1 ether, TEST_SALT);
     }
 
     function test_bridgeToL1_zeroSaltDoesNotBurn() public {
         BridgedERC20 token = _depositedToken();
         vm.prank(bob);
-        vm.expectRevert(DomainSpoke.ZeroSalt.selector);
+        vm.expectRevert(IDomainSpoke.ZeroSalt.selector);
         bridge.bridgeToL1(bob, L1_TOKEN, 40 ether, bytes32(0));
         assertEq(token.balanceOf(bob), 100 ether);
         assertEq(token.totalSupply(), 100 ether);
@@ -297,21 +317,23 @@ contract DomainBridgeTest is DomainTestBase {
     function test_bridgeToL1_rejectsZeroRecipient() public {
         _depositedToken();
         vm.prank(bob);
-        vm.expectRevert(DomainBridge.ZeroRecipient.selector);
+        vm.expectRevert(ICommonErrors.ZeroAddress.selector);
         bridge.bridgeToL1(address(0), L1_TOKEN, 1 ether, TEST_SALT);
     }
 
     function test_bridgeToL1_rejectsZeroAmount() public {
         _depositedToken();
         vm.prank(bob);
-        vm.expectRevert(DomainBridge.ZeroAmount.selector);
+        vm.expectRevert(ICommonErrors.ZeroAmount.selector);
         bridge.bridgeToL1(bob, L1_TOKEN, 0, TEST_SALT);
     }
 
     function test_bridgeToL1_rejectsInsufficientBalance() public {
         _depositedToken();
         vm.prank(bob);
-        vm.expectRevert(); // ERC20InsufficientBalance
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, bob, 100 ether, 101 ether)
+        );
         bridge.bridgeToL1(bob, L1_TOKEN, 101 ether, TEST_SALT);
     }
 }

@@ -18,43 +18,7 @@ import {InputQueue} from "./libraries/InputQueue.sol";
 /// @dev An upgrade must keep the storage layout and only append to it. What the constructor
 /// sets (the EIP-712 name and version, the slot number probe) belongs to the implementation.
 contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
-    error L1ChainIdNotAllowed();
-    error DomainAlreadyRegistered();
-    error ZeroQuorum();
-    error QuorumExceedsValidators();
-    error QuorumNotMajority();
-    error ZeroFeeRecipient();
-    error ZeroCheckpointInterval();
-    error InvalidMaxUnattestedPeriods();
-    error InvalidEncryptionPubKey();
-    error ZeroValidator();
-    error DuplicateValidator();
-    error DomainNotRegistered();
-    error StaleBlockNumber();
-    error BlockNumberNotInPast();
-    error BlockNumberOffSchedule();
-    error NotValidator();
-    error AlreadyVoted();
-    error SameDomain();
-    error SourceNotRegistered();
-    error ZeroTarget();
-    error EncryptedMessageWithSender();
-    error EncryptedMessageWithTarget();
-    error EncryptedMessageWithSalt();
-    error MessageAlreadyRelayed();
-    error UnknownAnchor();
-    error InvalidProof();
-    error DestinationNotRegistered();
-    error UnexpectedL1CallbackFee();
-    error RetryOnDestinationDomain();
-    error NotFailedMessage();
-    error RetryFailed();
-    error DomainBlockGasLimitExceeded();
-    error DomainBlockSizeLimitExceeded();
-    error FeeTransferFailed();
-    error NoEncryptionPubKey();
-    error DeliveryFeeTooLow();
-    error SequencingFeeTooLow();
+    /// @notice The constructor could not deploy the slot number probe.
     error SlotNumberProbeNotDeployed();
 
     /// @notice EIP-712 type of the digest a validator signs to approve a state transition.
@@ -163,14 +127,14 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         uint64 checkpointInterval,
         uint8 maxUnattestedPeriods
     ) external {
-        if (domainChainId == block.chainid) revert L1ChainIdNotAllowed();
+        if (domainChainId == block.chainid) revert InvalidChainId(domainChainId);
         uint256 queue = InputQueue.base(domainChainId);
         if (InputQueue.load(queue, InputQueue.CONFIG) != 0) revert DomainAlreadyRegistered();
         if (quorum == 0) revert ZeroQuorum();
         if (quorum > validators.length) revert QuorumExceedsValidators();
         // Two disjoint groups of validators can then never both reach the quorum.
         if (2 * quorum <= validators.length) revert QuorumNotMajority();
-        if (feeRecipient == address(0)) revert ZeroFeeRecipient();
+        if (feeRecipient == address(0)) revert ZeroAddress();
         if (checkpointInterval == 0) revert ZeroCheckpointInterval();
         if (maxUnattestedPeriods == 0 || maxUnattestedPeriods > InputQueue.MAX_PERIODS) {
             revert InvalidMaxUnattestedPeriods();
@@ -196,7 +160,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         config.encryptionPubKey = encryptionPubKey;
         for (uint256 i = 0; i < validators.length; i++) {
             address validator = validators[i];
-            if (validator == address(0)) revert ZeroValidator();
+            if (validator == address(0)) revert ZeroAddress();
             if (config.isValidator[validator]) revert DuplicateValidator();
             config.isValidator[validator] = true;
             config.validators.push(validator);
@@ -273,14 +237,14 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     ) external {
         DomainConfig storage config = _configs[domainChainId];
         uint64 checkpointInterval = config.checkpointInterval;
-        if (checkpointInterval == 0) revert DomainNotRegistered();
+        if (checkpointInterval == 0) revert DomainNotRegistered(domainChainId);
         if (domainBlockNumber <= domainBlockNumbers[domainChainId]) revert StaleBlockNumber();
         if (domainBlockNumber >= block.number) revert BlockNumberNotInPast();
         if (domainBlockNumber % checkpointInterval != 0) revert BlockNumberOffSchedule();
 
         bytes32 digest = stateTransitionDigest(domainChainId, domainBlockNumber, newBlockHash, domainAnchor);
         address signer = ECDSA.recoverCalldata(digest, signature);
-        if (!config.isValidator[signer]) revert NotValidator();
+        if (!config.isValidator[signer]) revert NotValidator(signer);
         if (hasVotedFor[digest][signer]) revert AlreadyVoted();
 
         hasVotedFor[digest][signer] = true;
@@ -313,11 +277,11 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         payable
         returns (bool success)
     {
-        if (message.sourceChainId == message.destinationChainId) revert SameDomain();
-        if (_queueConfig(message.sourceChainId) == 0) revert SourceNotRegistered();
+        if (message.sourceChainId == message.destinationChainId) revert InvalidChainId(message.destinationChainId);
+        if (_queueConfig(message.sourceChainId) == 0) revert DomainNotRegistered(message.sourceChainId);
         bool toL1 = message.destinationChainId == block.chainid;
         if (toL1) {
-            if (message.to == address(0)) revert ZeroTarget();
+            if (message.to == address(0)) revert ZeroAddress();
         } else {
             // A domain-bound envelope carries only a ciphertext; the destination recovers the
             // sender and target from it.
@@ -332,9 +296,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         relayedDomainMessages[message.sourceChainId][messageHash] = true;
 
         if (!toL1) {
-            if (_queueConfig(message.destinationChainId) == 0) revert DestinationNotRegistered();
-            // No spoke can have sealed to a domain without an encryption public key.
-            if (_configs[message.destinationChainId].encryptionPubKey.length == 0) revert NoEncryptionPubKey();
+            // `_sendEncryptedMessage` rejects a destination that is not registered or has no
+            // encryption public key.
             uint256 deliveryNonce = _sendEncryptedMessage(
                 message.destinationChainId, message.sourceChainId, message.sourceNonce, message.data, msg.value
             );
@@ -356,17 +319,24 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function retryDomainMessage(MessageLib.DomainMessage calldata message) external {
-        if (message.destinationChainId != block.chainid) revert RetryOnDestinationDomain();
+        if (message.destinationChainId != block.chainid) revert InvalidChainId(message.destinationChainId);
         bytes32 messageHash = MessageLib.hashDomainMessage(message, block.chainid, address(this));
         if (!failedDomainMessages[message.sourceChainId][messageHash]) revert NotFailedMessage();
         delete failedDomainMessages[message.sourceChainId][messageHash];
-        (bool success,) = message.to
+        (bool success, bytes memory reason) = message.to
             .call(
                 abi.encodeCall(
                     IDomainMessageReceiver.onDomainMessage, (message.sourceChainId, message.from, message.data)
                 )
             );
-        if (!success) revert RetryFailed();
+        if (!success) {
+            revert WrappedError(
+                message.to,
+                IDomainMessageReceiver.onDomainMessage.selector,
+                reason,
+                abi.encodeWithSelector(RetryFailed.selector)
+            );
+        }
         emit DomainMessageRelayed(
             message.sourceChainId, messageHash, message.from, message.to, message.sourceNonce, true
         );
@@ -382,8 +352,10 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
     function sequenceToDomain(uint64 domainChainId, bytes calldata rlpTx) external payable {
         uint256 queue = InputQueue.base(domainChainId);
-        uint256 config = _registeredConfig(queue);
-        if (msg.value < minSequencingFee(rlpTx.length)) revert SequencingFeeTooLow();
+        uint256 config = _registeredConfig(domainChainId, queue);
+        if (msg.value < minSequencingFee(rlpTx.length)) {
+            revert SequencingFeeTooLow(msg.value, minSequencingFee(rlpTx.length));
+        }
         _recordInput(queue, config, InputQueue.loadState(queue), InputQueue.TRANSACTION, msg.value, rlpTx);
         accruedFees[domainChainId] += msg.value;
         emit DomainTransactionSequenced(domainChainId, rlpTx, msg.value);
@@ -427,8 +399,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         uint256 fee
     ) internal returns (uint256 nonce) {
         uint256 queue = InputQueue.base(domainChainId);
-        uint256 config = _registeredConfig(queue);
-        if (fee < minDeliveryFee(data.length)) revert DeliveryFeeTooLow();
+        uint256 config = _registeredConfig(domainChainId, queue);
+        if (fee < minDeliveryFee(data.length)) revert DeliveryFeeTooLow(fee, minDeliveryFee(data.length));
         InputQueue.State memory state = InputQueue.loadState(queue);
         nonce = state.messageCount++;
         _recordInput(
@@ -455,8 +427,10 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         uint256 fee
     ) internal returns (uint256 nonce) {
         uint256 queue = InputQueue.base(domainChainId);
-        uint256 config = _registeredConfig(queue);
-        if (fee < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow();
+        uint256 config = _registeredConfig(domainChainId, queue);
+        // No spoke can have sealed to a domain without an encryption public key.
+        if (_configs[domainChainId].encryptionPubKey.length == 0) revert NoEncryptionPubKey();
+        if (fee < minDeliveryFee(ciphertext.length)) revert DeliveryFeeTooLow(fee, minDeliveryFee(ciphertext.length));
         InputQueue.State memory state = InputQueue.loadState(queue);
         nonce = state.messageCount++;
         _recordInput(
@@ -479,10 +453,10 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     // Input queue
     // ---------------------------------------------------------------------
 
-    /// @dev The config word of `queue`'s domain, which must be registered.
-    function _registeredConfig(uint256 queue) internal view returns (uint256 config) {
+    /// @dev The config word of `queue`, the queue of `domainChainId`, which must be registered.
+    function _registeredConfig(uint64 domainChainId, uint256 queue) internal view returns (uint256 config) {
         config = InputQueue.load(queue, InputQueue.CONFIG);
-        if (config == 0) revert DomainNotRegistered();
+        if (config == 0) revert DomainNotRegistered(domainChainId);
     }
 
     /// @dev Records one input in the domain's queue and counts its gas and its words against the
@@ -559,7 +533,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
     function primeInputQueue(uint64 domainChainId, uint256 from, uint256 count) external {
         uint256 queue = InputQueue.base(domainChainId);
-        _registeredConfig(queue);
+        _registeredConfig(domainChainId, queue);
         InputQueue.prime(queue, from, count);
     }
 
@@ -568,7 +542,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     // ---------------------------------------------------------------------
 
     function withdrawFees(uint64 domainChainId) external {
-        address recipient = address(uint160(_registeredConfig(InputQueue.base(domainChainId))));
+        address recipient = address(uint160(_registeredConfig(domainChainId, InputQueue.base(domainChainId))));
         uint256 amount = accruedFees[domainChainId];
         accruedFees[domainChainId] = 0;
         (bool success,) = recipient.call{value: amount}("");

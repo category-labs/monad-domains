@@ -4,24 +4,19 @@ pragma solidity ^0.8.24;
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {IDomainSpoke} from "../interfaces/IDomain.sol";
 import {IDomainMessageReceiver} from "../interfaces/IDomainMessageReceiver.sol";
+import {IDomainAccessControl} from "../interfaces/IDomainAccessControl.sol";
+import {IDomainBridge} from "../interfaces/IDomainBridge.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
 import {BridgedERC20} from "./BridgedERC20.sol";
 
 /// @notice Domain side of the reference lock-and-mint token bridge. L1 deposit messages
 /// are delivered by the protocol: the spoke invokes `onDomainMessage` and the bridge mints
 /// the corresponding bridged token. Exactly-once delivery is the protocol's guarantee.
-contract DomainBridge is IDomainMessageReceiver {
-    error ZeroL1Bridge();
+contract DomainBridge is IDomainBridge, IDomainMessageReceiver {
+    /// @notice The spoke address has no code.
     error SpokeHasNoCode();
-    error ZeroPolicyOwner();
-    error PolicyHasNoCode();
-    error InvalidTokenPolicy();
-    error NotSpoke();
-    error NotFromL1();
+    /// @notice The message was not sent by the counterpart L1Bridge.
     error NotL1Bridge();
-    error ZeroRecipient();
-    error ZeroAmount();
-    error UnknownToken();
 
     IDomainSpoke public immutable SPOKE;
 
@@ -36,20 +31,15 @@ contract DomainBridge is IDomainMessageReceiver {
     uint64 internal immutable _L1_CHAIN_ID;
 
     /// @notice Bridged token per L1 token address.
-    mapping(address l1Token => BridgedERC20 token) public bridgedTokens;
-
-    event BridgedTokenDeployed(address indexed l1Token, address token);
-    event DepositFinalized(address indexed recipient, address indexed l1Token, uint256 amount);
-    event WithdrawalInitiated(
-        address indexed sender, address recipient, address indexed l1Token, uint256 amount, bytes32 indexed messageId
-    );
+    mapping(address l1Token => address token) public bridgedTokens;
 
     constructor(IDomainSpoke spoke, address l1Bridge, address tokenPolicyOwner, address initialTokenPolicy) {
-        if (l1Bridge == address(0)) revert ZeroL1Bridge();
+        if (l1Bridge == address(0)) revert ZeroAddress();
         if (address(spoke).code.length == 0) revert SpokeHasNoCode();
-        if (tokenPolicyOwner == address(0)) revert ZeroPolicyOwner();
-        if (initialTokenPolicy.code.length == 0) revert PolicyHasNoCode();
-        if (initialTokenPolicy == address(spoke)) revert InvalidTokenPolicy();
+        if (tokenPolicyOwner == address(0)) revert ZeroAddress();
+        if (initialTokenPolicy.code.length == 0 || initialTokenPolicy == address(spoke)) {
+            revert IDomainAccessControl.InvalidPolicy(initialTokenPolicy);
+        }
         SPOKE = spoke;
         _L1_CHAIN_ID = spoke.L1_CHAIN_ID();
         L1_BRIDGE = l1Bridge;
@@ -62,12 +52,12 @@ contract DomainBridge is IDomainMessageReceiver {
     /// use. Only the spoke may deliver, and only messages the counterpart L1Bridge sent count -
     /// anyone can send arbitrary payloads through the hub.
     function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
-        if (msg.sender != address(SPOKE)) revert NotSpoke();
-        if (sourceChainId != _L1_CHAIN_ID) revert NotFromL1();
+        if (msg.sender != address(SPOKE)) revert Unauthorized(msg.sender);
+        if (sourceChainId != _L1_CHAIN_ID) revert InvalidChainId(sourceChainId);
         if (from != L1_BRIDGE) revert NotL1Bridge();
 
         (address recipient, address l1Token, uint256 amount) = MessageLib.decodeTransfer(data);
-        BridgedERC20 token = bridgedTokens[l1Token];
+        BridgedERC20 token = BridgedERC20(bridgedTokens[l1Token]);
         if (address(token) == address(0)) {
             token = _deployBridgedToken(l1Token);
         }
@@ -75,14 +65,10 @@ contract DomainBridge is IDomainMessageReceiver {
         emit DepositFinalized(recipient, l1Token, amount);
     }
 
-    /// @notice Burns `amount` of the bridged token for `l1Token` and sends a withdrawal
-    /// message to the counterpart L1Bridge, which releases the locked L1 tokens to
-    /// `recipient` once the message is proven there.
-    /// @param salt Fresh cryptographically random bytes, kept private until relay.
     function bridgeToL1(address recipient, address l1Token, uint256 amount, bytes32 salt) external {
-        if (recipient == address(0)) revert ZeroRecipient();
+        if (recipient == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
-        BridgedERC20 token = bridgedTokens[l1Token];
+        BridgedERC20 token = BridgedERC20(bridgedTokens[l1Token]);
         if (address(token) == address(0)) revert UnknownToken();
 
         // Burn before messaging: the withdrawal message must never overstate what was
@@ -106,7 +92,7 @@ contract DomainBridge is IDomainMessageReceiver {
             TOKEN_POLICY_OWNER,
             INITIAL_TOKEN_POLICY
         );
-        bridgedTokens[l1Token] = token;
+        bridgedTokens[l1Token] = address(token);
         emit BridgedTokenDeployed(l1Token, address(token));
     }
 }

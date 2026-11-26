@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
+import {ICommonErrors} from "../interfaces/ICommonErrors.sol";
 import {IDomainAccessControl, IDomainAccessPolicy} from "../interfaces/IDomainAccessControl.sol";
 
 /// @notice Example access policy: a rule table keyed by (target, selector), configured by each
 /// target's policy owner on `SPOKE`. A selector without a rule is open. Approved readers of a
 /// (target, selector) pass every rule.
 contract DomainAccessRules is IDomainAccessPolicy {
-    error NotPolicyOwner();
-    error ZeroSpoke();
+    /// @notice A `SubjectMatch` rule lists no argument words.
     error NoSubjectArguments();
 
     enum AccessMode {
@@ -40,12 +40,12 @@ contract DomainAccessRules is IDomainAccessPolicy {
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = SPOKE.policyOwners(target);
-        if (policyOwner == address(0) || msg.sender != policyOwner) revert NotPolicyOwner();
+        if (policyOwner == address(0) || msg.sender != policyOwner) revert ICommonErrors.Unauthorized(msg.sender);
         _;
     }
 
     constructor(IDomainAccessControl spoke) {
-        if (address(spoke) == address(0)) revert ZeroSpoke();
+        if (address(spoke) == address(0)) revert ICommonErrors.ZeroAddress();
         SPOKE = spoke;
     }
 

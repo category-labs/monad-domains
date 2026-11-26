@@ -2,20 +2,19 @@
 pragma solidity ^0.8.24;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ICommonErrors} from "../interfaces/ICommonErrors.sol";
 import {IDomainAccessControl} from "../interfaces/IDomainAccessControl.sol";
 
 /// @notice Domain-side representation of a locked L1 token. Mint and burn are
 /// restricted to the DomainBridge that deployed it.
 /// L1_TOKEN is the counterpart L1 token address, only for metadata purposes.
 contract BridgedERC20 is ERC20 {
-    error NotBridge();
-
     address public immutable BRIDGE;
     address public immutable L1_TOKEN;
     uint8 internal immutable _TOKEN_DECIMALS;
 
     modifier onlyBridge() {
-        if (msg.sender != BRIDGE) revert NotBridge();
+        if (msg.sender != BRIDGE) revert ICommonErrors.Unauthorized(msg.sender);
         _;
     }
 

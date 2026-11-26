@@ -7,6 +7,7 @@ import {DomainAccessRules} from "../src/access/DomainAccessRules.sol";
 import {IDomainAccessControl} from "../src/interfaces/IDomainAccessControl.sol";
 import {TestERC20} from "./mocks/TestERC20.sol";
 import {DomainTestBase} from "./helpers/DomainTestBase.sol";
+import {ICommonErrors} from "../src/interfaces/ICommonErrors.sol";
 
 /// @dev The stock rule table, exercised through the spoke's `canCall` the way the client reaches it.
 contract DomainAccessRulesTest is DomainTestBase {
@@ -27,7 +28,7 @@ contract DomainAccessRulesTest is DomainTestBase {
     DomainAccessRules.AccessMode internal constant READERS_ONLY = DomainAccessRules.AccessMode.ReadersOnly;
 
     function setUp() public {
-        spoke = new DomainSpoke(7777, block.chainid, address(0x1234));
+        spoke = new DomainSpoke(7777, uint64(block.chainid), address(0x1234));
         rules = new DomainAccessRules(spoke);
         token = _governed(policyOwner);
     }
@@ -63,7 +64,7 @@ contract DomainAccessRulesTest is DomainTestBase {
 
     function test_constructorRecordsTheSpokeAndRejectsZero() public {
         assertEq(address(rules.SPOKE()), address(spoke));
-        vm.expectRevert(DomainAccessRules.ZeroSpoke.selector);
+        vm.expectRevert(ICommonErrors.ZeroAddress.selector);
         new DomainAccessRules(IDomainAccessControl(address(0)));
     }
 
@@ -79,10 +80,10 @@ contract DomainAccessRulesTest is DomainTestBase {
     }
 
     function test_rulesBuiltForAnotherSpokeIgnoreThisSpokesOwners() public {
-        DomainSpoke otherSpoke = new DomainSpoke(7778, block.chainid, address(0x1234));
+        DomainSpoke otherSpoke = new DomainSpoke(7778, uint64(block.chainid), address(0x1234));
         DomainAccessRules foreign = new DomainAccessRules(otherSpoke);
         vm.prank(policyOwner);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, policyOwner));
         foreign.setAccessControl(token, BALANCE_OF, READERS_ONLY, 0);
         // Naming it anyway is the owner's choice: the foreign table has no row, so it admits.
         vm.prank(policyOwner);
@@ -108,13 +109,13 @@ contract DomainAccessRulesTest is DomainTestBase {
         _rule(token, BALANCE_OF, SUBJECT_MATCH, 1);
         _reader(token, BALANCE_OF, reader, true);
         vm.startPrank(stranger);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, stranger));
         rules.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 2);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, stranger));
         rules.setAccessControl(token, BALANCE_OF, OPEN, 0);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, stranger));
         rules.setReaderAllowed(token, BALANCE_OF, stranger, true);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, stranger));
         rules.setReaderAllowed(token, BALANCE_OF, reader, false);
         vm.stopPrank();
     }
@@ -123,7 +124,7 @@ contract DomainAccessRulesTest is DomainTestBase {
         address other = _governed(bob);
         vm.prank(bob);
         rules.setAccessControl(other, BALANCE_OF, SUBJECT_MATCH, 1);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, bob));
         vm.prank(bob);
         rules.setAccessControl(token, BALANCE_OF, SUBJECT_MATCH, 1);
         assertFalse(spoke.canCall(alice, other, _balance(bob)));
@@ -135,9 +136,9 @@ contract DomainAccessRulesTest is DomainTestBase {
         address independent = address(new TestERC20());
         assertEq(spoke.policyOwners(independent), address(0));
         vm.startPrank(policyOwner);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, policyOwner));
         rules.setAccessControl(independent, BALANCE_OF, SUBJECT_MATCH, 1);
-        vm.expectRevert(DomainAccessRules.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, policyOwner));
         rules.setReaderAllowed(independent, BALANCE_OF, reader, true);
         vm.stopPrank();
     }

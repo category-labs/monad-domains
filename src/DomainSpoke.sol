@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
+import {LowLevelCall} from "@openzeppelin/contracts/utils/LowLevelCall.sol";
 import {IDomainSpoke} from "./interfaces/IDomain.sol";
 import {IDomainMessageReceiver} from "./interfaces/IDomainMessageReceiver.sol";
 import {IDomainAccessPolicy} from "./interfaces/IDomainAccessControl.sol";
@@ -8,29 +9,6 @@ import {IDomainEncryption, DOMAIN_ENCRYPTION_PRECOMPILE} from "./interfaces/IDom
 import {MessageLib} from "./libraries/MessageLib.sol";
 
 contract DomainSpoke is IDomainSpoke {
-    error NotPolicyOwner();
-    error NotSystemRelayer();
-    error ZeroHub();
-    error DomainIsL1();
-    error L1ChainIdTooLarge();
-    error ZeroPolicyOwner();
-    error PolicyOwnerMismatch();
-    error AlreadyRegistered();
-    error DeploymentFailed();
-    error PolicyHasNoCode();
-    error InvalidSelfPolicy();
-    error InvalidSource();
-    error OutOfOrderNonce();
-    error NotFailedMessage();
-    error RetryFailed();
-    error NotDelivery();
-    error NotFromHub();
-    error NoEncryptionPubKey();
-    error InvalidCiphertext();
-    error SameDomain();
-    error ZeroTarget();
-    error ZeroSalt();
-
     /// @notice Sender of protocol-injected system transactions: the L1 system sender.
     address public constant SYSTEM_RELAYER = 0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e;
 
@@ -71,21 +49,20 @@ contract DomainSpoke is IDomainSpoke {
 
     modifier onlyPolicyOwner(address target) {
         address policyOwner = policyOwners[target];
-        if (policyOwner == address(0) || msg.sender != policyOwner) revert NotPolicyOwner();
+        if (policyOwner == address(0) || msg.sender != policyOwner) revert Unauthorized(msg.sender);
         _;
     }
 
     modifier onlySystem() {
-        if (msg.sender != SYSTEM_RELAYER) revert NotSystemRelayer();
+        if (msg.sender != SYSTEM_RELAYER) revert Unauthorized(msg.sender);
         _;
     }
 
-    constructor(uint64 domainChainId, uint256 l1ChainId, address hub) {
-        if (hub == address(0)) revert ZeroHub();
-        if (domainChainId == l1ChainId) revert DomainIsL1();
-        if (l1ChainId > type(uint64).max) revert L1ChainIdTooLarge();
+    constructor(uint64 domainChainId, uint64 l1ChainId, address hub) {
+        if (hub == address(0)) revert ZeroAddress();
+        if (domainChainId == l1ChainId) revert InvalidChainId(domainChainId);
         DOMAIN_CHAIN_ID = domainChainId;
-        L1_CHAIN_ID = uint64(l1ChainId);
+        L1_CHAIN_ID = l1ChainId;
         HUB = hub;
     }
 
@@ -94,12 +71,14 @@ contract DomainSpoke is IDomainSpoke {
     // ---------------------------------------------------------------------
 
     function deployContract(bytes calldata initCode, address policyOwner) external returns (address deployed) {
-        if (policyOwner == address(0)) revert ZeroPolicyOwner();
+        if (policyOwner == address(0)) revert ZeroAddress();
         bytes memory code = initCode;
         assembly ("memory-safe") {
             deployed := create(0, add(code, 32), mload(code))
         }
-        if (deployed == address(0) || deployed.code.length == 0) revert DeploymentFailed();
+        // A failed creation leaves the constructor's revert data, if any, as return data; one that
+        // succeeds leaves none.
+        if (deployed == address(0) || deployed.code.length == 0) revert DeploymentFailed(LowLevelCall.returnData());
         address registeredOwner = policyOwners[deployed];
         if (registeredOwner != address(0) && registeredOwner != policyOwner) revert PolicyOwnerMismatch();
         if (registeredOwner == address(0)) policyOwners[deployed] = policyOwner;
@@ -107,7 +86,7 @@ contract DomainSpoke is IDomainSpoke {
     }
 
     function selfRegisterPolicy(address policyOwner, address initialPolicy) external {
-        if (policyOwner == address(0)) revert ZeroPolicyOwner();
+        if (policyOwner == address(0)) revert ZeroAddress();
         if (policyOwners[msg.sender] != address(0)) revert AlreadyRegistered();
         policyOwners[msg.sender] = policyOwner;
         emit ContractRegistered(msg.sender, policyOwner);
@@ -123,8 +102,7 @@ contract DomainSpoke is IDomainSpoke {
     /// @param target Address whose call access is governed by the policy.
     /// @param policy Policy to install, or zero to admit every caller.
     function _setAccessPolicy(address target, address policy) internal {
-        if (policy != address(0) && policy.code.length == 0) revert PolicyHasNoCode();
-        if (policy == address(this)) revert InvalidSelfPolicy();
+        if ((policy != address(0) && policy.code.length == 0) || policy == address(this)) revert InvalidPolicy(policy);
         accessPolicies[target] = policy;
         emit AccessPolicySet(target, policy);
     }
@@ -159,7 +137,7 @@ contract DomainSpoke is IDomainSpoke {
         external
         onlySystem
     {
-        if (sourceChainId == DOMAIN_CHAIN_ID) revert InvalidSource();
+        if (sourceChainId == DOMAIN_CHAIN_ID) revert InvalidChainId(sourceChainId);
         if (nonce < nextL1Nonce) revert OutOfOrderNonce();
         nextL1Nonce = nonce + 1;
         MessageLib.Message memory message = MessageLib.Message(sourceChainId, from, to, data, nonce);
@@ -173,7 +151,17 @@ contract DomainSpoke is IDomainSpoke {
         bytes32 messageHash = MessageLib.hashMessage(message);
         if (!failedL1Messages[messageHash]) revert NotFailedMessage();
         delete failedL1Messages[messageHash];
-        if (message.to.code.length == 0 || !_callReceiver(message, 0)) revert RetryFailed();
+        // No call is made, so there is no revert to wrap.
+        if (message.to.code.length == 0) revert RetryFailed();
+        // A retry runs on the caller's gas, so copying the revert data can only cost the caller.
+        if (!_callReceiver(message, 0)) {
+            revert WrappedError(
+                message.to,
+                IDomainMessageReceiver.onDomainMessage.selector,
+                LowLevelCall.returnData(),
+                abi.encodeWithSelector(RetryFailed.selector)
+            );
+        }
         emit L1MessageRelayed(messageHash, message.sourceChainId, message.from, message.to, message.nonce, true);
     }
 
@@ -197,7 +185,7 @@ contract DomainSpoke is IDomainSpoke {
     /// @notice Stores an encryption public key the hub sent. Reached only through this spoke's own
     /// delivery of a message whose source is the L1 and whose sender is the hub.
     function onDomainMessage(uint64 sourceChainId, address from, bytes calldata data) external {
-        if (msg.sender != address(this)) revert NotDelivery();
+        if (msg.sender != address(this)) revert Unauthorized(msg.sender);
         if (sourceChainId != L1_CHAIN_ID || from != HUB) revert NotFromHub();
         (uint64 domainChainId, bytes32 encryptionPubKey) = MessageLib.decodeEncryptionPubKey(data);
         encryptionPubKeys[domainChainId] = encryptionPubKey;
@@ -212,8 +200,8 @@ contract DomainSpoke is IDomainSpoke {
         external
         returns (bytes32 messageId)
     {
-        if (destinationChainId == DOMAIN_CHAIN_ID) revert SameDomain();
-        if (to == address(0)) revert ZeroTarget();
+        if (destinationChainId == DOMAIN_CHAIN_ID) revert InvalidChainId(destinationChainId);
+        if (to == address(0)) revert ZeroAddress();
         if (destinationChainId == L1_CHAIN_ID) {
             if (salt == bytes32(0)) revert ZeroSalt();
             return _recordDomainMessage(destinationChainId, msg.sender, to, data, salt);

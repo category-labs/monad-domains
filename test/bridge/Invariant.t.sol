@@ -66,7 +66,7 @@ contract BridgeHandler is DomainTestBase {
         // single validator key (quorum 1) and is the fee recipient.
         HUB = _deployHub(address(this));
         _registerDomain(HUB, CHAIN_ID, VALIDATOR_KEY);
-        SPOKE = new DomainSpoke(CHAIN_ID, block.chainid, address(HUB));
+        SPOKE = new DomainSpoke(CHAIN_ID, uint64(block.chainid), address(HUB));
 
         L1_BRIDGE = new L1Bridge(HUB, CHAIN_ID);
         DOMAIN_BRIDGE =
@@ -123,7 +123,7 @@ contract BridgeHandler is DomainTestBase {
     }
 
     function withdraw(uint256 actorSeed, uint256 recipientSeed, uint256 amount) external {
-        BridgedERC20 bridged = DOMAIN_BRIDGE.bridgedTokens(address(TOKEN));
+        BridgedERC20 bridged = BridgedERC20(DOMAIN_BRIDGE.bridgedTokens(address(TOKEN)));
         if (address(bridged) == address(0)) return;
         address actor = _pickActor(actorSeed);
         uint256 balance = bridged.balanceOf(actor);
@@ -169,7 +169,7 @@ contract BridgeHandler is DomainTestBase {
     }
 
     function bridgedSupply() public view returns (uint256) {
-        BridgedERC20 bridged = DOMAIN_BRIDGE.bridgedTokens(address(TOKEN));
+        BridgedERC20 bridged = BridgedERC20(DOMAIN_BRIDGE.bridgedTokens(address(TOKEN)));
         return address(bridged) == address(0) ? 0 : bridged.totalSupply();
     }
 

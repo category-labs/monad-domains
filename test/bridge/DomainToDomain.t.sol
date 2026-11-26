@@ -13,6 +13,7 @@ import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {TestERC20} from "../mocks/TestERC20.sol";
 import {DomainTestBase} from "../helpers/DomainTestBase.sol";
+import {IL1Bridge} from "../../src/interfaces/IL1Bridge.sol";
 
 /// @notice Atomically completes a domain A -> L1 withdrawal and re-bridges the released
 /// tokens into domain B, collapsing the L1 leg into a single transaction. The withdrawal
@@ -21,8 +22,8 @@ contract CrossDomainRouter {
     using SafeERC20 for IERC20;
 
     function relay(
-        L1Bridge fromBridge,
-        L1Bridge toBridge,
+        IL1Bridge fromBridge,
+        IL1Bridge toBridge,
         MessageLib.DomainMessage calldata message,
         bytes32 anchor,
         bytes32[] calldata proof,
@@ -80,8 +81,8 @@ contract DomainToDomainTest is DomainTestBase {
         hub = _deployHub(address(this));
         _registerDomain(hub, CHAIN_A, VALIDATOR_KEY);
         _registerDomain(hub, CHAIN_B, VALIDATOR_KEY);
-        spokeA = new DomainSpoke(CHAIN_A, block.chainid, address(hub));
-        spokeB = new DomainSpoke(CHAIN_B, block.chainid, address(hub));
+        spokeA = new DomainSpoke(CHAIN_A, uint64(block.chainid), address(hub));
+        spokeB = new DomainSpoke(CHAIN_B, uint64(block.chainid), address(hub));
 
         // Application: an independent bridge pair per domain, sharing the L1 token.
         l1BridgeA = new L1Bridge(hub, CHAIN_A);
@@ -104,7 +105,7 @@ contract DomainToDomainTest is DomainTestBase {
         token.mint(alice, AMOUNT);
         vm.deal(alice, 100 ether);
         _depositToDomainA(alice, alice, AMOUNT);
-        assertEq(domainBridgeA.bridgedTokens(address(token)).balanceOf(alice), AMOUNT);
+        assertEq(BridgedERC20(domainBridgeA.bridgedTokens(address(token))).balanceOf(alice), AMOUNT);
     }
 
     /// @notice Two L1 transactions: alice withdraws domain-A tokens to her own L1 address,
@@ -145,7 +146,7 @@ contract DomainToDomainTest is DomainTestBase {
         (MessageLib.DomainMessage memory message, bytes32 anchor) =
             _initiateWithdrawFromA(alice, address(router), AMOUNT);
         l1BridgeB.setTokenAllowed(address(token), false);
-        vm.expectRevert(L1Bridge.TokenNotAllowed.selector);
+        vm.expectRevert(IL1Bridge.TokenNotAllowed.selector);
         router.relay{value: DELIVERY_FEE}(l1BridgeA, l1BridgeB, message, anchor, _emptyProof(), bobOnB);
         assertFalse(hub.relayedDomainMessages(CHAIN_A, _hash(message)));
         assertEq(token.balanceOf(address(l1BridgeA)), AMOUNT);
@@ -256,12 +257,12 @@ contract DomainToDomainTest is DomainTestBase {
     /// @dev The value ended up as bridged supply on B, collateral moved from A to B, and
     /// nothing is left stranded on A or in transit.
     function _assertLandedOnB(address recipient, uint256 amount) internal view {
-        BridgedERC20 bridgedB = domainBridgeB.bridgedTokens(address(token));
+        BridgedERC20 bridgedB = BridgedERC20(domainBridgeB.bridgedTokens(address(token)));
         assertEq(bridgedB.balanceOf(recipient), amount, "recipient minted on B");
         assertEq(bridgedB.totalSupply(), amount, "B supply");
         assertEq(token.balanceOf(address(l1BridgeB)), amount, "collateral locked on B");
         assertEq(token.balanceOf(address(l1BridgeA)), 0, "collateral released from A");
-        assertEq(domainBridgeA.bridgedTokens(address(token)).totalSupply(), 0, "A supply burned");
+        assertEq(BridgedERC20(domainBridgeA.bridgedTokens(address(token))).totalSupply(), 0, "A supply burned");
         assertEq(token.balanceOf(alice), 0, "no L1 token stranded with alice");
     }
 

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {DomainHub} from "../src/DomainHub.sol";
-import {IDomainHub} from "../src/interfaces/IDomain.sol";
+import {IDomainHub, IMessagingErrors} from "../src/interfaces/IDomain.sol";
 import {IDomainMessageReceiver} from "../src/interfaces/IDomainMessageReceiver.sol";
 import {MessageLib} from "../src/libraries/MessageLib.sol";
 import {MerkleTreeLib} from "./helpers/MerkleTreeLib.sol";
@@ -108,7 +108,7 @@ contract DomainRelayTest is DomainTestBase {
         leaves[1] = bytes32(uint256(42));
         bytes32 root = MerkleTreeLib.root(leaves);
         _anchor(CHAIN_A, root);
-        vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
+        vm.expectRevert(IDomainHub.MessageAlreadyRelayed.selector);
         hub.relayDomainMessage(message, root, MerkleTreeLib.getProof(leaves, 0));
         assertEq(receiver.calls(), 1);
     }
@@ -131,10 +131,10 @@ contract DomainRelayTest is DomainTestBase {
         MessageLib.DomainMessage memory message = _message(0);
         message.sourceChainId = CHAIN_B;
         _anchor(CHAIN_A, _hash(message));
-        vm.expectRevert(DomainHub.UnknownAnchor.selector);
+        vm.expectRevert(IDomainHub.UnknownAnchor.selector);
         _relay(message);
         message.sourceChainId = 9999;
-        vm.expectRevert(DomainHub.SourceNotRegistered.selector);
+        vm.expectRevert(abi.encodeWithSelector(IDomainHub.DomainNotRegistered.selector, uint64(9999)));
         _relay(message);
         assertEq(receiver.calls(), 0);
     }
@@ -162,9 +162,17 @@ contract DomainRelayTest is DomainTestBase {
         assertFalse(_relay(message));
         assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
         assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
-        vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
+        vm.expectRevert(IDomainHub.MessageAlreadyRelayed.selector);
         _relay(message);
-        vm.expectRevert(DomainHub.RetryFailed.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IMessagingErrors.WrappedError.selector,
+                address(receiver),
+                IDomainMessageReceiver.onDomainMessage.selector,
+                abi.encodeWithSignature("Error(string)", "receiver failure"),
+                abi.encodeWithSelector(IMessagingErrors.RetryFailed.selector)
+            )
+        );
         hub.retryDomainMessage(message);
         assertTrue(hub.failedDomainMessages(CHAIN_A, hash));
         receiver.setFailure(false);
@@ -174,27 +182,27 @@ contract DomainRelayTest is DomainTestBase {
         hub.retryDomainMessage(message);
         assertEq(receiver.calls(), 1);
         assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
-        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        vm.expectRevert(IMessagingErrors.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
     }
 
     function test_retryRequiresExactAuthenticatedMessageAndDomain() public {
         MessageLib.DomainMessage memory message = _message(0);
-        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        vm.expectRevert(IMessagingErrors.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
         _anchor(CHAIN_A, _hash(message));
         receiver.setFailure(true);
         assertFalse(_relay(message));
         message.salt = bytes32(0);
-        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        vm.expectRevert(IMessagingErrors.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
         message.salt = TEST_SALT;
         message.sourceChainId = CHAIN_B;
-        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        vm.expectRevert(IMessagingErrors.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
         message.sourceChainId = CHAIN_A;
         message.data = hex"ffff";
-        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        vm.expectRevert(IMessagingErrors.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
     }
 
@@ -228,9 +236,9 @@ contract DomainRelayTest is DomainTestBase {
         assertTrue(_relay(message));
         assertTrue(hub.relayedDomainMessages(CHAIN_A, hash));
         assertFalse(hub.failedDomainMessages(CHAIN_A, hash));
-        vm.expectRevert(DomainHub.MessageAlreadyRelayed.selector);
+        vm.expectRevert(IDomainHub.MessageAlreadyRelayed.selector);
         _relay(message);
-        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        vm.expectRevert(IMessagingErrors.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
     }
 

@@ -345,11 +345,12 @@ contract DomainInputQueueTest is DomainTestBase {
         bytes32 latest = bytes32(_word(CHAIN_ID, 0));
         bytes32 state = bytes32(_word(CHAIN_ID, 1));
         vm.roll(2);
+        uint256 minFee = hub.minDeliveryFee(1);
         vm.prank(alice);
-        vm.expectRevert(DomainHub.DeliveryFeeTooLow.selector);
+        vm.expectRevert(abi.encodeWithSelector(IDomainHub.DeliveryFeeTooLow.selector, 0, minFee));
         hub.sendL1Message(CHAIN_ID, bob, hex"01");
         vm.prank(alice);
-        vm.expectRevert(DomainHub.DomainBlockGasLimitExceeded.selector);
+        vm.expectRevert(IDomainHub.DomainBlockGasLimitExceeded.selector);
         hub.sequenceToDomain{value: 150_000_001 * 50 gwei}(CHAIN_ID, hex"01");
         assertEq(bytes32(_word(CHAIN_ID, 0)), latest);
         assertEq(bytes32(_word(CHAIN_ID, 1)), state);
@@ -453,7 +454,7 @@ contract DomainInputQueueTest is DomainTestBase {
 
         // A height below the registering block is stale.
         bytes memory signature = _signTransition(hub, 8888, 20, bytes32(0), bytes32(0), VALIDATOR_KEY);
-        vm.expectRevert(DomainHub.StaleBlockNumber.selector);
+        vm.expectRevert(IDomainHub.StaleBlockNumber.selector);
         hub.submitStateSignature(8888, 20, bytes32(0), bytes32(0), signature);
 
         // The next scheduled height releases block 0's entry.
@@ -517,11 +518,11 @@ contract DomainInputQueueTest is DomainTestBase {
         (MessageLib.DomainMessage memory forwarded, bytes32 anchor) =
             _attestedSealedMessage(hub, SOURCE_CHAIN_ID, 8888, 0, hex"06");
         vm.startPrank(alice);
-        vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
+        vm.expectRevert(IDomainHub.TooManyUnattestedPeriods.selector);
         hub.sequenceToDomain{value: _sequencingFee(1)}(8888, hex"06");
-        vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
+        vm.expectRevert(IDomainHub.TooManyUnattestedPeriods.selector);
         hub.sendL1Message{value: fee}(8888, bob, hex"06");
-        vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
+        vm.expectRevert(IDomainHub.TooManyUnattestedPeriods.selector);
         hub.relayDomainMessage{value: fee}(forwarded, anchor, new bytes32[](0));
         vm.stopPrank();
         assertEq(_inputs(8888).length, 3);
@@ -530,7 +531,7 @@ contract DomainInputQueueTest is DomainTestBase {
         _attestAt(8888, 30);
         _sequence(8888, hex"06");
         vm.roll(61);
-        vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
+        vm.expectRevert(IDomainHub.TooManyUnattestedPeriods.selector);
         _sequence(8888, hex"07");
         assertEq(_inputs(8888).length, 3);
     }
@@ -542,7 +543,7 @@ contract DomainInputQueueTest is DomainTestBase {
         _sequence(8888, hex"01");
         // With a limit of one period, the next period waits for this one's attestation.
         vm.roll(100_001);
-        vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
+        vm.expectRevert(IDomainHub.TooManyUnattestedPeriods.selector);
         _sequence(8888, hex"02");
         _attestAt(8888, 100_000);
         _sequence(8888, hex"02");
@@ -588,15 +589,15 @@ contract DomainInputQueueTest is DomainTestBase {
         assertEq(_word(CHAIN_ID, DATA + capacity - 1), (uint256(1) << 248) | 0x42);
 
         vm.prank(alice);
-        vm.expectRevert(InputQueue.InputQueueFull.selector);
+        vm.expectRevert(IDomainHub.InputQueueFull.selector);
         hub.sequenceToDomain{value: _sequencingFee(0)}(CHAIN_ID, "");
         vm.prank(alice);
-        vm.expectRevert(InputQueue.InputQueueFull.selector);
+        vm.expectRevert(IDomainHub.InputQueueFull.selector);
         hub.sendL1Message{value: 1 ether}(CHAIN_ID, bob, hex"01");
         // A new L1 block's block entry does not fit either.
         vm.roll(15);
         vm.prank(alice);
-        vm.expectRevert(InputQueue.InputQueueFull.selector);
+        vm.expectRevert(IDomainHub.InputQueueFull.selector);
         hub.sequenceToDomain{value: _sequencingFee(0)}(CHAIN_ID, "");
 
         _attestAt(20);
@@ -648,11 +649,11 @@ contract DomainInputQueueTest is DomainTestBase {
         (MessageLib.DomainMessage memory forwarded, bytes32 anchor) =
             _attestedSealedMessage(hub, SOURCE_CHAIN_ID, CHAIN_ID, 0, hex"01");
         vm.startPrank(alice);
-        vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
+        vm.expectRevert(IDomainHub.DomainBlockSizeLimitExceeded.selector);
         hub.sequenceToDomain{value: _sequencingFee(0)}(CHAIN_ID, "");
-        vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
+        vm.expectRevert(IDomainHub.DomainBlockSizeLimitExceeded.selector);
         hub.sendL1Message{value: fee}(CHAIN_ID, bob, hex"01");
-        vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
+        vm.expectRevert(IDomainHub.DomainBlockSizeLimitExceeded.selector);
         hub.relayDomainMessage{value: fee}(forwarded, anchor, new bytes32[](0));
         vm.stopPrank();
 
@@ -665,7 +666,7 @@ contract DomainInputQueueTest is DomainTestBase {
         vm.roll(7);
         bytes memory tooLarge = new bytes(limit * InputQueue.CHUNK);
         vm.prank(alice);
-        vm.expectRevert(DomainHub.DomainBlockSizeLimitExceeded.selector);
+        vm.expectRevert(IDomainHub.DomainBlockSizeLimitExceeded.selector);
         hub.sequenceToDomain{value: _sequencingFee(tooLarge.length)}(CHAIN_ID, tooLarge);
     }
 
@@ -699,11 +700,11 @@ contract DomainInputQueueTest is DomainTestBase {
     function test_primingIsBoundedByTheRingAndRegistration() public {
         uint256 capacity = InputQueue.CAPACITY;
         hub.primeInputQueue(CHAIN_ID, capacity - 10, 10);
-        vm.expectRevert(InputQueue.InputQueueBadIndex.selector);
+        vm.expectRevert(IDomainHub.InputQueueBadIndex.selector);
         hub.primeInputQueue(CHAIN_ID, capacity - 10, 11);
-        vm.expectRevert();
+        vm.expectRevert(IDomainHub.InputQueueBadIndex.selector);
         hub.primeInputQueue(CHAIN_ID, 1, type(uint256).max);
-        vm.expectRevert(DomainHub.DomainNotRegistered.selector);
+        vm.expectRevert(abi.encodeWithSelector(IDomainHub.DomainNotRegistered.selector, uint64(9999)));
         hub.primeInputQueue(9999, 0, 10);
     }
 
@@ -821,7 +822,7 @@ contract DomainInputQueueTest is DomainTestBase {
             payload = abi.encodePacked(SOURCE_CHAIN_ID, sourceNonce, nonce, data);
             (forwarded, anchor) = _attestedSealedMessage(hub, SOURCE_CHAIN_ID, MODEL_CHAIN_ID, sourceNonce, data);
         }
-        if (stalled) vm.expectRevert(InputQueue.TooManyUnattestedPeriods.selector);
+        if (stalled) vm.expectRevert(IDomainHub.TooManyUnattestedPeriods.selector);
         vm.prank(alice);
         if (kind == 2) {
             hub.sendL1Message{value: fee}(MODEL_CHAIN_ID, bob, data);

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
+import {ICommonErrors} from "./ICommonErrors.sol";
+
 /// @notice Decides whether a call into a domain contract may run. A contract's policy owner
 /// names one on the spoke with `setAccessPolicy`; the spoke forwards `canCall` to it.
 interface IDomainAccessPolicy {
@@ -17,12 +19,22 @@ interface IDomainAccessPolicy {
 /// @notice Spoke side of access control: the policy owner of each deployed contract and the
 /// policy it named. The spoke's `canCall` is what the execution client queries before every
 /// call frame.
-interface IDomainAccessControl is IDomainAccessPolicy {
+interface IDomainAccessControl is IDomainAccessPolicy, ICommonErrors {
     event ContractDeployed(address indexed target, address indexed deployer, address indexed policyOwner);
     event ContractRegistered(address indexed target, address indexed policyOwner);
     /// @notice A zero `policy` opens the contract to every caller.
     event AccessPolicySet(address indexed target, address indexed policy);
     event LogReaderSet(address indexed target, address indexed reader, bool allowed);
+
+    /// @notice `policy` cannot be used as an access policy: it has no code, or it is the spoke.
+    error InvalidPolicy(address policy);
+    /// @notice The caller already has a policy owner.
+    error AlreadyRegistered();
+    /// @notice The new contract registered a different policy owner during its construction.
+    error PolicyOwnerMismatch();
+    /// @notice The contract creation failed, with `reason` as the constructor's revert data.
+    /// `reason` is empty when the creation failed without revert data or left no code.
+    error DeploymentFailed(bytes reason);
 
     /// @notice Deploy using CREATE and assign a nonzero owner of the new contract's access policy.
     /// @param initCode Creation bytecode including ABI-encoded constructor arguments.

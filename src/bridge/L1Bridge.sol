@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IDomainHub} from "../interfaces/IDomain.sol";
 import {IDomainMessageReceiver} from "../interfaces/IDomainMessageReceiver.sol";
+import {IL1Bridge} from "../interfaces/IL1Bridge.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
 
 /// @notice L1 side of the lock-and-mint token bridge. Locks ERC20 tokens and
@@ -18,16 +19,10 @@ import {MessageLib} from "../libraries/MessageLib.sol";
 /// one-shot counterpart registration. Deliberately, the owner can only gate NEW
 /// deposits: `onDomainMessage` never consults the allowlist, so already-locked
 /// collateral can always be withdrawn and the owner can never freeze user funds.
-contract L1Bridge is Ownable, IDomainMessageReceiver {
-    error ZeroBridge();
+contract L1Bridge is IL1Bridge, Ownable, IDomainMessageReceiver {
+    /// @notice The counterpart DomainBridge is already registered.
     error BridgeAlreadyRegistered();
-    error CounterpartNotRegistered();
-    error TokenNotAllowed();
-    error ZeroRecipient();
-    error ZeroAmount();
-    error FeeOnTransferTokenNotSupported();
-    error NotHub();
-    error WrongDomain();
+    /// @notice The message was not sent by the counterpart DomainBridge.
     error NotDomainBridge();
 
     using SafeERC20 for IERC20;
@@ -43,11 +38,6 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
     /// @notice Tokens accepted for new deposits. Never checked on withdrawals.
     mapping(address token => bool allowed) public allowedTokens;
 
-    event DomainBridgeRegistered(address bridge);
-    event TokenAllowlistUpdated(address indexed token, bool allowed);
-    event BridgeInitiated(address indexed sender, address recipient, address indexed token, uint256 amount);
-    event WithdrawalFinalized(address indexed recipient, address indexed token, uint256 amount);
-
     constructor(IDomainHub hub, uint64 domainChainId) Ownable(msg.sender) {
         HUB = hub;
         DOMAIN_CHAIN_ID = domainChainId;
@@ -55,7 +45,7 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
 
     /// @notice Sets the counterpart bridge. One-shot: cannot be changed once set.
     function registerDomainBridge(address bridge) external onlyOwner {
-        if (bridge == address(0)) revert ZeroBridge();
+        if (bridge == address(0)) revert ZeroAddress();
         if (domainBridge != address(0)) revert BridgeAlreadyRegistered();
         domainBridge = bridge;
         emit DomainBridgeRegistered(bridge);
@@ -69,14 +59,11 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
         emit TokenAllowlistUpdated(token, allowed);
     }
 
-    /// @notice Locks `amount` of `token` and sends a transfer message to the counterpart
-    /// bridge, which mints the bridged token to `recipient` on the domain. `msg.value` is the
-    /// delivery fee forwarded to the hub; it must buy enough gas for the mint.
     function bridgeToDomain(address recipient, address token, uint256 amount) external payable {
         address counterpart = domainBridge;
         if (counterpart == address(0)) revert CounterpartNotRegistered();
         if (!allowedTokens[token]) revert TokenNotAllowed();
-        if (recipient == address(0)) revert ZeroRecipient();
+        if (recipient == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
         // The locked amount must equal the messaged amount, or withdrawals would be
@@ -98,8 +85,8 @@ contract L1Bridge is Ownable, IDomainMessageReceiver {
     /// reverts on failure, so a relay with too little gas can never consume the withdrawal
     /// without releasing the tokens.
     function onDomainMessage(uint64 domainChainId, address from, bytes calldata data) external {
-        if (msg.sender != address(HUB)) revert NotHub();
-        if (domainChainId != DOMAIN_CHAIN_ID) revert WrongDomain();
+        if (msg.sender != address(HUB)) revert Unauthorized(msg.sender);
+        if (domainChainId != DOMAIN_CHAIN_ID) revert InvalidChainId(domainChainId);
         address counterpart = domainBridge;
         if (counterpart == address(0)) revert CounterpartNotRegistered();
         if (from != counterpart) revert NotDomainBridge();

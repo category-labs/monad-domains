@@ -6,6 +6,7 @@ import {DomainSpoke} from "../src/DomainSpoke.sol";
 import {IDomainAccessControl} from "../src/interfaces/IDomainAccessControl.sol";
 import {ConstantPolicy} from "./mocks/AccessPolicies.sol";
 import {TestERC20} from "./mocks/TestERC20.sol";
+import {ICommonErrors} from "../src/interfaces/ICommonErrors.sol";
 
 contract SelfRegisteringContract {
     bool public immutable deniedDuringConstruction;
@@ -23,7 +24,7 @@ contract DomainSelfRegistrationTest is Test {
     address internal stranger = makeAddr("stranger");
 
     function setUp() public {
-        spoke = new DomainSpoke(7777, block.chainid, address(0x1234));
+        spoke = new DomainSpoke(7777, uint64(block.chainid), address(0x1234));
         policy = address(new ConstantPolicy(false));
     }
 
@@ -58,39 +59,39 @@ contract DomainSelfRegistrationTest is Test {
         assertEq(spoke.policyOwners(unrelated), address(0));
         assertEq(spoke.accessPolicies(unrelated), address(0));
         vm.prank(owner);
-        vm.expectRevert(DomainSpoke.NotPolicyOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, owner));
         spoke.setAccessPolicy(unrelated, policy);
     }
 
     function test_registrationCannotOverwriteAnExistingOwnerOrPolicy() public {
         address target = address(new SelfRegisteringContract(spoke, owner, policy));
         vm.prank(target);
-        vm.expectRevert(DomainSpoke.AlreadyRegistered.selector);
+        vm.expectRevert(IDomainAccessControl.AlreadyRegistered.selector);
         spoke.selfRegisterPolicy(stranger, address(0));
         assertEq(spoke.policyOwners(target), owner);
         assertEq(spoke.accessPolicies(target), policy);
 
         address deployed = spoke.deployContract(type(TestERC20).creationCode, owner);
         vm.prank(deployed);
-        vm.expectRevert(DomainSpoke.AlreadyRegistered.selector);
+        vm.expectRevert(IDomainAccessControl.AlreadyRegistered.selector);
         spoke.selfRegisterPolicy(stranger, policy);
         assertEq(spoke.policyOwners(deployed), owner);
         assertEq(spoke.accessPolicies(deployed), address(0));
     }
 
     function test_registrationRejectsZeroOwner() public {
-        vm.expectRevert(DomainSpoke.ZeroPolicyOwner.selector);
+        vm.expectRevert(ICommonErrors.ZeroAddress.selector);
         spoke.selfRegisterPolicy(address(0), policy);
         assertEq(spoke.policyOwners(address(this)), address(0));
     }
 
     function test_invalidPolicyRollsBackRegistrationAndAllowsRetry() public {
         vm.startPrank(stranger);
-        vm.expectRevert(DomainSpoke.PolicyHasNoCode.selector);
+        vm.expectRevert(abi.encodeWithSelector(IDomainAccessControl.InvalidPolicy.selector, owner));
         spoke.selfRegisterPolicy(owner, owner);
         assertEq(spoke.policyOwners(stranger), address(0));
         assertEq(spoke.accessPolicies(stranger), address(0));
-        vm.expectRevert(DomainSpoke.InvalidSelfPolicy.selector);
+        vm.expectRevert(abi.encodeWithSelector(IDomainAccessControl.InvalidPolicy.selector, address(spoke)));
         spoke.selfRegisterPolicy(owner, address(spoke));
         assertEq(spoke.policyOwners(stranger), address(0));
         spoke.selfRegisterPolicy(owner, policy);
@@ -116,7 +117,7 @@ contract DomainSelfRegistrationTest is Test {
     function test_deployContractRejectsConflictingConstructorOwnerAndRollsBack() public {
         uint64 nonce = vm.getNonce(address(spoke));
         address predicted = vm.computeCreateAddress(address(spoke), nonce);
-        vm.expectRevert(DomainSpoke.PolicyOwnerMismatch.selector);
+        vm.expectRevert(IDomainAccessControl.PolicyOwnerMismatch.selector);
         spoke.deployContract(_initCode(owner), stranger);
         assertEq(predicted.code.length, 0);
         assertEq(spoke.policyOwners(predicted), address(0));

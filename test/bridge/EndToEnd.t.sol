@@ -12,6 +12,7 @@ import {DomainHub} from "../../src/DomainHub.sol";
 import {DomainSpoke} from "../../src/DomainSpoke.sol";
 import {TestERC20} from "../mocks/TestERC20.sol";
 import {DomainTestBase} from "../helpers/DomainTestBase.sol";
+import {IDomainHub} from "../../src/interfaces/IDomain.sol";
 
 /// @notice Full deposit and withdrawal flows through the hub, spoke, and bridge pair. The
 /// sole validator (quorum 1) attests domain -> L1 batches on the checkpoint schedule.
@@ -33,7 +34,7 @@ contract DepositEndToEndTest is DomainTestBase {
     function setUp() public {
         // Protocol: hub on the L1, spoke for the domain, domain registered.
         hub = _deployHub(address(this));
-        spoke = new DomainSpoke(CHAIN_ID, block.chainid, address(hub));
+        spoke = new DomainSpoke(CHAIN_ID, uint64(block.chainid), address(hub));
         _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
 
         // Application: bridge pair wired to each other.
@@ -76,7 +77,7 @@ contract DepositEndToEndTest is DomainTestBase {
         _deliverDeposit(carol, 25 ether);
         _deliverDeposit(bob, 5 ether);
 
-        BridgedERC20 bridged = domainBridge.bridgedTokens(address(token));
+        BridgedERC20 bridged = BridgedERC20(domainBridge.bridgedTokens(address(token)));
         assertEq(bridged.balanceOf(bob), 105 ether);
         assertEq(bridged.balanceOf(carol), 25 ether);
         assertEq(bridged.totalSupply(), 130 ether);
@@ -118,7 +119,7 @@ contract DepositEndToEndTest is DomainTestBase {
             sourceNonce: 0
         });
         message.salt = bytes32(0);
-        vm.expectRevert(DomainHub.InvalidProof.selector);
+        vm.expectRevert(IDomainHub.InvalidProof.selector);
         hub.relayDomainMessage(message, anchor, MerkleTreeLib.getProof(leaves, 0));
         message.salt = TEST_SALT;
         assertTrue(hub.relayDomainMessage(message, anchor, MerkleTreeLib.getProof(leaves, 0)));
@@ -126,8 +127,8 @@ contract DepositEndToEndTest is DomainTestBase {
         // Collateral and supply stay matched: 60 locked backing 60 bridged.
         assertEq(token.balanceOf(carol), 40 ether);
         assertEq(token.balanceOf(address(l1Bridge)), 60 ether);
-        assertEq(domainBridge.bridgedTokens(address(token)).balanceOf(bob), 60 ether);
-        assertEq(domainBridge.bridgedTokens(address(token)).totalSupply(), 60 ether);
+        assertEq(BridgedERC20(domainBridge.bridgedTokens(address(token))).balanceOf(bob), 60 ether);
+        assertEq(BridgedERC20(domainBridge.bridgedTokens(address(token))).totalSupply(), 60 ether);
     }
 
     function test_multipleWithdrawalsInOneAnchor() public {
@@ -161,6 +162,6 @@ contract DepositEndToEndTest is DomainTestBase {
         assertEq(token.balanceOf(bob), 40 ether);
         assertEq(token.balanceOf(carol), 20 ether);
         assertEq(token.balanceOf(address(l1Bridge)), 40 ether);
-        assertEq(domainBridge.bridgedTokens(address(token)).totalSupply(), 40 ether);
+        assertEq(BridgedERC20(domainBridge.bridgedTokens(address(token))).totalSupply(), 40 ether);
     }
 }

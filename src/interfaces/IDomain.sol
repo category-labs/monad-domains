@@ -1,14 +1,37 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
+import {ICommonErrors} from "./ICommonErrors.sol";
 import {IDomainAccessControl} from "./IDomainAccessControl.sol";
 import {IDomainMessageReceiver} from "./IDomainMessageReceiver.sol";
 import {MessageLib} from "../libraries/MessageLib.sol";
 
+/// @notice Errors only the hub and the spoke share, among them ERC-7751's `WrappedError`.
+/// @dev `IDomainHub` and `IDomainSpoke` both throw these errors, so they are declared once here;
+/// the bridge interfaces leave them out.
+interface IMessagingErrors {
+    /// @notice The message is not marked as failed, so it cannot be retried.
+    error NotFailedMessage();
+    /// @notice The retried call failed again; the message stays retryable. When the target
+    /// reverts, the retry throws ERC-7751's `WrappedError` instead, carrying the target,
+    /// `onDomainMessage`'s selector, the target's revert data and, as its details, this error.
+    /// The spoke throws this error alone when the target has no code.
+    error RetryFailed();
+    /// @notice ERC-7751's wrapper for a failed call: calling `selector` on `target` reverted with
+    /// `reason`, and `details` holds this contract's own error.
+    /// @dev Declared here rather than imported, so these interfaces need nothing outside this
+    /// repository. It has ERC-7751's signature, so OpenZeppelin's `IERC7751.WrappedError` has the
+    /// same selector.
+    error WrappedError(address target, bytes4 selector, bytes reason, bytes details);
+    /// @notice The domain has no encryption public key to seal to: none is registered at the hub,
+    /// or the hub has sent none to the spoke.
+    error NoEncryptionPubKey();
+}
+
 /// @notice L1-side hub of the domain messaging layer: the single L1 contract every domain connects
 /// through. It registers domains, sequences their transactions, records L1 -> domain messages, and
 /// stores the block hashes and domain-origin message anchors each domain's validators attest.
-interface IDomainHub {
+interface IDomainHub is ICommonErrors, IMessagingErrors {
     event DomainRegistered(uint64 indexed domainChainId, address indexed feeRecipient, uint64 checkpointInterval);
 
     /// @notice The encryption public key domain transactions and messages from other domains are
@@ -85,6 +108,69 @@ interface IDomainHub {
         uint256 nonce,
         uint256 fee
     );
+
+    /// @notice The domain is already registered.
+    error DomainAlreadyRegistered();
+    /// @notice The quorum is zero.
+    error ZeroQuorum();
+    /// @notice The quorum is larger than the validator set.
+    error QuorumExceedsValidators();
+    /// @notice The quorum is not above half the validator set.
+    error QuorumNotMajority();
+    /// @notice The checkpoint interval is zero.
+    error ZeroCheckpointInterval();
+    /// @notice The limit on unattested checkpoint periods is outside 1 to 50.
+    error InvalidMaxUnattestedPeriods();
+    /// @notice The encryption public key is neither empty nor 32 bytes.
+    error InvalidEncryptionPubKey();
+    /// @notice The validator set lists a validator twice.
+    error DuplicateValidator();
+    /// @notice `domainChainId` is not a registered domain.
+    error DomainNotRegistered(uint64 domainChainId);
+    /// @notice The block number is not above the last attested one.
+    error StaleBlockNumber();
+    /// @notice The block number is not below the current L1 block.
+    error BlockNumberNotInPast();
+    /// @notice The block number is not a multiple of the domain's checkpoint interval.
+    error BlockNumberOffSchedule();
+    /// @notice `signer`, recovered from the signature, is not one of the domain's validators.
+    error NotValidator(address signer);
+    /// @notice The validator has already signed this transition.
+    error AlreadyVoted();
+    /// @notice A message to another domain has a nonzero `from`: its sender travels inside the
+    /// ciphertext.
+    error EncryptedMessageWithSender();
+    /// @notice A message to another domain has a nonzero `to`: its target travels inside the
+    /// ciphertext.
+    error EncryptedMessageWithTarget();
+    /// @notice A message to another domain has a nonzero salt: its ciphertext already hides the
+    /// content.
+    error EncryptedMessageWithSalt();
+    /// @notice The message has already been relayed.
+    error MessageAlreadyRelayed();
+    /// @notice The source domain's validators never attested this anchor.
+    error UnknownAnchor();
+    /// @notice The proof does not place the message under the anchor.
+    error InvalidProof();
+    /// @notice A message to the L1 was relayed with value attached.
+    error UnexpectedL1CallbackFee();
+    /// @notice The input would take the domain past `DOMAIN_BLOCK_GAS_LIMIT` in this L1 block.
+    error DomainBlockGasLimitExceeded();
+    /// @notice The input would take the domain past `DOMAIN_BLOCK_WORD_LIMIT` in this L1 block.
+    error DomainBlockSizeLimitExceeded();
+    /// @notice The domain's fee recipient did not accept the withdrawn fees.
+    error FeeTransferFailed();
+    /// @notice `fee` is below `minFee`, the `minDeliveryFee` for the payload.
+    error DeliveryFeeTooLow(uint256 fee, uint256 minFee);
+    /// @notice `fee` is below `minFee`, the `minSequencingFee` for the payload.
+    error SequencingFeeTooLow(uint256 fee, uint256 minFee);
+    /// @notice The domain's input queue has no room for the input.
+    error InputQueueFull();
+    /// @notice `primeInputQueue` was given words past the end of the queue.
+    error InputQueueBadIndex();
+    /// @notice The input would open a checkpoint period `maxUnattestedPeriods` or more past the
+    /// oldest unattested one: the domain takes no inputs until its validators attest.
+    error TooManyUnattestedPeriods();
 
     // --- Registration ---
 
@@ -213,8 +299,9 @@ interface IDomainHub {
         returns (bool success);
 
     /// @notice Permissionlessly retries an authenticated failed L1 callback with the caller's
-    /// gas. A failed retry reverts, preserving the failed mark. Forwarded messages retry on
-    /// their destination spoke using retryL1Message with the shared delivery envelope.
+    /// gas. A failed retry reverts (see `RetryFailed`), preserving the failed mark. Forwarded
+    /// messages retry on their destination spoke using retryL1Message with the shared delivery
+    /// envelope.
     function retryDomainMessage(MessageLib.DomainMessage calldata message) external;
 
     /// @notice True once an authenticated message has been attempted on L1 or queued to a domain.
@@ -286,7 +373,7 @@ interface IDomainHub {
 /// client delivers as system transactions. It also holds the access-control configuration the
 /// domain client and RPC enforce, and the encryption public keys of other domains the encryption
 /// precompile seals to.
-interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
+interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver, IMessagingErrors {
     /// @notice Full encoded domain-origin envelope, whether addressed to L1 or another domain.
     event DomainMessageRecorded(bytes32 indexed messageId, bytes message);
 
@@ -303,6 +390,16 @@ interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
         uint256 nonce,
         bool success
     );
+
+    /// @notice The delivery's nonce is below `nextL1Nonce`.
+    error OutOfOrderNonce();
+    /// @notice `sendDomainMessage` was given a zero salt for a message to the L1.
+    error ZeroSalt();
+    /// @notice The encryption precompile's result is no longer than the plaintext, so it is not a
+    /// ciphertext.
+    error InvalidCiphertext();
+    /// @notice A message delivered to the spoke itself is not from the hub on the L1.
+    error NotFromHub();
 
     // --- Deployment binding ---
 
@@ -337,7 +434,8 @@ interface IDomainSpoke is IDomainAccessControl, IDomainMessageReceiver {
     /// marked failed instead of reverting.
     function relayL1Message(uint64 sourceChainId, address from, address to, bytes calldata data, uint256 nonce) external;
 
-    /// @notice Permissionlessly re-executes a failed delivery with the caller's gas.
+    /// @notice Permissionlessly re-executes a failed delivery with the caller's gas. A failed retry
+    /// reverts (see `RetryFailed`), leaving the delivery retryable.
     function retryL1Message(MessageLib.Message calldata message) external;
 
     /// @notice Minimum nonce the next delivered L1 -> domain message may carry.

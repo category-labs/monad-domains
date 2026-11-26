@@ -124,7 +124,7 @@ contract DomainHubUpgradeTest is DomainTestBase {
 
     /// @dev A contract without the upgrade function would leave the hub stuck on it.
     function test_rejectsImplementationThatCannotUpgrade() public {
-        address notAHub = address(new DomainSpoke(CHAIN_ID, block.chainid, address(hub)));
+        address notAHub = address(new DomainSpoke(CHAIN_ID, uint64(block.chainid), address(hub)));
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(ERC1967Utils.ERC1967InvalidImplementation.selector, notAHub));
         hub.upgradeToAndCall(notAHub, "");

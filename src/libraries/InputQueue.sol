@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
+import {IDomainHub} from "../interfaces/IDomain.sol";
+
 /// @notice A domain's input queue in the hub's storage: the inputs its latest attested
 /// checkpoint does not cover yet.
 ///
@@ -57,10 +59,6 @@ library InputQueue {
     uint256 private constant DATA = 128;
 
     uint256 private constant CHUNK_TAG = 1 << 248;
-
-    error InputQueueFull();
-    error InputQueueBadIndex();
-    error TooManyUnattestedPeriods();
 
     /// @dev The queue state word.
     struct State {
@@ -121,7 +119,7 @@ library InputQueue {
         if (state.head == state.tail) {
             state.firstPeriod = period;
         } else if (period - state.firstPeriod >= maxUnattestedPeriods) {
-            revert TooManyUnattestedPeriods();
+            revert IDomainHub.TooManyUnattestedPeriods();
         }
         store(queue, TABLE + period % MAX_PERIODS, (uint256(period) << 64) | state.head);
     }
@@ -134,7 +132,7 @@ library InputQueue {
     /// @dev Appends a block entry: `header`, then `prevrandao`.
     function pushBlock(uint256 queue, State memory state, uint256 header, uint256 prevrandao) internal {
         uint256 head = state.head;
-        if (head + 2 - state.tail > CAPACITY) revert InputQueueFull();
+        if (head + 2 - state.tail > CAPACITY) revert IDomainHub.InputQueueFull();
         store(queue, DATA + head % CAPACITY, header);
         store(queue, DATA + (head + 1) % CAPACITY, prevrandao);
         state.head = uint64(head + 2);
@@ -145,7 +143,7 @@ library InputQueue {
         uint256 length = payload.length;
         uint256 chunks = (length + CHUNK - 1) / CHUNK;
         uint256 head = state.head;
-        if (head + chunks + 1 - state.tail > CAPACITY) revert InputQueueFull();
+        if (head + chunks + 1 - state.tail > CAPACITY) revert IDomainHub.InputQueueFull();
         // The check above keeps `length` within its 32 bits.
         header |= length << 216;
         assembly ("memory-safe") {
@@ -189,7 +187,7 @@ library InputQueue {
     /// filler into each one no entry has reached yet, so the first entries to reach them only
     /// replace a nonzero word.
     function prime(uint256 queue, uint256 from, uint256 count) internal {
-        if (from + count > CAPACITY) revert InputQueueBadIndex();
+        if (from > CAPACITY || count > CAPACITY - from) revert IDomainHub.InputQueueBadIndex();
         uint256 head = uint64(load(queue, STATE));
         if (from < head) {
             uint256 written = head - from;

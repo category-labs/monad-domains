@@ -2,12 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IDomainHub} from "../../src/interfaces/IDomain.sol";
+import {IDomainHub, IMessagingErrors} from "../../src/interfaces/IDomain.sol";
 import {L1Bridge} from "../../src/bridge/L1Bridge.sol";
 import {MessageLib} from "../../src/libraries/MessageLib.sol";
 import {DomainHub} from "../../src/DomainHub.sol";
 import {TestERC20, FeeOnTransferERC20, GasHeavyERC20} from "../mocks/TestERC20.sol";
 import {DomainTestBase} from "../helpers/DomainTestBase.sol";
+import {IL1Bridge} from "../../src/interfaces/IL1Bridge.sol";
+import {ICommonErrors} from "../../src/interfaces/ICommonErrors.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
 contract L1BridgeTest is DomainTestBase {
     uint64 internal constant CHAIN_ID = 7777;
@@ -54,7 +57,7 @@ contract L1BridgeTest is DomainTestBase {
 
     function test_register_rejectsZeroBridge() public {
         L1Bridge fresh = new L1Bridge(hub, CHAIN_ID);
-        vm.expectRevert(L1Bridge.ZeroBridge.selector);
+        vm.expectRevert(ICommonErrors.ZeroAddress.selector);
         fresh.registerDomainBridge(address(0));
     }
 
@@ -75,7 +78,7 @@ contract L1BridgeTest is DomainTestBase {
             CHAIN_ID, uint64(block.chainid), address(bridge), DOMAIN_BRIDGE, data, 0, DELIVERY_FEE, expectedHash
         );
         vm.expectEmit(address(bridge));
-        emit L1Bridge.BridgeInitiated(alice, bob, address(token), 100 ether);
+        emit IL1Bridge.BridgeInitiated(alice, bob, address(token), 100 ether);
         vm.prank(alice);
         bridge.bridgeToDomain{value: DELIVERY_FEE}(bob, address(token), 100 ether);
 
@@ -105,8 +108,9 @@ contract L1BridgeTest is DomainTestBase {
     }
 
     function test_bridge_rejectsUnderpaidDeliveryBeforeLockingTokens() public {
+        uint256 minFee = hub.minDeliveryFee(MessageLib.encodeTransfer(bob, address(token), 100 ether).length);
         vm.prank(alice);
-        vm.expectRevert(DomainHub.DeliveryFeeTooLow.selector);
+        vm.expectRevert(abi.encodeWithSelector(IDomainHub.DeliveryFeeTooLow.selector, 0, minFee));
         bridge.bridgeToDomain(bob, address(token), 100 ether);
         assertEq(token.balanceOf(address(bridge)), 0);
         assertEq(token.balanceOf(alice), 1000 ether);
@@ -115,19 +119,19 @@ contract L1BridgeTest is DomainTestBase {
     function test_bridge_rejectsUnregisteredCounterpart() public {
         L1Bridge fresh = new L1Bridge(hub, CHAIN_ID);
         vm.prank(alice);
-        vm.expectRevert(L1Bridge.CounterpartNotRegistered.selector);
+        vm.expectRevert(IL1Bridge.CounterpartNotRegistered.selector);
         fresh.bridgeToDomain(bob, address(token), 100 ether);
     }
 
     function test_bridge_rejectsZeroRecipient() public {
         vm.prank(alice);
-        vm.expectRevert(L1Bridge.ZeroRecipient.selector);
+        vm.expectRevert(ICommonErrors.ZeroAddress.selector);
         bridge.bridgeToDomain(address(0), address(token), 100 ether);
     }
 
     function test_bridge_rejectsZeroAmount() public {
         vm.prank(alice);
-        vm.expectRevert(L1Bridge.ZeroAmount.selector);
+        vm.expectRevert(ICommonErrors.ZeroAmount.selector);
         bridge.bridgeToDomain(bob, address(token), 0);
     }
 
@@ -137,7 +141,7 @@ contract L1BridgeTest is DomainTestBase {
         feeToken.mint(alice, 1000 ether);
         vm.startPrank(alice);
         feeToken.approve(address(bridge), type(uint256).max);
-        vm.expectRevert(L1Bridge.FeeOnTransferTokenNotSupported.selector);
+        vm.expectRevert(IL1Bridge.FeeOnTransferTokenNotSupported.selector);
         bridge.bridgeToDomain(bob, address(feeToken), 100 ether);
         vm.stopPrank();
     }
@@ -146,7 +150,7 @@ contract L1BridgeTest is DomainTestBase {
         vm.prank(bob); // bob has no tokens
         token.approve(address(bridge), type(uint256).max);
         vm.prank(bob);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, bob, 0, 1 ether));
         bridge.bridgeToDomain(alice, address(token), 1 ether);
     }
 
@@ -165,7 +169,7 @@ contract L1BridgeTest is DomainTestBase {
         other.mint(alice, 100 ether);
         vm.startPrank(alice);
         other.approve(address(bridge), type(uint256).max);
-        vm.expectRevert(L1Bridge.TokenNotAllowed.selector);
+        vm.expectRevert(IL1Bridge.TokenNotAllowed.selector);
         bridge.bridgeToDomain(bob, address(other), 100 ether);
         vm.stopPrank();
     }
@@ -178,7 +182,7 @@ contract L1BridgeTest is DomainTestBase {
         // Owner disallows the token: new deposits revert...
         bridge.setTokenAllowed(address(token), false);
         vm.prank(alice);
-        vm.expectRevert(L1Bridge.TokenNotAllowed.selector);
+        vm.expectRevert(IL1Bridge.TokenNotAllowed.selector);
         bridge.bridgeToDomain(bob, address(token), 1 ether);
 
         // ...but withdrawals of the already-locked collateral still finalize.
@@ -222,7 +226,7 @@ contract L1BridgeTest is DomainTestBase {
         bytes32 messageHash = _hash(message);
 
         vm.expectEmit(address(bridge));
-        emit L1Bridge.WithdrawalFinalized(bob, address(token), 40 ether);
+        emit IL1Bridge.WithdrawalFinalized(bob, address(token), 40 ether);
         hub.relayDomainMessage(message, messageHash, new bytes32[](0));
 
         assertEq(token.balanceOf(bob), 40 ether);
@@ -287,18 +291,18 @@ contract L1BridgeTest is DomainTestBase {
             sourceNonce: 0
         });
         vm.prank(address(hub));
-        vm.expectRevert(L1Bridge.CounterpartNotRegistered.selector);
+        vm.expectRevert(IL1Bridge.CounterpartNotRegistered.selector);
         fresh.onDomainMessage(CHAIN_ID, message.from, message.data);
     }
 
     function test_callback_rejectsDirectCaller() public {
-        vm.expectRevert(L1Bridge.NotHub.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.Unauthorized.selector, address(this)));
         bridge.onDomainMessage(CHAIN_ID, DOMAIN_BRIDGE, MessageLib.encodeTransfer(bob, address(token), 40 ether));
     }
 
     function test_callback_rejectsWrongDomain() public {
         vm.prank(address(hub));
-        vm.expectRevert(L1Bridge.WrongDomain.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICommonErrors.InvalidChainId.selector, uint64(8888)));
         bridge.onDomainMessage(8888, DOMAIN_BRIDGE, MessageLib.encodeTransfer(bob, address(token), 40 ether));
     }
 
@@ -332,7 +336,7 @@ contract L1BridgeTest is DomainTestBase {
         hub.retryDomainMessage(message);
         assertFalse(hub.failedDomainMessages(CHAIN_ID, messageHash));
         assertEq(token.balanceOf(bob), 40 ether);
-        vm.expectRevert(DomainHub.NotFailedMessage.selector);
+        vm.expectRevert(IMessagingErrors.NotFailedMessage.selector);
         hub.retryDomainMessage(message);
     }
 
