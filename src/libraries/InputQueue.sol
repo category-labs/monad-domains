@@ -11,7 +11,7 @@ pragma solidity ^0.8.24;
 ///                   bits cleared
 ///   base + 0        latest block: `gasSold(64) | inputWords(64) | l1BlockNumber(64) | domainBlockNumber(64)`
 ///   base + 1        queue state: `messageCount(64) | firstPeriod(64) | tail(64) | head(64)`
-///   base + 2        config: `zero(24) | maxUnattestedPeriods(8) | checkpointInterval(64) | feeRecipient(160)`
+///   base + 2        config: `zero(184) | maxUnattestedPeriods(8) | checkpointInterval(64)`
 ///   base + 3..52    checkpoint table: `zero(128) | period(64) | position(64)`, the item of
 ///                   period `p` at `base + 3 + p % 50`
 ///   base + 53..127  unused

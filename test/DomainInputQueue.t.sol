@@ -167,8 +167,8 @@ contract DomainInputQueueTest is DomainTestBase {
         // The queue starts on a page boundary.
         assertEq(_queueBase(8888) % 128, 0);
 
-        // config: zero(24) | maxUnattestedPeriods(8) | checkpointInterval(64) | feeRecipient(160)
-        assertEq(_word(8888, 2), (uint256(7) << 224) | (uint256(10) << 160) | uint160(bob));
+        // config: zero(184) | maxUnattestedPeriods(8) | checkpointInterval(64)
+        assertEq(_word(8888, 2), (uint256(7) << 64) | 10);
         // latest block: gasSold(64) | inputWords(64) | l1BlockNumber(64) | domainBlockNumber(64)
         assertEq(_word(8888, 0), uint256(25) << 64);
         // queue state: messageCount(64) | firstPeriod(64) | tail(64) | head(64)
