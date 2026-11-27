@@ -85,12 +85,20 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     /// revision without one.
     address public immutable SLOT_NUMBER_PROBE;
 
-    /// @dev The rest of a domain's registration and its per-input state live in the first
-    /// page of its input queue.
+    /// @dev A domain's registration. Its input queue's config word copies the checkpoint
+    /// interval and the period limit, so that sequencing reads them from the page it writes.
+    /// Registration writes the struct and the word together, and nothing changes either
+    /// afterwards. For a registered domain the word, `checkpointInterval`,
+    /// `maxUnattestedPeriods` and `feeRecipient` are all nonzero, so each caller checks
+    /// registration on whichever of them it reads.
     struct DomainConfig {
-        /// @dev Attested block numbers must be multiples of this interval. Also kept in the
-        /// queue's config word; this copy spares a vote from loading the queue's page.
+        /// @dev Attested block numbers must be multiples of this interval.
         uint64 checkpointInterval;
+        /// @dev Checkpoint periods that may be unattested before the domain stops accepting
+        /// inputs.
+        uint8 maxUnattestedPeriods;
+        /// @dev Paid the domain's accrued fees by `withdrawFees`.
+        address feeRecipient;
         /// @dev Distinct validator signatures required to advance the state: more than half
         /// of the validators.
         uint256 quorum;
@@ -179,8 +187,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
             revert InvalidEncryptionPubKey();
         }
 
-        uint256 queueConfig =
-            (uint256(maxUnattestedPeriods) << 224) | (uint256(checkpointInterval) << 160) | uint160(feeRecipient);
+        uint256 queueConfig = (uint256(maxUnattestedPeriods) << 64) | checkpointInterval;
         InputQueue.store(queue, InputQueue.CONFIG, queueConfig);
         // The registering L1 block is the domain's block 0.
         InputQueue.store(queue, InputQueue.LATEST, uint256(uint64(block.number)) << 64);
@@ -192,6 +199,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
         DomainConfig storage config = _configs[domainChainId];
         config.checkpointInterval = checkpointInterval;
+        config.maxUnattestedPeriods = maxUnattestedPeriods;
+        config.feeRecipient = feeRecipient;
         config.quorum = quorum;
         config.encryptionPubKey = encryptionPubKey;
         for (uint256 i = 0; i < validators.length; i++) {
@@ -219,18 +228,18 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function feeRecipients(uint64 domainChainId) external view returns (address) {
-        return address(uint160(_queueConfig(domainChainId)));
+        return _configs[domainChainId].feeRecipient;
     }
 
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64) {
-        return uint64(_queueConfig(domainChainId) >> 160);
+        return _configs[domainChainId].checkpointInterval;
     }
 
     function maxUnattestedPeriods(uint64 domainChainId) external view returns (uint8) {
-        return uint8(_queueConfig(domainChainId) >> 224);
+        return _configs[domainChainId].maxUnattestedPeriods;
     }
 
-    /// @dev `maxUnattestedPeriods(8) | checkpointInterval(64) | feeRecipient(160)`; zero for an
+    /// @dev `zero(184) | maxUnattestedPeriods(8) | checkpointInterval(64)`; zero for an
     /// unregistered domain.
     function _queueConfig(uint64 domainChainId) internal view returns (uint256) {
         return InputQueue.load(InputQueue.base(domainChainId), InputQueue.CONFIG);
@@ -526,10 +535,10 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         uint64 previousL1Block,
         uint64 domainBlockNumber
     ) internal {
-        uint64 checkpointInterval = uint64(config >> 160);
+        uint64 checkpointInterval = uint64(config);
         uint64 period = _period(uint64(block.number), checkpointInterval);
         if (state.head == state.tail || period != _period(previousL1Block, checkpointInterval)) {
-            InputQueue.openPeriod(queue, state, period, uint8(config >> 224));
+            InputQueue.openPeriod(queue, state, period, uint8(config >> 64));
         }
         // The probe fails on an L1 revision without slot numbers, taking the gas it was given.
         uint56 slotNumber;
@@ -568,7 +577,9 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
     // ---------------------------------------------------------------------
 
     function withdrawFees(uint64 domainChainId) external {
-        address recipient = address(uint160(_registeredConfig(InputQueue.base(domainChainId))));
+        address recipient = _configs[domainChainId].feeRecipient;
+        // Registration rejects a zero fee recipient.
+        if (recipient == address(0)) revert DomainNotRegistered();
         uint256 amount = accruedFees[domainChainId];
         accruedFees[domainChainId] = 0;
         (bool success,) = recipient.call{value: amount}("");
