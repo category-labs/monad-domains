@@ -42,8 +42,8 @@ contract NativeRoutingTest is DomainTestBase {
         vm.chainId(L1);
         hub = _deployHub(address(this));
         _register(hub, A);
-        _registerKeyedDomain(hub, B, KEY);
-        _registerKeyedDomain(hub, C, KEY);
+        _registerDomain(hub, B, KEY);
+        _registerDomain(hub, C, KEY);
         spokeA = new DomainSpoke(A, L1, address(hub));
         spokeB = new DomainSpoke(B, L1, address(hub));
         receiver = new CrossDomainReceiver(address(spokeB), A, alice);
@@ -675,14 +675,5 @@ contract NativeRoutingTest is DomainTestBase {
         forged.salt = TEST_SALT;
         _rejectAttested(forged, DomainHub.EncryptedMessageWithSalt.selector);
         assertEq(hub.l1MessageCounts(B), 0);
-
-        // C sealed nothing for A, which has no encryption public key.
-        forged.salt = bytes32(0);
-        forged.sourceChainId = C;
-        forged.destinationChainId = A;
-        _post(hub, C, _id(forged));
-        vm.expectRevert(DomainHub.NoEncryptionPubKey.selector);
-        hub.relayDomainMessage{value: DELIVERY_FEE}(forged, _id(forged), new bytes32[](0));
-        assertFalse(hub.relayedDomainMessages(C, _id(forged)));
     }
 }

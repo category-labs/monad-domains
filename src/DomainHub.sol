@@ -96,7 +96,7 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         uint256 quorum;
         address[] validators;
         /// @dev X25519 public key domain transactions and messages from other domains are
-        /// encrypted to, or empty.
+        /// encrypted to.
         bytes encryptionPubKey;
         mapping(address account => bool) isValidator;
     }
@@ -175,7 +175,8 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
         if (maxUnattestedPeriods == 0 || maxUnattestedPeriods > InputQueue.MAX_PERIODS) {
             revert InvalidMaxUnattestedPeriods();
         }
-        if (encryptionPubKey.length != 0 && encryptionPubKey.length != ENCRYPTION_PUB_KEY_LENGTH) {
+        // All zero is not a usable X25519 public key.
+        if (encryptionPubKey.length != ENCRYPTION_PUB_KEY_LENGTH || bytes32(encryptionPubKey) == 0) {
             revert InvalidEncryptionPubKey();
         }
 
@@ -333,8 +334,6 @@ contract DomainHub is IDomainHub, EIP712, OwnableUpgradeable, UUPSUpgradeable {
 
         if (!toL1) {
             if (_queueConfig(message.destinationChainId) == 0) revert DestinationNotRegistered();
-            // No spoke can have sealed to a domain without an encryption public key.
-            if (_configs[message.destinationChainId].encryptionPubKey.length == 0) revert NoEncryptionPubKey();
             uint256 deliveryNonce = _sendEncryptedMessage(
                 message.destinationChainId, message.sourceChainId, message.sourceNonce, message.data, msg.value
             );

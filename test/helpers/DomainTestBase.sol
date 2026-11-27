@@ -145,30 +145,23 @@ abstract contract DomainTestBase is Test {
     // ---------------------------------------------------------------------
 
     /// @dev Registers `chainId` with the validators behind `keys`, the test contract as fee
-    /// recipient, no encryption public key and the shared checkpoint interval.
+    /// recipient, `_encryptionPubKey(chainId)` as the encryption public key and the shared
+    /// checkpoint interval.
     function _registerDomain(DomainHub hub, uint64 chainId, uint256[] memory keys, uint256 quorum) internal {
         hub.registerDomain(
-            chainId, _addresses(keys), quorum, address(this), "", CHECKPOINT_INTERVAL, MAX_UNATTESTED_PERIODS
+            chainId,
+            _addresses(keys),
+            quorum,
+            address(this),
+            _encryptionPubKey(chainId),
+            CHECKPOINT_INTERVAL,
+            MAX_UNATTESTED_PERIODS
         );
     }
 
     /// @dev Single validator, quorum 1.
     function _registerDomain(DomainHub hub, uint64 chainId, uint256 key) internal {
         _registerDomain(hub, chainId, _keys(key), 1);
-    }
-
-    /// @dev Single validator, quorum 1, with `_encryptionPubKey(chainId)` as the encryption public
-    /// key.
-    function _registerKeyedDomain(DomainHub hub, uint64 chainId, uint256 key) internal {
-        hub.registerDomain(
-            chainId,
-            _addresses(_keys(key)),
-            1,
-            address(this),
-            _encryptionPubKey(chainId),
-            CHECKPOINT_INTERVAL,
-            MAX_UNATTESTED_PERIODS
-        );
     }
 
     /// @dev A well-formed, domain-specific encryption public key: 32 bytes, the size of an X25519

@@ -117,15 +117,14 @@ interface IDomainHub {
 
     /// @notice Registers an L1-sequenced `domainChainId` with its validator set, the quorum of
     /// validator signatures required to advance the state, the recipient of sequencing fees,
-    /// the encryption public key senders encrypt to (32-byte X25519 public key, or empty),
+    /// the encryption public key senders encrypt to (32-byte X25519 public key),
     /// the checkpoint interval attested block numbers must be multiples of, and how many
-    /// checkpoint periods may be unattested before the domain stops accepting inputs. A domain
-    /// without an encryption public key cannot receive messages from other domains. MUST
+    /// checkpoint periods may be unattested before the domain stops accepting inputs. MUST
     /// reject the L1 chain id, an already registered chain id, a zero quorum, a quorum
     /// exceeding the validator count or not above half of it (any two quorums MUST share a
     /// validator), zero or duplicate validators, a zero fee recipient, a
     /// zero interval, a period limit outside 1 to 50 and an encryption public key that is
-    /// neither empty nor 32 bytes.
+    /// not 32 bytes or is all zero.
     function registerDomain(
         uint64 domainChainId,
         address[] calldata validators,
@@ -142,7 +141,7 @@ interface IDomainHub {
     function feeRecipients(uint64 domainChainId) external view returns (address);
     function checkpointIntervals(uint64 domainChainId) external view returns (uint64);
     function maxUnattestedPeriods(uint64 domainChainId) external view returns (uint8);
-    /// @notice The registered encryption public key, or empty bytes.
+    /// @notice The registered encryption public key; empty for an unregistered domain.
     function encryptionPubKeys(uint64 domainChainId) external view returns (bytes memory);
 
     // --- State attestation ---
@@ -251,8 +250,8 @@ interface IDomainHub {
     /// `domainChainId` as an L1 message from the hub itself, carrying
     /// `MessageLib.encodeEncryptionPubKey(keyChainId, key)`. Anyone may call it; `msg.value` is
     /// the delivery fee. The spoke accepts the key only from a delivery whose source is the L1
-    /// and whose sender is the hub. MUST reject an unregistered `domainChainId` and a
-    /// `keyChainId` without an encryption public key.
+    /// and whose sender is the hub. MUST reject an unregistered `domainChainId` or
+    /// `keyChainId`.
     function sendEncryptionPubKey(uint64 domainChainId, address spoke, uint64 keyChainId) external payable;
 
     /// @notice Number of deliveries recorded for `domainChainId`, L1 messages and forwarded

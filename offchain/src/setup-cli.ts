@@ -9,6 +9,7 @@ import { setupDomain, type SetupConfig } from "./setup.js";
  *   DOMAIN_CHAIN_ID=..   \
  *   VALIDATORS=0x..,0x..    \  # comma-separated
  *   QUORUM=2                \
+ *   ENCRYPTION_PUB_KEY=0x.. \  # encryption public key: published on the hub, encrypts the seeded txs
  *   [EXISTING_HUB_ADDRESS=0x..] \ # reuse the hub when adding another domain
  *   [HUB_OWNER=0x..]        \  # may upgrade the hub deployed here; defaults to admin
  *   [SEED_DEPLOYER_KEY=0x.] \  # domain seed account; defaults to ADMIN_KEY
@@ -19,7 +20,6 @@ import { setupDomain, type SetupConfig } from "./setup.js";
  *   [INITIAL_TOKEN_POLICY=0x..] \  # existing domain policy; default deploys unconfigured DomainAccessRules
  *   [ALLOWED_TOKEN=0x..]    \  # e.g. wrapped MON
  *   [DOMAIN_GAS=5000000]    \  # gas limit of each seeded creation, paid at DOMAIN_GAS_PRICE
- *   [ENCRYPTION_PUB_KEY=0x...] \  # encryption public key: published on the hub, encrypts the seeded txs
  *     npm run setup
  */
 function required(name: string): string {
@@ -38,6 +38,7 @@ function main() {
       .map((a) => a.trim())
       .filter(Boolean) as Address[],
     quorum: BigInt(required("QUORUM")),
+    encryptionPubKey: required("ENCRYPTION_PUB_KEY") as Hex,
   };
   if (process.env.EXISTING_HUB_ADDRESS) config.existingHub = process.env.EXISTING_HUB_ADDRESS as Address;
   if (process.env.HUB_OWNER) config.hubOwner = process.env.HUB_OWNER as Address;
@@ -49,7 +50,6 @@ function main() {
   if (process.env.INITIAL_TOKEN_POLICY) config.initialTokenPolicy = process.env.INITIAL_TOKEN_POLICY as Address;
   if (process.env.ALLOWED_TOKEN) config.allowedToken = process.env.ALLOWED_TOKEN as Address;
   if (process.env.DOMAIN_GAS) config.domainGas = BigInt(process.env.DOMAIN_GAS);
-  if (process.env.ENCRYPTION_PUB_KEY) config.encryptionPubKey = process.env.ENCRYPTION_PUB_KEY as Hex;
 
   return setupDomain(config);
 }

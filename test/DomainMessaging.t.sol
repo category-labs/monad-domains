@@ -54,36 +54,36 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_register_rejectsL1ChainId() public {
         vm.expectRevert(DomainHub.L1ChainIdNotAllowed.selector);
-        _register(uint64(block.chainid), feeRecipient, "", 1);
+        _register(uint64(block.chainid), feeRecipient, ENCRYPTION_PUB_KEY, 1);
     }
 
     function test_register_rejectsDuplicate() public {
         vm.expectRevert(DomainHub.DomainAlreadyRegistered.selector);
-        _register(CHAIN_ID, feeRecipient, "", 1);
+        _register(CHAIN_ID, feeRecipient, ENCRYPTION_PUB_KEY, 1);
     }
 
     function test_register_rejectsZeroQuorum() public {
         vm.expectRevert(DomainHub.ZeroQuorum.selector);
-        hub.registerDomain(4444, _validators(), 0, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, _validators(), 0, feeRecipient, ENCRYPTION_PUB_KEY, 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsQuorumAboveValidatorCount() public {
         vm.expectRevert(DomainHub.QuorumExceedsValidators.selector);
-        hub.registerDomain(4444, _validators(), 4, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, _validators(), 4, feeRecipient, ENCRYPTION_PUB_KEY, 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsQuorumNotMajority() public {
         // 1 of 3.
         vm.expectRevert(DomainHub.QuorumNotMajority.selector);
-        hub.registerDomain(4444, _validators(), 1, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, _validators(), 1, feeRecipient, ENCRYPTION_PUB_KEY, 1, MAX_UNATTESTED_PERIODS);
         // Exactly half is not a majority: two halves could each attest.
         address[] memory four = new address[](4);
         for (uint256 i = 0; i < 4; i++) {
             four[i] = vm.addr(i + 1);
         }
         vm.expectRevert(DomainHub.QuorumNotMajority.selector);
-        hub.registerDomain(4444, four, 2, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
-        hub.registerDomain(4444, four, 3, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, four, 2, feeRecipient, ENCRYPTION_PUB_KEY, 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, four, 3, feeRecipient, ENCRYPTION_PUB_KEY, 1, MAX_UNATTESTED_PERIODS);
         assertEq(hub.quorums(4444), 3);
     }
 
@@ -91,7 +91,7 @@ contract DomainMessagingTest is DomainTestBase {
         address[] memory validators = new address[](1);
         validators[0] = address(0);
         vm.expectRevert(DomainHub.ZeroValidator.selector);
-        hub.registerDomain(4444, validators, 1, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, validators, 1, feeRecipient, ENCRYPTION_PUB_KEY, 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsDuplicateValidator() public {
@@ -99,24 +99,24 @@ contract DomainMessagingTest is DomainTestBase {
         validators[0] = vm.addr(K1);
         validators[1] = vm.addr(K1);
         vm.expectRevert(DomainHub.DuplicateValidator.selector);
-        hub.registerDomain(4444, validators, 2, feeRecipient, "", 1, MAX_UNATTESTED_PERIODS);
+        hub.registerDomain(4444, validators, 2, feeRecipient, ENCRYPTION_PUB_KEY, 1, MAX_UNATTESTED_PERIODS);
     }
 
     function test_register_rejectsZeroFeeRecipient() public {
         vm.expectRevert(DomainHub.ZeroFeeRecipient.selector);
-        _register(4444, address(0), "", 1);
+        _register(4444, address(0), ENCRYPTION_PUB_KEY, 1);
     }
 
     function test_register_rejectsZeroCheckpointInterval() public {
         vm.expectRevert(DomainHub.ZeroCheckpointInterval.selector);
-        _register(4444, feeRecipient, "", 0);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 0);
     }
 
     function test_register_rejectsPeriodLimitOutOfRange() public {
         vm.expectRevert(DomainHub.InvalidMaxUnattestedPeriods.selector);
-        hub.registerDomain(4444, _validators(), 2, feeRecipient, "", 1, 0);
+        hub.registerDomain(4444, _validators(), 2, feeRecipient, ENCRYPTION_PUB_KEY, 1, 0);
         vm.expectRevert(DomainHub.InvalidMaxUnattestedPeriods.selector);
-        hub.registerDomain(4444, _validators(), 2, feeRecipient, "", 1, 51);
+        hub.registerDomain(4444, _validators(), 2, feeRecipient, ENCRYPTION_PUB_KEY, 1, 51);
     }
 
     function test_register_rejectsMalformedEncryptionPubKey() public {
@@ -125,15 +125,21 @@ contract DomainMessagingTest is DomainTestBase {
 
         vm.expectRevert(DomainHub.InvalidEncryptionPubKey.selector);
         _register(4444, feeRecipient, bytes.concat(ENCRYPTION_PUB_KEY, hex"00"), 1);
+
+        vm.expectRevert(DomainHub.InvalidEncryptionPubKey.selector);
+        _register(4444, feeRecipient, "", 1);
+
+        vm.expectRevert(DomainHub.InvalidEncryptionPubKey.selector);
+        _register(4444, feeRecipient, new bytes(32), 1);
     }
 
     function test_register_storesConfig() public {
         vm.expectEmit(true, true, false, true, address(hub));
         emit IDomainHub.DomainRegistered(4444, feeRecipient, 25);
         vm.expectEmit(true, false, false, true, address(hub));
-        emit IDomainHub.EncryptionPubKeyRegistered(4444, "");
+        emit IDomainHub.EncryptionPubKeyRegistered(4444, ENCRYPTION_PUB_KEY);
         vm.prank(stranger); // registration is permissionless; the caller gets no role
-        _register(4444, feeRecipient, "", 25);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 25);
 
         assertTrue(hub.isDomainRegistered(4444));
         assertFalse(hub.isDomainRegistered(5555));
@@ -141,7 +147,7 @@ contract DomainMessagingTest is DomainTestBase {
         assertEq(hub.checkpointIntervals(4444), 25);
         assertEq(hub.maxUnattestedPeriods(4444), MAX_UNATTESTED_PERIODS);
         assertEq(hub.quorums(4444), 2);
-        assertEq(hub.encryptionPubKeys(4444), "");
+        assertEq(hub.encryptionPubKeys(4444), ENCRYPTION_PUB_KEY);
         assertEq(hub.getValidators(4444), _validators());
     }
 
@@ -181,7 +187,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendL1Message_noncesArePerDomain() public {
-        _register(4444, feeRecipient, "", 1);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 1);
 
         // Each domain assigns its own gapless nonce sequence, checked via the emitted
         // preimages.
@@ -232,7 +238,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendL1Message_holdsFeeAndRecordsIt() public {
-        _register(4444, feeRecipient, "", 1);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 1);
 
         vm.expectEmit(address(hub));
         emit IDomainHub.L1MessageRecorded(
@@ -254,7 +260,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendEncryptionPubKey_recordsAHubMessageToTheSpoke() public {
-        _registerKeyedDomain(hub, 8888, K1);
+        _registerDomain(hub, 8888, K1);
         bytes memory data = MessageLib.encodeEncryptionPubKey(8888, bytes32(hub.encryptionPubKeys(8888)));
         MessageLib.Message memory message =
             MessageLib.Message(uint64(block.chainid), address(hub), address(spoke), data, 0);
@@ -278,12 +284,9 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendEncryptionPubKey_rejectsUnregisteredDomainMissingKeyAndLowFee() public {
-        _register(4444, feeRecipient, "", 1);
-        _registerKeyedDomain(hub, 8888, K1);
+        _registerDomain(hub, 8888, K1);
         vm.expectRevert(DomainHub.DomainNotRegistered.selector);
         hub.sendEncryptionPubKey{value: DELIVERY_FEE}(9999, address(spoke), 8888);
-        vm.expectRevert(DomainHub.NoEncryptionPubKey.selector);
-        hub.sendEncryptionPubKey{value: DELIVERY_FEE}(CHAIN_ID, address(spoke), 4444); // registered without a key
         vm.expectRevert(DomainHub.NoEncryptionPubKey.selector);
         hub.sendEncryptionPubKey{value: DELIVERY_FEE}(CHAIN_ID, address(spoke), 9999); // not registered
         uint256 minimum =
@@ -296,7 +299,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendL1Message_doesNotDependOnFeeRecipient() public {
-        _register(4444, address(new RejectingFeeRecipient()), "", 1);
+        _register(4444, address(new RejectingFeeRecipient()), ENCRYPTION_PUB_KEY, 1);
 
         vm.prank(alice);
         hub.sendL1Message{value: DELIVERY_FEE}(4444, bob, hex"01");
@@ -469,7 +472,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_onDomainMessage_storesKeysOnlyFromHubDeliveries() public {
-        _registerKeyedDomain(hub, 8888, K1);
+        _registerDomain(hub, 8888, K1);
         bytes32 key = bytes32(hub.encryptionPubKeys(8888));
         bytes memory data = MessageLib.encodeEncryptionPubKey(8888, key);
 
@@ -510,13 +513,13 @@ contract DomainMessagingTest is DomainTestBase {
         uint64 destination = 0x510000004eaf;
         bytes32 slot = 0x7b4e93f8fe9bc472b1fac84156f4243b62a421ce301fbbe4cb12ff9ad4c799aa;
         assertEq(slot, keccak256(abi.encode(uint256(destination), uint256(7))));
-        _registerKeyedDomain(hub, destination, K1);
+        _registerDomain(hub, destination, K1);
         _deliverEncryptionPubKey(hub, spoke, destination);
         assertEq(vm.load(address(spoke), slot), bytes32(hub.encryptionPubKeys(destination)));
     }
 
     function test_failedEncryptionPubKeyDeliveryIsRetryable() public {
-        _registerKeyedDomain(hub, 8888, K1);
+        _registerDomain(hub, 8888, K1);
         bytes32 key = bytes32(hub.encryptionPubKeys(8888));
         MessageLib.Message memory message = MessageLib.Message(
             uint64(block.chainid), address(hub), address(spoke), MessageLib.encodeEncryptionPubKey(8888, key), 0
@@ -574,7 +577,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendDomainMessage_sealsDomainBoundMessagesThroughThePrecompile() public {
-        _registerKeyedDomain(hub, 8888, K1);
+        _registerDomain(hub, 8888, K1);
         _deliverEncryptionPubKey(hub, spoke, 8888);
         // No sender, target or salt; the data is (alice, bob, 0xcafe) sealed by this spoke for
         // 8888 under nonce 0 with 8888's key, as the mock seals it.
@@ -601,7 +604,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendDomainMessage_requiresSaltOnlyForTheL1() public {
-        _registerKeyedDomain(hub, 8888, K1);
+        _registerDomain(hub, 8888, K1);
         _deliverEncryptionPubKey(hub, spoke, 8888);
         vm.startPrank(alice);
         vm.expectRevert(DomainSpoke.ZeroSalt.selector);
@@ -620,7 +623,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendDomainMessage_rejectsAResultNoLongerThanThePlaintext() public {
-        _registerKeyedDomain(hub, 8888, K1);
+        _registerDomain(hub, 8888, K1);
         _deliverEncryptionPubKey(hub, spoke, 8888);
         bytes memory plaintext = MessageLib.encodePlaintext(alice, bob, hex"cafe");
         bytes[2] memory results = [bytes(""), plaintext];
@@ -638,7 +641,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_sendDomainMessage_revertsWithoutThePrecompile() public {
-        _registerKeyedDomain(hub, 8888, K1);
+        _registerDomain(hub, 8888, K1);
         _deliverEncryptionPubKey(hub, spoke, 8888);
         vm.etch(DOMAIN_ENCRYPTION_PRECOMPILE, "");
         vm.prank(alice);
@@ -652,7 +655,7 @@ contract DomainMessagingTest is DomainTestBase {
     // ---------------------------------------------------------------------
 
     function test_sequenceToDomain_holdsFeeAndEmits() public {
-        _register(4444, feeRecipient, "", 1);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 1);
 
         vm.expectEmit(address(hub));
         emit IDomainHub.DomainTransactionSequenced(4444, hex"c0ffee", 0.1 ether);
@@ -665,7 +668,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_domainBlockGasLimit_boundsEveryDomainPerL1Block() public {
-        _register(4444, feeRecipient, "", 1);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 1);
         uint256 price = hub.DOMAIN_GAS_PRICE();
         uint256 cap = hub.DOMAIN_BLOCK_GAS_LIMIT();
 
@@ -719,7 +722,7 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_sequenceToDomain_doesNotDependOnFeeRecipient() public {
         address rejecting = address(new RejectingFeeRecipient());
-        _register(4444, rejecting, "", 1);
+        _register(4444, rejecting, ENCRYPTION_PUB_KEY, 1);
 
         vm.expectEmit(address(hub));
         emit IDomainHub.DomainTransactionSequenced(4444, hex"01", 0.1 ether);
@@ -733,8 +736,8 @@ contract DomainMessagingTest is DomainTestBase {
     // ---------------------------------------------------------------------
 
     function test_withdrawFees_paysRecipientAndClearsBalance() public {
-        _register(4444, feeRecipient, "", 1);
-        _registerKeyedDomain(hub, 8888, K1);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 1);
+        _registerDomain(hub, 8888, K1);
         vm.startPrank(alice);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
         hub.sendL1Message{value: 0.05 ether}(4444, bob, hex"01");
@@ -754,7 +757,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_withdrawFees_keepsDomainsSeparate() public {
-        _register(4444, feeRecipient, "", 1);
+        _register(4444, feeRecipient, ENCRYPTION_PUB_KEY, 1);
         vm.startPrank(alice);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
         hub.sequenceToDomain{value: 0.3 ether}(CHAIN_ID, hex"c0ffee");
@@ -772,7 +775,7 @@ contract DomainMessagingTest is DomainTestBase {
     }
 
     function test_withdrawFees_revertsAndKeepsFeesIfRecipientRejects() public {
-        _register(4444, address(new RejectingFeeRecipient()), "", 1);
+        _register(4444, address(new RejectingFeeRecipient()), ENCRYPTION_PUB_KEY, 1);
         vm.prank(alice);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
 
@@ -784,7 +787,7 @@ contract DomainMessagingTest is DomainTestBase {
 
     function test_withdrawFees_reentrantRecipientIsPaidOnce() public {
         ReentrantFeeRecipient reentrant = new ReentrantFeeRecipient(hub, 4444);
-        _register(4444, address(reentrant), "", 1);
+        _register(4444, address(reentrant), ENCRYPTION_PUB_KEY, 1);
         vm.startPrank(alice);
         hub.sequenceToDomain{value: 0.1 ether}(4444, hex"c0ffee");
         hub.sequenceToDomain{value: 0.3 ether}(CHAIN_ID, hex"c0ffee");
