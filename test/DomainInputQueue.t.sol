@@ -45,7 +45,7 @@ contract DomainInputQueueTest is DomainTestBase {
     function setUp() public {
         hub = _deployHub(address(this));
         vm.prevrandao(keccak256("prevrandao"));
-        _registerKeyedDomain(hub, CHAIN_ID, VALIDATOR_KEY);
+        _registerDomain(hub, CHAIN_ID, VALIDATOR_KEY);
         _registerDomain(hub, SOURCE_CHAIN_ID, VALIDATOR_KEY);
         vm.deal(alice, 1_000_000 ether);
     }
@@ -163,7 +163,7 @@ contract DomainInputQueueTest is DomainTestBase {
 
     function test_firstPageFollowsTheLayout() public {
         vm.roll(25);
-        hub.registerDomain(8888, _addresses(_keys(VALIDATOR_KEY)), 1, bob, "", 10, 7);
+        hub.registerDomain(8888, _addresses(_keys(VALIDATOR_KEY)), 1, bob, _encryptionPubKey(8888), 10, 7);
         // The queue starts on a page boundary.
         assertEq(_queueBase(8888) % 128, 0);
 
@@ -376,7 +376,15 @@ contract DomainInputQueueTest is DomainTestBase {
     /// fees stay in the hub for the next withdrawal.
     function test_feeRecipientReenteringAWithdrawalKeepsQueueLogsAndNewFees() public {
         ReenteringRecipient recipient = new ReenteringRecipient(hub, 8888);
-        hub.registerDomain(8888, _addresses(_keys(VALIDATOR_KEY)), 1, address(recipient), "", CHECKPOINT_INTERVAL, 3);
+        hub.registerDomain(
+            8888,
+            _addresses(_keys(VALIDATOR_KEY)),
+            1,
+            address(recipient),
+            _encryptionPubKey(8888),
+            CHECKPOINT_INTERVAL,
+            3
+        );
         uint256 fee = hub.minDeliveryFee(1);
         vm.prank(alice);
         hub.sendL1Message{value: 2 * fee}(8888, bob, hex"00");

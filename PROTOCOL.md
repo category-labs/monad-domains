@@ -23,7 +23,7 @@ End to end: a sender encrypts a signed domain transaction to the domain's encryp
 
 A domain is identified by its chain ID. A domain is created by calling `registerDomain(domainChainId, validators, quorum, feeRecipient, encryptionPubKey, checkpointInterval, maxUnattestedPeriods)` on the hub. Starting a domain should include the following three steps:
 
-1. **Generate the encryption keypair.** An X25519 key. The secret key goes to every execution client that will serve the domain. The public key is registered on the hub: users encrypt domain transactions to it, and other domains seal their messages to it. A domain registered without one cannot receive messages from other domains.
+1. **Generate the encryption keypair.** An X25519 key. The secret key goes to every execution client that will serve the domain. The public key is registered on the hub: users encrypt domain transactions to it, and other domains seal their messages to it.
 2. **Configure the execution clients.** Each replica is started with the domain's chain ID, the address its spoke will have, and the key file, plus the hub address as the sequencer contract. Every replica must hold the same secret key to decrypt the ciphertext.
 3. **Deploy the spoke inside the domain.** The spoke is a contract in the domain's own state, not on the L1. Its creation transaction is sequenced through the hub like any other domain transaction.
 
